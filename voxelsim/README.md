@@ -92,17 +92,12 @@ env.update_with_callback(dynamics, 0.1, step_callback, collision_callback)
 
 ## Network Protocol
 
-The simulator can send data to the renderer using either binary (bincode) or JSON protocols:
+The simulator sends data to the renderer using binary (bincode):
 
-### Binary Protocol (Default)
+### Binary Protocol 
 - **Format**: 4-byte length prefix + bincode-serialized data
 - **Performance**: High (recommended for real-time simulation)
 - **Methods**: `send_world()`, `send_agents()`
-
-### JSON Protocol (Alternative)  
-- **Format**: JSON string + newline delimiter
-- **Performance**: Lower but human-readable (good for debugging)
-- **Methods**: `send_world_json()`, `send_agents_json()`
 
 ### Network Ports
 - **Port 8080**: World data (VoxelGrid)
@@ -172,7 +167,6 @@ Screen/Window
 - **noise**: Procedural terrain generation
 - **serde**: Serialization framework
 - **bincode**: Binary serialization (fast)
-- **serde_json**: JSON serialization (debug-friendly)
 - **pyo3**: Python bindings (optional, `python` feature)
 - **bitflags**: Voxel cell flags
 - **tinyvec**: Small vector optimization
