@@ -8,7 +8,7 @@ Core simulation engine for VoxelSim with optional Python bindings. This project 
 - **Agent physics simulation** with thrust-based movement and collision detection  
 - **Network client** for sending data to the renderer
 - **Optional Python bindings** for easy scripting and integration
-- **Serialization support** with both JSON and binary (bincode) protocols
+- **Serialization support** with binary (bincode) protocol 
 
 ## Building
 
@@ -146,8 +146,7 @@ Network client for renderer communication:
 - `connect()` - Connect to renderer
 - `send_world(grid)` - Send world data (binary)
 - `send_agents(agents)` - Send agent data (binary)
-- `send_world_json(grid)` - Send world data (JSON)
-- `send_agents_json(agents)` - Send agent data (JSON)
+
 
 ## Architecture
 
@@ -155,7 +154,7 @@ Network client for renderer communication:
 User Code (Rust/Python)
         ↓
 VoxelSim Library
-        ↓ (Binary/JSON over TCP)
+        ↓ (Binary over TCP)
 VoxelSim Renderer  
         ↓ (3D Graphics)
 Screen/Window
