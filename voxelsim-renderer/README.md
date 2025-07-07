@@ -8,7 +8,6 @@
 - **Procedural terrain visualization** including trees and natural features
 - **Agent rendering** with position tracking and movement visualization
 - **Interactive camera controls** for scene navigation
-- **Dual network protocol support** (binary and JSON)
 - **Automatic world updates** from simulation data
 - **Performance monitoring** and frame rate optimization
 
@@ -18,7 +17,6 @@
 - **Bevy**: Modern 3D rendering engine and ECS framework
 - **tokio**: Async networking for real-time data streaming
 - **bincode**: Binary deserialization (high performance)
-- **serde_json**: JSON deserialization (debugging support)
 
 ## Building
 
@@ -36,11 +34,8 @@ The renderer will start and listen on:
 - **Port 8080**: World data (terrain and voxel grids)
 - **Port 8081**: Agent data (positions, velocities, commands)
 
-## Network Protocol
 
-The renderer supports both binary and JSON protocols for maximum flexibility:
-
-### Binary Protocol (Recommended)
+### Binary Protocol
 High-performance protocol for real-time simulation:
 - **Format**: 4-byte little-endian length prefix + bincode data
 - **World Data**: Serialized `VoxelGrid` struct
@@ -64,41 +59,6 @@ let world: VoxelGrid = bincode::serde::decode_from_slice(
 )?.0;
 ```
 
-### JSON Protocol (Debugging)
-Human-readable protocol for development and debugging:
-- **Format**: JSON string + newline delimiter
-- **World Data**: JSON-serialized `VoxelGrid`
-- **Agent Data**: JSON-serialized `Vec<Agent>`
-
-**Example World Data (JSON):**
-```json
-{
-  "cells": {
-    "[10, 5, 10]": 16,
-    "[11, 5, 10]": 32,
-    "[12, 5, 10]": 64
-  }
-}
-```
-
-**Example Agent Data (JSON):**
-```json
-[
-  {
-    "id": 0,
-    "pos": {"x": 50.0, "y": 30.0, "z": 50.0},
-    "vel": {"x": 0.0, "y": 0.0, "z": 0.0},
-    "thrust": {"x": 0.0, "y": 0.0, "z": 0.0},
-    "action": {
-      "cmd_sequence": [
-        {"dir": "Forward", "urgency": 1.0}
-      ],
-      "origin": {"x": 50, "y": 30, "z": 50}
-    }
-  }
-]
-```
-
 ## Usage with VoxelSim
 
 ### From Rust
@@ -117,10 +77,6 @@ client.connect()?;
 // Send data (binary - fast)
 client.send_world(&world)?;
 client.send_agents(&agents)?;
-
-// Or send JSON (debug-friendly)
-client.send_world_json(&world)?;
-client.send_agents_json(&agents)?;
 ```
 
 ### From Python
@@ -203,7 +159,7 @@ Press `Tab` to toggle the performance overlay showing:
 
 ```
 VoxelSim Simulator
-        ↓ (TCP Socket: Binary/JSON)
+        ↓ (TCP Socket: Binary)
 Network Receiver (Tokio)
         ↓ (Event System)
 Bevy ECS World Update
