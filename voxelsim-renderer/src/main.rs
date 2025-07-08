@@ -206,7 +206,6 @@ impl NetworkListener {
             ) {
                 Ok((world_data, _)) => {
                     simulation.send_world(world_data);
-                    println!("Received bincode-encoded voxel grid ({} bytes)", msg_len);
                 }
                 Err(e) => {
                     eprintln!("Failed to deserialize VoxelGrid: {}", e);
@@ -245,7 +244,6 @@ impl NetworkListener {
             ) {
                 Ok((agents_data, _)) => {
                     simulation.send_agents(agents_data);
-                    println!("Received bincode-encoded voxel grid ({} bytes)", msg_len);
                 }
                 Err(e) => {
                     eprintln!("Failed to deserialize VoxelGrid: {}", e);

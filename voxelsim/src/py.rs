@@ -79,7 +79,16 @@ impl GlobalEnv {
             .map_err(|e| PyException::new_err(e.to_string()))
     }
 
-    pub fn perform_action(&mut self, agent_id: usize, cmds: Vec<MoveCommand>) {}
+    pub fn perform_sequence_on_agent(
+        &mut self,
+        agent_id: usize,
+        cmds: Vec<MoveCommand>,
+    ) -> PyResult<()> {
+        self.agent_mut(agent_id)
+            .ok_or_else(|| PyException::new_err(format!("no agent with id: {}", agent_id)))?
+            .perform_sequence(cmds);
+        Ok(())
+    }
 }
 
 // --------------- PYTHON-EXPOSED IMPL -----------------------------
