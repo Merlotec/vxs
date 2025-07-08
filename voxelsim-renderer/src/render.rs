@@ -2,15 +2,24 @@ use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Vector3;
 
-use voxelsim::{Agent, Cell, Coord, VoxelGrid};
+use voxelsim::viewport::VirtualCell;
+use voxelsim::{Agent, Cell, Coord, PovData, VoxelGrid};
 
 use bevy::app::AppExit;
 use bevy::prelude::*;
+
+use crate::pov::PovCamera;
 
 #[derive(Component)]
 pub struct CellComponent {
     pub coord: Coord,
     pub value: Cell,
+}
+
+#[derive(Component)]
+pub struct VirtualCellComponent {
+    pub coord: Coord,
+    pub value: VirtualCell,
 }
 
 #[derive(Component)]
@@ -30,6 +39,18 @@ pub struct OriginCell {
 
 #[derive(Resource)]
 pub struct QuitReceiver(pub Receiver<()>);
+
+#[derive(Resource)]
+pub struct WorldReceiver(pub Receiver<VoxelGrid>);
+
+#[derive(Resource)]
+pub struct AgentReceiver(pub Receiver<Vec<Agent>>);
+
+#[derive(Resource)]
+pub struct PovReceiver(pub Receiver<PovData>);
+
+#[derive(Resource)]
+pub struct FocusedAgent(pub usize);
 
 #[derive(Resource)]
 pub struct CellAssets {
@@ -137,8 +158,20 @@ pub fn setup(
         affects_lightmapped_meshes: true,
         ..Default::default()
     });
+    // Spawn PanOrbitCamera
     commands.spawn((
         PanOrbitCamera::default(),
+        Transform::from_xyz(0.0, 7., 14.0).looking_at(Vec3::new(0., 0., 0.), Vec3::Y),
+    ));
+
+    // Spawn POV Camera (initially inactive)
+    commands.spawn((
+        PovCamera,
+        Camera3d::default(),
+        Camera {
+            is_active: false,
+            ..default()
+        },
         Transform::from_xyz(0.0, 7., 14.0).looking_at(Vec3::new(0., 0., 0.), Vec3::Y),
     ));
 }

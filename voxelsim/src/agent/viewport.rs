@@ -7,12 +7,24 @@ use std::time::SystemTime;
 
 use super::*;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub type VirtualCollisionShell = ArrayVec<[(Coord, VirtualCell); 26]>;
+
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct VirtualCell {
     pub time: SystemTime,
     pub cell: Cell,
     pub uncertainty: f32,
+}
+
+impl Default for VirtualCell {
+    fn default() -> Self {
+        Self {
+            time: SystemTime::UNIX_EPOCH,
+            cell: Cell::default(),
+            uncertainty: Default::default(),
+        }
+    }
 }
 
 impl VirtualCell {
@@ -208,6 +220,44 @@ impl VirtualGrid {
         }
 
         block_cells
+    }
+
+    pub fn cull(&mut self, centre: Vector3<i32>, bounds: Vector3<i32>) {
+        self.cells
+            .retain(|k, _| crate::env::within_bounds(Vector3::from(*k) - centre, bounds));
+    }
+
+    pub fn cells(&self) -> &HashMap<Coord, VirtualCell> {
+        &self.cells
+    }
+
+    pub fn cells_mut(&mut self) -> &mut HashMap<Coord, VirtualCell> {
+        &mut self.cells
+    }
+
+    pub fn set(&mut self, coord: Coord, cell: VirtualCell) {
+        self.cells.insert(coord, cell);
+    }
+
+    pub fn remove(&mut self, coord: &Coord) -> Option<VirtualCell> {
+        self.cells.remove(coord)
+    }
+
+    /// Returns a the list of cells if an object with the given centre coordinate and dimensions collides with any
+    /// cells.
+    pub fn collisions(&self, centre: Vector3<f32>, dims: Vector3<f32>) -> VirtualCollisionShell {
+        let mut collisions = ArrayVec::new();
+        // We only need to check the cubes around.
+        assert!(dims.x < 1.0 && dims.y < 1.0 && dims.z < 1.0);
+        for cell_coord in crate::env::adjacent_coords(centre.try_cast::<i32>().unwrap()) {
+            let coord: [i32; 3] = cell_coord.into();
+            if let Some(cell) = self.cells().get(&coord) {
+                if crate::env::intersects(cell_coord, centre, dims) {
+                    collisions.push((coord, *cell));
+                }
+            }
+        }
+        collisions
     }
 }
 

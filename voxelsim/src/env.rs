@@ -28,7 +28,7 @@ pub type Coord = [i32; 3];
 pub type GridShell = [Vector3<i32>; 26];
 pub type CollisionShell = ArrayVec<[(Coord, Cell); 26]>;
 
-fn adjacent_coords(coord: Vector3<i32>) -> GridShell {
+pub(crate) fn adjacent_coords(coord: Vector3<i32>) -> GridShell {
     let mut coords = [Vector3::zeros(); 26];
     let mut t = 0;
     for i in 0..3 {
@@ -77,7 +77,7 @@ pub fn intersects(coord: Vector3<i32>, pos: Vector3<f32>, dims: Vector3<f32>) ->
         && cube_max.z >= obj_min.z
 }
 
-fn within_bounds<N: PartialOrd>(v: Vector3<N>, b: Vector3<N>) -> bool {
+pub(crate) fn within_bounds<N: PartialOrd>(v: Vector3<N>, b: Vector3<N>) -> bool {
     v.iter().zip(b.iter()).all(|(vi, bi)| vi <= bi)
 }
 

@@ -2,10 +2,11 @@ use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Vector3;
 
+use crate::network::NetworkSubscriber;
 use crate::render::{
-    self, ActionCell, AgentComponent, CellAssets, CellComponent, OriginCell, QuitReceiver,
+    self, ActionCell, AgentComponent, AgentReceiver, CellAssets, CellComponent, FocusedAgent,
+    OriginCell, QuitReceiver, WorldReceiver,
 };
-use crate::NetworkSubscriber;
 use voxelsim::{Agent, Cell, VoxelGrid};
 
 use bevy::app::AppExit;
@@ -48,12 +49,6 @@ pub fn run_world_server() {
     begin_render(world_receiver, agent_receiver, gui_sender, quit_receiver);
 }
 
-#[derive(Resource)]
-pub struct WorldReceiver(Receiver<VoxelGrid>);
-
-#[derive(Resource)]
-pub struct AgentReceiver(Receiver<Vec<Agent>>);
-
 pub enum GuiCommand {
     RegenerateWorld,
     MoveAgentA,
@@ -90,9 +85,6 @@ pub fn begin_render(
         .insert_resource(QuitReceiver(quit_receiver))
         .run();
 }
-
-#[derive(Resource)]
-struct FocusedAgent(usize);
 
 #[derive(Resource)]
 struct GuiChannel(Sender<GuiCommand>);
