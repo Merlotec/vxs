@@ -586,12 +586,9 @@ impl VoxelGrid {
                     // Check if near a branch for higher density
                     let entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
                     if !entry.intersects(forbidden) {
-                        if entry.contains(Cell::SPARSE) || rng.random::<f32>() < 0.6 {
-                            *entry |= Cell::FILLED;
-                        } else {
-                            *entry |= Cell::SPARSE; // Set SPARSE instead of leaving empty
-                        }
+                        *entry |= Cell::FILLED;  // Always set FILLED for canopy leaves
                     }
+                    
                 }
             }
         }
