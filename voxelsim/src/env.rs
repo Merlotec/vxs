@@ -1,9 +1,9 @@
 use crate::agent::Agent;
 use bitflags::bitflags;
 use nalgebra::Vector3;
-use serde::{Deserialize, Serialize};
 #[cfg(feature = "python")]
 use pyo3::pyclass;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tinyvec::ArrayVec;
 
@@ -99,6 +99,16 @@ pub struct ArtifactNoise {
     distance_falloff: f32,
     pos_variance: f32,
     map_uncertainty: f32,
+}
+
+impl GlobalEnv {
+    pub fn agent(&self, id: usize) -> Option<&Agent> {
+        self.agents.iter().find(|a| a.id == id)
+    }
+
+    pub fn agent_mut(&mut self, id: usize) -> Option<&mut Agent> {
+        self.agents.iter_mut().find(|a| a.id == id)
+    }
 }
 
 impl VoxelGrid {
