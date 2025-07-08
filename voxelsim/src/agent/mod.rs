@@ -5,6 +5,8 @@ use tinyvec::{array_vec, ArrayVec};
 #[cfg(feature = "python")]
 use pyo3::pyclass;
 
+pub mod viewport;
+
 const STABLE_VEL: f32 = 4.0;
 
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
