@@ -4528,7 +4528,6 @@ dependencies = [
  "noise",
  "rand 0.9.1",
  "serde",
- "serde_json",
  "tinyvec",
  "tokio",
 ]
