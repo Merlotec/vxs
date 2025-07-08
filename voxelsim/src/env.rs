@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use tinyvec::ArrayVec;
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
     #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
     pub struct Cell: u8 {
         const DRONE_OCCUPIED    = 0b0000_0001;
