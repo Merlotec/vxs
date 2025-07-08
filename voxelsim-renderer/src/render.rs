@@ -255,7 +255,6 @@ fn synchronise_world(
     mut agent_query: Query<(Entity, &mut AgentComponent, &mut Transform)>,
 ) {
     if let Some(mut world) = world.0.try_iter().last() {
-        println!("RERENDERING WORLD!!");
         for (entity, mut cell, mut material) in cell_query.iter_mut() {
             if let Some(v) = world.cells().get(&cell.coord).copied() {
                 cell.value = v;

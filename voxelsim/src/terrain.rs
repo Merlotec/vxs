@@ -1,11 +1,8 @@
 use crate::env::{Cell, VoxelGrid};
 use noise::{NoiseFn, Perlin};
 use rand::{rngs::StdRng, Rng, SeedableRng};
-use serde::{Deserialize, Serialize};
 
 // Created structure for holding terrain configuration parameters.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct TerrainConfig {
     pub size: [i32; 3],
     pub height_scale: f64,
@@ -299,7 +296,7 @@ impl VoxelGrid {
             }
         }
 
-        println!("Placed {} tree positions in groves", placed_trees.len());
+        //println!("Placed {} tree positions in groves", placed_trees.len());
 
         // Generate each tree
         let forbidden = Cell::DRONE_OCCUPIED
@@ -307,6 +304,11 @@ impl VoxelGrid {
             | Cell::DRONE_HISTORIC
             | Cell::DRONE_TRAJECTORY
             | Cell::TARGET;
+        println!(
+            "Forbidden mask: {:?} (bits: {:08b})",
+            forbidden,
+            forbidden.bits()
+        );
 
         for (i, &(x, z, tree_type, ref params)) in placed_trees.iter().enumerate() {
             let ground_y = height_map[x as usize][z as usize];
@@ -361,10 +363,9 @@ impl VoxelGrid {
                     }
 
                     let entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
-                    if entry.intersects(forbidden) {
-                        continue;
+                    if !entry.intersects(forbidden) {
+                        *entry |= Cell::FILLED;
                     }
-                    *entry |= Cell::FILLED;
                 }
             }
         }
