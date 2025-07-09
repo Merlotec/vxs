@@ -172,7 +172,7 @@ impl Agent {
     pub fn perform(&mut self, cmd_sequence: CmdSequence) {
         self.action = Some(Action {
             cmd_sequence,
-            origin: self.pos.try_cast::<i32>().unwrap(),
+            origin: self.pos.map(|e| e.round() as i32),
         })
     }
 
