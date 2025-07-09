@@ -57,7 +57,13 @@ pub fn run_pov_server(port_offset: u16) {
     let (gui_sender, gui_receiver) = crossbeam_channel::unbounded::<GuiCommand>();
     let (quit_sender, quit_receiver) = crossbeam_channel::unbounded::<()>();
 
-    begin_render(pov_receiver, agent_receiver, gui_sender, quit_receiver);
+    begin_render(
+        port_offset,
+        pov_receiver,
+        agent_receiver,
+        gui_sender,
+        quit_receiver,
+    );
 }
 
 pub enum GuiCommand {
@@ -69,6 +75,7 @@ pub enum GuiCommand {
 }
 
 pub fn begin_render(
+    num: u16,
     pov_receiver: Receiver<PovData>,
     agent_receiver: Receiver<HashMap<usize, Agent>>,
     gui_sender: Sender<GuiCommand>,
@@ -76,7 +83,15 @@ pub fn begin_render(
 ) {
     App::new()
         .add_plugins((
-            DefaultPlugins.set(ImagePlugin::default_nearest()),
+            DefaultPlugins
+                .set(ImagePlugin::default_nearest())
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: format!("Virtual POV View ({})", num),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
             PanOrbitCameraPlugin,
         ))
         .add_systems(Startup, render::setup)

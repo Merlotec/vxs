@@ -66,7 +66,15 @@ pub fn begin_render(
 ) {
     App::new()
         .add_plugins((
-            DefaultPlugins.set(ImagePlugin::default_nearest()),
+            DefaultPlugins
+                .set(ImagePlugin::default_nearest())
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "World View".into(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
             PanOrbitCameraPlugin,
         ))
         .add_systems(Startup, render::setup)
