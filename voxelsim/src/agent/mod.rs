@@ -120,14 +120,15 @@ impl Agent {
     pub fn perform(&mut self, cmd_sequence: CmdSequence) {
         self.action = Some(Action {
             cmd_sequence,
-            origin: self.pos.try_cast::<i32>().unwrap(),
+            origin: self.pos.try_cast::<i32>().unwrap(),  
         })
     }
 
     /// Sets the current thrust according to the action set provided.
     fn next_thrust(&self, dynamics: &AgentDynamics) -> Vector3<f32> {
         if let Some(thrust) = self.action.as_ref().and_then(|x| {
-            x.next_target_thrust(self.pos - x.origin.cast::<f32>(), self.vel, dynamics)
+            let origin_center = x.origin.cast::<f32>() + Vector3::new(0.5, 0.5, 0.5);
+            x.next_target_thrust(self.pos - origin_center, self.vel, dynamics)
         }) {
             thrust
         } else {
@@ -147,7 +148,6 @@ impl Agent {
         let net_acc = thrust + dynamics.g + air_res;
         self.pos += delta * self.vel + 0.5 * net_acc * delta * delta;
         self.vel += delta * net_acc;
-
 
         // Now we want to remove old commands if they have been 'passed'.
         if let Some(action) = &mut self.action {
@@ -191,17 +191,7 @@ impl Action {
         let urgency = self.cmd_sequence.first()?.urgency;
 
         let next_dir = self.next_target_dir(local_pos)?.normalize();
-        let mut next_vel = next_dir * urgency * STABLE_VEL * self.continuity(0.7)?;
-        // does the *first* outstanding move command contain a vertical component?
-        let vertical_cmd = matches!(
-            self.cmd_sequence.first().map(|c| c.dir),
-            Some(MoveDir::Up | MoveDir::Down)
-        );
-
-// keep existing V-speed only for purely horizontal moves
-        if !vertical_cmd {
-            next_vel.y = current_vel.y;
-        }
+        let next_vel = next_dir * urgency * STABLE_VEL * self.continuity(0.7)?;
         // This is our acceleration direction.agent.rs
         //let mut correction_dir = (next_dir - current_vel.normalize()).normalize();
         //if correction_dir.x.is_nan() || correction_dir.y.is_nan() || correction_dir.z.is_nan() {
@@ -210,7 +200,6 @@ impl Action {
         //let correction_weight = (0.2 + urgency * 0.2).clamp(0.0, 1.0);
         //let acc_dir = correction_dir * correction_weight + next_dir * (1.0 - correction_weight);
         let acc_dir = next_vel - current_vel;
-        
         //println!(
         //    "next_dir: {}. correction_dir: {}, correction_weight: {}",
         //    next_dir, correction_dir, correction_weight
@@ -255,13 +244,16 @@ impl Action {
         // current command.
 
         if let Some(c0) = self.relative_centroid_pos(1) {
-            let od = self.origin.cast::<f32>() - pos;
-            let c0abs = c0 + self.origin;
-            let c0d = c0abs.cast::<f32>() - pos;
+        let origin_center = self.origin.cast::<f32>() + Vector3::new(0.5, 0.5, 0.5);
+        let od = origin_center - pos;
+        
+        let c0abs = c0 + self.origin;
+        let c0_center = c0abs.cast::<f32>() + Vector3::new(0.5, 0.5, 0.5);
+        let c0d = c0_center - pos;
 
             // Check if the current position is closer to the current centroid than the origin
             if c0d.norm() < od.norm() {
-                let _ = self.cmd_sequence.remove(0); // command ends, agent stops
+                let _ = self.cmd_sequence.remove(0);
                 self.origin = c0abs;
             }
         }
