@@ -1,3 +1,4 @@
+use bevy::platform::collections::HashMap;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Vector3;
@@ -21,7 +22,7 @@ pub fn run_world_server() {
             .unwrap_or(8080),
     );
 
-    let (mut agent_sub, agent_receiver) = NetworkSubscriber::<Vec<Agent>>::new(
+    let (mut agent_sub, agent_receiver) = NetworkSubscriber::<HashMap<usize, Agent>>::new(
         std::env::var("VXS_AGENT_PORT").unwrap_or("172.0.0.1".to_string()),
         std::env::var("VXS_AGENT_PORT")
             .ok()
@@ -59,7 +60,7 @@ pub enum GuiCommand {
 
 pub fn begin_render(
     world_receiver: Receiver<VoxelGrid>,
-    agent_receiver: Receiver<Vec<Agent>>,
+    agent_receiver: Receiver<HashMap<usize, Agent>>,
     gui_sender: Sender<GuiCommand>,
     quit_receiver: Receiver<()>,
 ) {
@@ -191,7 +192,7 @@ fn synchronise_world(
         // Update the action space of the drones.
         let mut action_cells: Vec<Vector3<i32>> = Vec::new();
         let mut origin_cells: Vec<Vector3<i32>> = Vec::new();
-        for agent in agents.iter() {
+        for (_id, agent) in agents.iter() {
             if let Some(action) = &agent.action {
                 let mut buf = action.origin;
                 origin_cells.push(buf);
@@ -255,7 +256,7 @@ fn synchronise_world(
 
         for (entity, mut agent, mut transform) in agent_query.iter_mut() {
             let mut keep = false;
-            agents.retain(|a| {
+            agents.retain(|_id, a| {
                 if agent.agent.id == a.id {
                     transform.translation = Vec3::from_array(a.pos.into());
                     agent.agent = a.clone();
@@ -271,7 +272,7 @@ fn synchronise_world(
             }
         }
 
-        for a in agents.iter() {
+        for (_id, a) in agents.iter() {
             commands.spawn((
                 AgentComponent { agent: a.clone() },
                 Mesh3d(assets.drone_mesh.clone()),

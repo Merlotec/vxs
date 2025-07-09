@@ -6,11 +6,11 @@ world.generate_default_terrain(100)
 
 dynamics = voxelsim.AgentDynamics.default_drone()
 agent = voxelsim.Agent(0)
-env = voxelsim.GlobalEnv(world, [agent])
+env = voxelsim.GlobalEnv(world, {0: agent})
 
 
-client = voxelsim.RendererClient("127.0.0.1", 8080, 8081)
-client.connect_py()
+client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090)
+client.connect_py(0)
 
 print("connected!")
 

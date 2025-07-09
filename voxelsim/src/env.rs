@@ -1,4 +1,4 @@
-use crate::agent::Agent;
+use crate::{agent::Agent, PovData};
 use bitflags::bitflags;
 use nalgebra::Vector3;
 #[cfg(feature = "python")]
@@ -85,7 +85,8 @@ pub(crate) fn within_bounds<N: PartialOrd>(v: Vector3<N>, b: Vector3<N>) -> bool
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct GlobalEnv {
     pub world: VoxelGrid,
-    pub agents: Vec<Agent>,
+    pub agents: HashMap<usize, Agent>,
+    pub povs: HashMap<usize, PovData>,
 }
 
 // Dynamic height voxel grid.
@@ -102,12 +103,12 @@ pub struct ArtifactNoise {
 }
 
 impl GlobalEnv {
-    pub fn agent(&self, id: usize) -> Option<&Agent> {
-        self.agents.iter().find(|a| a.id == id)
+    pub fn agent(&self, id: &usize) -> Option<&Agent> {
+        self.agents.get(id)
     }
 
-    pub fn agent_mut(&mut self, id: usize) -> Option<&mut Agent> {
-        self.agents.iter_mut().find(|a| a.id == id)
+    pub fn agent_mut(&mut self, id: &usize) -> Option<&mut Agent> {
+        self.agents.get_mut(id)
     }
 }
 

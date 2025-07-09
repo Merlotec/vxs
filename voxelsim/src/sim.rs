@@ -3,13 +3,10 @@ use std::time::{Duration, SystemTime};
 use crate::{
     agent::{Agent, AgentDynamics},
     env::{CollisionShell, GlobalEnv},
+    viewport::{self, CameraView, VirtualGrid},
 };
 
 impl GlobalEnv {
-    pub fn get_agent_by_id(&self, id: usize) -> Option<&Agent> {
-        self.agents.iter().find(|agent| agent.id == id)
-    }
-
     pub fn n_step(&mut self, dynamics: &AgentDynamics, delta: f32, n: usize) {
         for _ in 0..n {
             self.step(dynamics, delta);
@@ -17,7 +14,7 @@ impl GlobalEnv {
     }
 
     pub fn step(&mut self, dynamics: &AgentDynamics, delta: f32) {
-        for a in self.agents.iter_mut() {
+        for (_id, a) in self.agents.iter_mut() {
             // Move the agent according to its current action.
             a.step(dynamics, delta);
         }
@@ -37,7 +34,7 @@ impl GlobalEnv {
 
         // Handle any collisions first (agent <-> environment)
         let mut cols: Vec<(Agent, CollisionShell)> = Vec::new();
-        for agent in self.agents.clone().iter() {
+        for (_id, agent) in self.agents.clone().iter() {
             let collisions = self.world.collisions(agent.pos, dynamics.bounding_box);
             if !collisions.is_empty() {
                 cols.push((agent.clone(), collisions));
@@ -70,7 +67,7 @@ impl GlobalEnv {
 
             // Handle any collisions first (agent <-> environment)
             let mut cols: Vec<(Agent, CollisionShell)> = Vec::new();
-            for agent in self.agents.clone().iter() {
+            for (_id, agent) in self.agents.clone().iter() {
                 let collisions = self.world.collisions(agent.pos, dynamics.bounding_box);
                 if !collisions.is_empty() {
                     cols.push((agent.clone(), collisions));
@@ -87,6 +84,29 @@ impl GlobalEnv {
             let wait = target_time - elapsed;
             if wait > 0.0 {
                 std::thread::sleep(Duration::from_secs_f32(wait));
+            }
+        }
+    }
+
+    pub fn update_povs(&mut self) {
+        let povs = self.agents.iter().map(|(id, a)| {
+            let camera = a.camera();
+            let im = viewport::raycast_slice(&self.world, camera, 16, 9);
+            let vw = VirtualGrid::world_from_intersection_map(im);
+            (*id, vw, camera)
+        });
+
+        for (id, vw, camera) in povs {
+            if let Some(pov) = self.povs.get_mut(&id) {
+                pov.virtual_world.merge(vw, &camera);
+            } else {
+                self.povs.insert(
+                    id,
+                    crate::PovData {
+                        virtual_world: vw,
+                        agent_id: id,
+                    },
+                );
             }
         }
     }

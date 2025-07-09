@@ -1,3 +1,4 @@
+use bevy::platform::collections::HashMap;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Vector3;
@@ -31,7 +32,7 @@ pub fn run_pov_server(port_offset: u16) {
             + port_offset,
     );
 
-    let (mut agent_sub, agent_receiver) = NetworkSubscriber::<Vec<Agent>>::new(
+    let (mut agent_sub, agent_receiver) = NetworkSubscriber::<HashMap<usize, Agent>>::new(
         std::env::var("VXS_AGENT_ADDR").unwrap_or("172.0.0.1".to_string()),
         std::env::var("VXS_AGENT_PORT")
             .ok()
@@ -69,7 +70,7 @@ pub enum GuiCommand {
 
 pub fn begin_render(
     pov_receiver: Receiver<PovData>,
-    agent_receiver: Receiver<Vec<Agent>>,
+    agent_receiver: Receiver<HashMap<usize, Agent>>,
     gui_sender: Sender<GuiCommand>,
     quit_receiver: Receiver<()>,
 ) {
@@ -211,27 +212,36 @@ fn update_pov_camera(camera_transform: &mut Transform, agent_pos: &Vec3, agent: 
     // Position camera at agent center
     camera_transform.translation = *agent_pos;
 
-    // Calculate velocity-based horizontal rotation
-    let velocity = Vec3::new(agent.vel.x, 0.0, agent.vel.z); // Only horizontal component
-    let horizontal_direction = if velocity.length() > 0.001 {
-        velocity.normalize()
-    } else {
-        Vec3::NEG_Z // Default forward direction
-    };
+    // Use Agent's camera method to get CameraView
+    // Default FOV and max distance values - these could be configurable
+    let fov_horizontal = 90.0_f32.to_radians();
+    let fov_vertical = 60.0_f32.to_radians();
+    let max_distance = 100.0;
 
-    // Calculate thrust magnitude for tilt
-    let thrust_magnitude = Vec3::new(agent.thrust.x, agent.thrust.y, agent.thrust.z).length();
+    let camera_view = agent.camera();
 
-    // Tilt factor: higher thrust = more downward tilt
-    // Scale thrust to reasonable tilt range (0 to 45 degrees)
-    let max_tilt_degrees: f32 = 45.0;
-    let tilt_radians = (thrust_magnitude * 0.1).min(1.0) * max_tilt_degrees.to_radians();
+    // Convert CameraView vectors to Bevy Vec3
+    let forward = Vec3::new(
+        camera_view.camera_forward.x,
+        camera_view.camera_forward.y,
+        camera_view.camera_forward.z,
+    );
+    let up = Vec3::new(
+        camera_view.camera_up.x,
+        camera_view.camera_up.y,
+        camera_view.camera_up.z,
+    );
 
-    // Create rotation: face horizontal velocity direction, then tilt down based on thrust
-    let yaw = (-horizontal_direction.x).atan2(-horizontal_direction.z);
-    let pitch = -tilt_radians; // Negative for downward tilt
-
-    camera_transform.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
+    // Create rotation from forward and up vectors
+    camera_transform.rotation = Quat::from_mat3(&Mat3::from_cols(
+        Vec3::new(
+            camera_view.camera_right.x,
+            camera_view.camera_right.y,
+            camera_view.camera_right.z,
+        ),
+        up,
+        -forward, // Bevy uses -Z as forward
+    ));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -282,7 +292,7 @@ fn synchronise_world(
         // Update the action space of the drones.
         let mut action_cells: Vec<Vector3<i32>> = Vec::new();
         let mut origin_cells: Vec<Vector3<i32>> = Vec::new();
-        for agent in agents.iter() {
+        for (_id, agent) in agents.iter() {
             if let Some(action) = &agent.action {
                 let mut buf = action.origin;
                 origin_cells.push(buf);
@@ -346,7 +356,7 @@ fn synchronise_world(
 
         for (entity, mut agent, mut transform) in agent_query.iter_mut() {
             let mut keep = false;
-            agents.retain(|a| {
+            agents.retain(|_id, a| {
                 if agent.agent.id == a.id {
                     transform.translation = Vec3::from_array(a.pos.into());
                     agent.agent = a.clone();
@@ -362,7 +372,7 @@ fn synchronise_world(
             }
         }
 
-        for a in agents.iter() {
+        for (_id, a) in agents.iter() {
             commands.spawn((
                 AgentComponent { agent: a.clone() },
                 Mesh3d(assets.drone_mesh.clone()),

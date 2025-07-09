@@ -1,7 +1,6 @@
 use nalgebra::Vector3;
 use pyo3::exceptions::PyException;
 use pyo3::{prelude::*, IntoPyObjectExt};
-use std::collections::HashMap;
 use tinyvec::ArrayVec;
 
 use crate::{
@@ -45,11 +44,7 @@ impl RendererClient {
 impl GlobalEnv {
     #[new]
     pub fn new(world: VoxelGrid, agents: HashMap<usize, Agent>) -> Self {
-        Self {
-            world,
-            agents,
-            povs: HashMap::new(),
-        }
+        Self { world, agents }
     }
 
     pub fn update_with_callback(
@@ -84,14 +79,9 @@ impl GlobalEnv {
             .map_err(|e| PyException::new_err(e.to_string()))
     }
 
-    pub fn send_pov(
-        &self,
-        client: &mut RendererClient,
-        stream_idx: usize,
-        agent_id: usize,
-    ) -> PyResult<()> {
+    pub fn send_pov(&self, client: &mut RendererClient, agent_id: usize) -> PyResult<()> {
         if let Some(pov) = self.povs.get(&agent_id) {
-            client.send_pov(stream_idx, pov);
+            client.send_pov(pov);
             Ok(())
         } else {
             Err(PyException::new_err(format!(
@@ -106,8 +96,8 @@ impl GlobalEnv {
         agent_id: usize,
         cmds: Vec<MoveCommand>,
     ) -> PyResult<()> {
-        self.agent_mut(&agent_id)
-            .ok_or_else(|| PyException::new_err(format!("no agent with id: {}", agent_id)))?
+        self.agent_mut(agent_id)
+            .ok_or_else(|| PyException::new_err(format!("no agent with id: {}", &agent_id)))?
             .perform_sequence(cmds);
         Ok(())
     }

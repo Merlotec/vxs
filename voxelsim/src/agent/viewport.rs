@@ -106,7 +106,7 @@ impl IntersectionMap {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct VirtualGrid {
     pub cells: HashMap<Coord, VirtualCell>,
@@ -121,7 +121,7 @@ impl VirtualGrid {
 
     /// Merge two virtual grids based on camera frustum and priority
     /// Checks ALL cells within the frustum, including empty space
-    pub fn merge(mut self, other: VirtualGrid, camera: &CameraView) -> Self {
+    pub fn merge(&mut self, other: VirtualGrid, camera: &CameraView) {
         // Get all coordinates within the camera frustum
         let frustum_coords = camera.get_frustum_coords();
 
@@ -137,7 +137,7 @@ impl VirtualGrid {
                 (Some(self_cell), Some(other_cell)) => {
                     // Both grids have a cell at this coordinate - keep higher priority
                     if other_cell.priority() > self_cell.priority() {
-                        self.cells.insert(coord, other_cell.clone());
+                        self.cells.insert(coord, *other_cell);
                     }
                     // If self_cell has higher priority, keep it (do nothing)
                 }
@@ -150,7 +150,7 @@ impl VirtualGrid {
                 }
                 (None, Some(other_cell)) => {
                     // Only other has a cell - add it
-                    self.cells.insert(coord, other_cell.clone());
+                    self.cells.insert(coord, *other_cell);
                 }
                 (None, None) => {
                     // Neither grid has a cell (empty space) - check if we should remove any existing cell
@@ -165,8 +165,6 @@ impl VirtualGrid {
             let distance_to_camera = camera.distance_to(coord);
             cell.uncertainty < distance_to_camera
         });
-
-        self
     }
 
     pub fn world_from_intersection_map(map: IntersectionMap) -> VirtualGrid {
@@ -261,6 +259,7 @@ impl VirtualGrid {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct CameraView {
     pub camera_pos: Vector3<f32>,
     pub camera_forward: Vector3<f32>,

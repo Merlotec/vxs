@@ -2,6 +2,7 @@ use crate::viewport::VirtualGrid;
 use crate::{Agent, VoxelGrid};
 use serde::{Deserialize, Serialize};
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::net::TcpStream;
 
@@ -62,7 +63,10 @@ impl RendererClient {
         }
     }
 
-    pub fn send_agents(&mut self, data: &[Agent]) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn send_agents(
+        &mut self,
+        data: &HashMap<usize, Agent>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ref mut stream) = self.agent_stream {
             Self::send_data(data, stream)
         } else {
@@ -72,18 +76,13 @@ impl RendererClient {
 
     pub fn send_pov(
         &mut self,
-        pov_idx: usize,
-        agent_id: usize,
-        virtual_world: &VirtualGrid,
+        stream_idx: usize,
+        data: &PovData,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let data = PovView {
-            virtual_world,
-            agent_id,
-        };
-        if let Some(ref mut stream) = self.pov_streams.get_mut(pov_idx) {
+        if let Some(ref mut stream) = self.pov_streams.get_mut(stream_idx) {
             Self::send_data(data, stream)
         } else {
-            Err("Not connected to agent port".into())
+            Err("Not connected to pov port".into())
         }
     }
 
@@ -116,13 +115,7 @@ impl Drop for RendererClient {
     }
 }
 
-#[derive(Serialize)]
-struct PovView<'a> {
-    virtual_world: &'a VirtualGrid,
-    agent_id: usize,
-}
-
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PovData {
     pub virtual_world: VirtualGrid,
     pub agent_id: usize,

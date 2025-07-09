@@ -1,3 +1,4 @@
+use bevy::platform::collections::HashMap;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Vector3;
@@ -44,7 +45,7 @@ pub struct QuitReceiver(pub Receiver<()>);
 pub struct WorldReceiver(pub Receiver<VoxelGrid>);
 
 #[derive(Resource)]
-pub struct AgentReceiver(pub Receiver<Vec<Agent>>);
+pub struct AgentReceiver(pub Receiver<HashMap<usize, Agent>>);
 
 #[derive(Resource)]
 pub struct PovReceiver(pub Receiver<PovData>);
