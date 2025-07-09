@@ -148,6 +148,7 @@ impl Agent {
         self.pos += delta * self.vel + 0.5 * net_acc * delta * delta;
         self.vel += delta * net_acc;
 
+
         // Now we want to remove old commands if they have been 'passed'.
         if let Some(action) = &mut self.action {
             action.remove_expired_commands(self.pos)
@@ -209,6 +210,7 @@ impl Action {
         //let correction_weight = (0.2 + urgency * 0.2).clamp(0.0, 1.0);
         //let acc_dir = correction_dir * correction_weight + next_dir * (1.0 - correction_weight);
         let acc_dir = next_vel - current_vel;
+        
         //println!(
         //    "next_dir: {}. correction_dir: {}, correction_weight: {}",
         //    next_dir, correction_dir, correction_weight
