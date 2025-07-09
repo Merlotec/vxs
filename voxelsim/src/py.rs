@@ -101,6 +101,10 @@ impl GlobalEnv {
         }
     }
 
+    pub fn update_povs_py(&mut self) {
+        self.update_povs();
+    }
+
     pub fn perform_sequence_on_agent(
         &mut self,
         agent_id: usize,

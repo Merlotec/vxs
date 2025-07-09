@@ -89,15 +89,19 @@ impl GlobalEnv {
     }
 
     pub fn update_povs(&mut self) {
+        println!("preupdate");
         let povs = self.agents.iter().map(|(id, a)| {
             let camera = a.camera();
             let im = viewport::raycast_slice(&self.world, camera, 16, 9);
             let vw = VirtualGrid::world_from_intersection_map(im);
             (*id, vw, camera)
         });
+        println!("postupdate");
 
         for (id, vw, camera) in povs {
             if let Some(pov) = self.povs.get_mut(&id) {
+                println!("merge");
+
                 pov.virtual_world.merge(vw, &camera);
             } else {
                 self.povs.insert(
@@ -109,5 +113,6 @@ impl GlobalEnv {
                 );
             }
         }
+        println!("endd");
     }
 }
