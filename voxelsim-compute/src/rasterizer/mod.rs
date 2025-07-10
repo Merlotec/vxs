@@ -95,7 +95,7 @@ pub struct BufferSet {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CellInstance {
-    pub position: [f32; 3],
+    pub position: [i32; 3],
     pub value: u32,
 }
 
@@ -108,10 +108,10 @@ impl CellInstance {
                 wgpu::VertexAttribute {
                     offset: 0,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3,
+                    format: wgpu::VertexFormat::Sint32x3,
                 },
                 wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    offset: std::mem::size_of::<[i32; 3]>() as wgpu::BufferAddress,
                     shader_location: 2,
                     format: wgpu::VertexFormat::Uint32,
                 },
@@ -124,7 +124,7 @@ impl CellInstance {
             .cells()
             .iter()
             .map(|(p, v)| CellInstance {
-                position: [p[0] as f32, p[1] as f32, p[2] as f32],
+                position: *p,
                 value: v.bits(),
             })
             .collect::<Vec<_>>();
