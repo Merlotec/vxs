@@ -1,3 +1,8 @@
+const FILLED: u32 = 16;
+const SPARSE: u32 = 32;
+const GROUND: u32 = 64;
+const TARGET: u32 = 128;
+
 // The camera uniform that matches the CameraUniform struct in Rust.
 struct CameraUniform {
     view_proj: mat4x4<f32>,
@@ -35,6 +40,11 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let brightness = f32(in.metadata % 10u) * 0.05;
-    return vec4<f32>(0.3 + brightness, 0.4, 0.5 + brightness, 1.0);
+    // Check for the GROUND flag
+    if (in.value & GROUND) == GROUND {
+        return vec4<f32>(0.4, 0.3, 0.3, 1.0);
+    } else if (in.value & SPARSE) == SPARSE {
+        return vec4<f32>(0.3, 0.8, 0.3, 1.0);
+    } 
+    return vec4<f32>(0.1, 0.1, 0.1, 1.0);
 }
