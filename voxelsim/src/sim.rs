@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime};
 use crate::{
     agent::{Agent, AgentDynamics},
     env::{CollisionShell, GlobalEnv},
-    viewport::{self, CameraView, VirtualGrid},
+    viewport::{self, CameraView, IntersectionMap, VirtualGrid},
 };
 
 impl GlobalEnv {
@@ -89,19 +89,15 @@ impl GlobalEnv {
     }
 
     pub fn update_povs(&mut self) {
-        println!("preupdate");
         let povs = self.agents.iter().map(|(id, a)| {
             let camera = a.camera();
             let im = viewport::raycast_slice(&self.world, camera, 16, 9);
-            let vw = VirtualGrid::world_from_intersection_map(im);
+            let vw = VirtualGrid::world_from_intersection_map(&im);
             (*id, vw, camera)
         });
-        println!("postupdate");
 
         for (id, vw, camera) in povs {
             if let Some(pov) = self.povs.get_mut(&id) {
-                println!("merge");
-
                 pov.virtual_world.merge(vw, &camera);
             } else {
                 self.povs.insert(
@@ -113,6 +109,28 @@ impl GlobalEnv {
                 );
             }
         }
-        println!("endd");
+    }
+    pub fn update_pov(&mut self, agent_id: &usize) -> Option<IntersectionMap> {
+        let (vw, im, camera) = if let Some(agent) = self.agent(agent_id) {
+            let camera = agent.camera();
+            let im = viewport::raycast_slice(&self.world, camera, 16, 9);
+            let vw = VirtualGrid::world_from_intersection_map(&im);
+            (vw, im, camera)
+        } else {
+            return None;
+        };
+
+        if let Some(pov) = self.povs.get_mut(agent_id) {
+            pov.virtual_world.merge(vw, &camera);
+        } else {
+            self.povs.insert(
+                *agent_id,
+                crate::PovData {
+                    virtual_world: vw,
+                    agent_id: *agent_id,
+                },
+            );
+        }
+        Some(im)
     }
 }
