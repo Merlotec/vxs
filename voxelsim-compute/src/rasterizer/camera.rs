@@ -1,4 +1,4 @@
-use nalgebra::Matrix4;
+use nalgebra::{Matrix4, Vector3};
 use wgpu::util::DeviceExt;
 
 #[rustfmt::skip]
@@ -53,19 +53,37 @@ pub struct CameraUniform {
     pub view_proj: [[f32; 4]; 4],
 }
 
+impl Default for CameraUniform {
+    fn default() -> Self {
+        let v = nalgebra_glm::look_at_lh(
+            &Vector3::<f32>::new(0.0, 10.0, 0.0),
+            &Vector3::<f32>::new(-10.0, 0.0, -10.0),
+            &Vector3::<f32>::new(0.0, 1.0, 0.0),
+        );
+        let p = nalgebra_glm::perspective(1.4, 1.3, 1.0, 200.0);
+        Self::from_view_proj(p * v)
+    }
+}
+
 impl CameraUniform {
     const CAMERA_BUFFER_LABEL: &'static str = "CAMERA_BUFFER_LABEL";
 
-    pub fn create_buffer(device: &wgpu::Device, camera_view_proj: Matrix4<f32>) -> wgpu::Buffer {
-        let camera_uniform = CameraUniform {
-            view_proj: camera_view_proj.into(),
-        };
+    pub fn from_view_proj(camera_view_proj: Matrix4<f32>) -> Self {
+        Self {
+            view_proj: (camera_view_proj).into(),
+        }
+    }
 
+    pub fn create_buffer(&self, device: &wgpu::Device) -> wgpu::Buffer {
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(Self::CAMERA_BUFFER_LABEL),
-            contents: bytemuck::cast_slice(&[camera_uniform]),
+            contents: bytemuck::cast_slice(&[*self]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         camera_buffer
+    }
+
+    pub fn write_buffer(&self, queue: &wgpu::Queue, buffer: &wgpu::Buffer) {
+        queue.write_buffer(buffer, 0, bytemuck::cast_slice(&[*self]));
     }
 }

@@ -79,8 +79,8 @@ impl Vertex {
         });
         let ibuf = device.create_buffer_init(&BufferInitDescriptor {
             label: Some(Self::CUBE_INDEX_BUFFER_LABEL),
-            contents: bytemuck::cast_slice(Self::CUBE_VERTICES),
-            usage: wgpu::BufferUsages::VERTEX,
+            contents: bytemuck::cast_slice(Self::CUBE_INDICES),
+            usage: wgpu::BufferUsages::INDEX,
         });
 
         BufferSet {
@@ -226,6 +226,8 @@ impl RasterizerPipeline {
             camera_binding,
         }
     }
+
+    pub fn bind_and_draw(&self, encoder: wgpu::CommandEncoder) {}
 }
 
 pub struct RasterizerState {
@@ -234,10 +236,12 @@ pub struct RasterizerState {
     camera_buffer: wgpu::Buffer,
     rasterizer_pipeline: RasterizerPipeline,
     depth: TextureSet,
+    render_target: TextureSet,
 }
 
 impl RasterizerState {
     const DEPTH_TEXTURE_LABEL: &'static str = "DEPTH_TEXTURE_LABEL";
+    const RENDER_TEXTURE_LABEL: &'static str = "RENDER_TEXTURE_LABEL";
 
     pub fn create(
         device: &wgpu::Device,
@@ -249,8 +253,7 @@ impl RasterizerState {
 
         let instances: InstanceBuffer = CellInstance::create_instance_buffer(&device, world);
 
-        let camera_buffer: wgpu::Buffer =
-            camera::CameraUniform::create_buffer(&device, Matrix4::identity());
+        let camera_buffer: wgpu::Buffer = camera::CameraUniform::default().create_buffer(&device);
 
         let camera_binding: CameraBinding = CameraBinding::create(&device, &camera_buffer);
 
@@ -260,12 +263,76 @@ impl RasterizerState {
         let depth =
             TextureSet::create_depth_texture(device, texture_size, Self::DEPTH_TEXTURE_LABEL);
 
+        let render_target = TextureSet::create_render_target_texture(
+            device,
+            texture_size,
+            wgpu::TextureFormat::Rgba8UnormSrgb, //wgpu::TextureFormat::Rgba32Sint,
+            Self::RENDER_TEXTURE_LABEL,
+        );
+
         Self {
             cube_buffer,
             instances,
             camera_buffer,
             rasterizer_pipeline,
             depth,
+            render_target,
         }
+    }
+
+    pub fn update_camera_buffer(&self, queue: &wgpu::Queue, uniform: CameraUniform) {
+        uniform.write_buffer(queue, &self.camera_buffer);
+    }
+
+    pub fn encode(
+        &self,
+        mut encoder: wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+    ) -> wgpu::CommandBuffer {
+        //let view = &self.render_target.view;
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Voxel Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view, // Render to our texture
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None, // May have to set this to something.
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.rasterizer_pipeline.pipeline);
+            render_pass.set_bind_group(0, &self.rasterizer_pipeline.camera_binding.bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.cube_buffer.vertex.slice(..));
+            render_pass.set_vertex_buffer(1, self.instances.buf.slice(..));
+            render_pass
+                .set_index_buffer(self.cube_buffer.index.slice(..), wgpu::IndexFormat::Uint16);
+
+            render_pass.draw_indexed(
+                0..Vertex::CUBE_INDICES.len() as u32,
+                0,
+                0..self.instances.len,
+            );
+        }
+
+        encoder.finish()
     }
 }

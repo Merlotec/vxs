@@ -1,9 +1,9 @@
 use nalgebra::Vector2;
 
 pub struct TextureSet {
-    texture: wgpu::Texture,
-    view: wgpu::TextureView,
-    sampler: wgpu::Sampler,
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    pub sampler: wgpu::Sampler,
 }
 
 impl TextureSet {
