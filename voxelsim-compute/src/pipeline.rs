@@ -124,7 +124,7 @@ impl State {
     }
 
     // The main rendering function.
-    pub fn rasterize(&mut self, camera_matrix: &CameraMatrix) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self, camera_matrix: &CameraMatrix) -> Result<(), wgpu::SurfaceError> {
         // Get the current texture to render to from the swap chain.
         let output = self.surface.get_current_texture()?;
         let view = output

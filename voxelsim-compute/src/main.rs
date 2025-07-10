@@ -52,7 +52,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 let cam = CameraMatrix::default();
-                state.rasterize(&cam).unwrap();
+                state.render(&cam).unwrap();
                 // Emits a new redraw requested event.
                 state.window.request_redraw();
             }
@@ -84,17 +84,7 @@ fn main() {
     // the background.
     // event_loop.set_control_flow(ControlFlow::Wait);
     let mut world = VoxelGrid::default();
-
-    world.generate_terrain(&TerrainConfig {
-        seed: 100,
-        ..Default::default()
-    });
-
-    let mut sy = 0.0;
-    for (v, _) in world.cells().iter() {
-        sy += v[1] as f32;
-    }
-    println!("size: {}", sy / world.cells().len() as f32);
+    world.generate_terrain(&TerrainConfig::default());
 
     let mut app = App::new(world);
     event_loop.run_app(&mut app).unwrap();
