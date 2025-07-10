@@ -1,4 +1,4 @@
-use crate::rasterizer::camera::{CameraBinding, CameraUniform};
+use crate::rasterizer::camera::CameraMatrix;
 use crate::rasterizer::{self, InstanceBuffer};
 use crate::rasterizer::{BufferSet, RasterizerState};
 use nalgebra::Matrix4;
@@ -48,13 +48,12 @@ impl State {
         // The queue is used to submit command buffers to the GPU.
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                required_features: wgpu::Features::empty(), // Add features you need here
+                required_features: wgpu::Features::PUSH_CONSTANTS, // Add features you need here
                 // WebGL doesn't support all of wgpu's features, so if
                 // we're building for the web we'll have to disable some.
-                required_limits: if cfg!(target_arch = "wasm32") {
-                    wgpu::Limits::downlevel_webgl2_defaults()
-                } else {
-                    wgpu::Limits::default()
+                required_limits: wgpu::Limits {
+                    max_push_constant_size: 64, // Size of mat4x4<f32>
+                    ..wgpu::Limits::default()
                 },
                 label: None,
                 trace: wgpu::Trace::Off,
@@ -125,7 +124,7 @@ impl State {
     }
 
     // The main rendering function.
-    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    pub fn rasterize(&mut self, camera_matrix: &CameraMatrix) -> Result<(), wgpu::SurfaceError> {
         // Get the current texture to render to from the swap chain.
         let output = self.surface.get_current_texture()?;
         let view = output
@@ -139,7 +138,7 @@ impl State {
                 label: Some("Main Encoder"),
             });
 
-        let cmd_buf = self.rasterizer_state.encode(encoder, &view);
+        let cmd_buf = self.rasterizer_state.encode(encoder, &view, camera_matrix);
         self.queue.submit(std::iter::once(cmd_buf));
         output.present();
 

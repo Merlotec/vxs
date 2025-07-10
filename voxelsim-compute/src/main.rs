@@ -13,6 +13,8 @@ use std::sync::Arc;
 
 use pipeline::State;
 
+use crate::rasterizer::camera::CameraMatrix;
+
 #[derive(Default)]
 struct App {
     state: Option<State>,
@@ -49,7 +51,8 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                state.render().unwrap();
+                let cam = CameraMatrix::default();
+                state.rasterize(&cam).unwrap();
                 // Emits a new redraw requested event.
                 state.window.request_redraw();
             }
