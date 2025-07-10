@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use tinyvec::ArrayVec;
 
 use crate::{
-    agent::{Action, Agent, AgentDynamics, CmdSequence, MoveCommand, MoveDir},
+    agent::{
+        viewport::IntersectionMap, Action, Agent, AgentDynamics, CmdSequence, MoveCommand, MoveDir,
+    },
     env::{GlobalEnv, VoxelGrid},
     network::RendererClient,
     terrain::TerrainConfig,
@@ -21,6 +23,7 @@ pub fn voxelsim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<MoveCommand>()?;
     m.add_class::<AgentDynamics>()?;
     m.add_class::<RendererClient>()?;
+    m.add_class::<IntersectionMap>()?;
     Ok(())
 }
 
@@ -103,6 +106,12 @@ impl GlobalEnv {
 
     pub fn update_povs_py(&mut self) {
         self.update_povs();
+    }
+
+    pub fn update_pov_py(&mut self, py: Python, agent_id: usize) -> PyResult<Py<IntersectionMap>> {
+        self.update_pov(&agent_id)
+            .ok_or_else(|| PyException::new_err(format!("no agent with id: {}", agent_id)))
+            .and_then(|x| Py::new(py, x))
     }
 
     pub fn perform_sequence_on_agent(
@@ -367,6 +376,16 @@ impl MoveDir {
             MoveDir::None => MoveDir::None,
             MoveDir::Undecided => MoveDir::Undecided,
         }
+    }
+}
+
+#[pymethods]
+impl IntersectionMap {
+    pub fn hit_count(&self) -> usize {
+        self.intersections
+            .iter()
+            .map(|x| if x.is_some() { 1usize } else { 0usize })
+            .sum()
     }
 }
 

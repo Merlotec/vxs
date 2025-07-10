@@ -1,0 +1,11 @@
+[package]
+name = "voxelsim-compute"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytemuck = "1.23.1"
+nalgebra = "0.33.2"
+voxelsim = { path = "../voxelsim" }
+wgpu = "26.0.0"
+winit = "0.30.11"
