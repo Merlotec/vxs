@@ -1,16 +1,14 @@
 pub mod camera;
 pub mod texture;
 
+use crate::rasterizer::texture::TextureSet;
+use camera::CameraMatrix;
 use nalgebra::Matrix4;
 use voxelsim::VoxelGrid;
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
     Buffer,
 };
-
-use camera::CameraBinding;
-
-use crate::rasterizer::{camera::CameraUniform, texture::TextureSet};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -58,14 +56,13 @@ impl Vertex {
         4, 5, 1, 4, 1, 0, // Bottom
     ];
 
-    // Describes how to pass this struct to the vertex shader.
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[wgpu::VertexAttribute {
                 offset: 0,
-                shader_location: 0, // Corresponds to @location(0) in the vertex shader
+                shader_location: 0,
                 format: wgpu::VertexFormat::Float32x3,
             }],
         }
@@ -106,18 +103,16 @@ impl CellInstance {
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<CellInstance>() as wgpu::BufferAddress,
-            // This is the important part for instancing
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
                 wgpu::VertexAttribute {
                     offset: 0,
-                    shader_location: 1, // Corresponds to @location(1) for position
+                    shader_location: 1,
                     format: wgpu::VertexFormat::Float32x3,
                 },
-                // NEW: Attribute for metadata
                 wgpu::VertexAttribute {
                     offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
-                    shader_location: 2, // Corresponds to @location(2) for metadata
+                    shader_location: 2,
                     format: wgpu::VertexFormat::Uint32,
                 },
             ],
@@ -135,7 +130,6 @@ impl CellInstance {
             .collect::<Vec<_>>();
 
         let instance_len = instance_data.len();
-
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Instance Buffer"),
             contents: bytemuck::cast_slice(&instance_data),
@@ -157,22 +151,21 @@ pub struct InstanceBuffer {
 pub struct RasterizerPipeline {
     pub pipeline_layout: wgpu::PipelineLayout,
     pub pipeline: wgpu::RenderPipeline,
-    pub camera_binding: CameraBinding,
 }
 
 impl RasterizerPipeline {
-    pub fn create_pipeline(
-        device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
-        camera_binding: CameraBinding,
-    ) -> Self {
+    pub fn create_pipeline(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
         let shader =
             device.create_shader_module(wgpu::include_wgsl!("../../shaders/voxelview.wgsl"));
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[&camera_binding.layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[], // No longer need a bind group for the camera
+            // Add a push constant range for the camera matrix
+            push_constant_ranges: &[wgpu::PushConstantRange {
+                stages: wgpu::ShaderStages::VERTEX,
+                range: 0..std::mem::size_of::<CameraMatrix>() as u32,
+            }],
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -203,12 +196,11 @@ impl RasterizerPipeline {
                 unclipped_depth: false,
                 conservative: false,
             },
-            // NEW: Add depth stencil state
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less, // 1.
-                stencil: wgpu::StencilState::default(),     // 2.
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState {
@@ -223,7 +215,6 @@ impl RasterizerPipeline {
         Self {
             pipeline_layout,
             pipeline,
-            camera_binding,
         }
     }
 
@@ -233,7 +224,6 @@ impl RasterizerPipeline {
 pub struct RasterizerState {
     cube_buffer: BufferSet,
     instances: InstanceBuffer,
-    camera_buffer: wgpu::Buffer,
     rasterizer_pipeline: RasterizerPipeline,
     depth: TextureSet,
     render_target: TextureSet,
@@ -250,15 +240,10 @@ impl RasterizerState {
         texture_size: [u32; 2],
     ) -> Self {
         let cube_buffer: BufferSet = Vertex::create_cube_buffer(&device);
-
         let instances: InstanceBuffer = CellInstance::create_instance_buffer(&device, world);
 
-        let camera_buffer: wgpu::Buffer = camera::CameraUniform::default().create_buffer(&device);
-
-        let camera_binding: CameraBinding = CameraBinding::create(&device, &camera_buffer);
-
-        let rasterizer_pipeline =
-            RasterizerPipeline::create_pipeline(&device, config, camera_binding);
+        // Camera buffer and binding are no longer needed here
+        let rasterizer_pipeline = RasterizerPipeline::create_pipeline(&device, config);
 
         let depth =
             TextureSet::create_depth_texture(device, texture_size, Self::DEPTH_TEXTURE_LABEL);
@@ -266,35 +251,33 @@ impl RasterizerState {
         let render_target = TextureSet::create_render_target_texture(
             device,
             texture_size,
-            wgpu::TextureFormat::Rgba8UnormSrgb, //wgpu::TextureFormat::Rgba32Sint,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
             Self::RENDER_TEXTURE_LABEL,
         );
 
         Self {
             cube_buffer,
             instances,
-            camera_buffer,
             rasterizer_pipeline,
             depth,
             render_target,
         }
     }
 
-    pub fn update_camera_buffer(&self, queue: &wgpu::Queue, uniform: CameraUniform) {
-        uniform.write_buffer(queue, &self.camera_buffer);
-    }
+    // This function is no longer needed
+    // pub fn update_camera_buffer(&self, queue: &wgpu::Queue, uniform: CameraUniform)
 
     pub fn encode(
         &self,
         mut encoder: wgpu::CommandEncoder,
         view: &wgpu::TextureView,
+        camera_uniform: &CameraMatrix, // Pass camera data directly
     ) -> wgpu::CommandBuffer {
-        //let view = &self.render_target.view;
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Voxel Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view, // Render to our texture
+                    view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -305,7 +288,7 @@ impl RasterizerState {
                         }),
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None, // May have to set this to something.
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth.view,
@@ -320,7 +303,15 @@ impl RasterizerState {
             });
 
             render_pass.set_pipeline(&self.rasterizer_pipeline.pipeline);
-            render_pass.set_bind_group(0, &self.rasterizer_pipeline.camera_binding.bind_group, &[]);
+
+            // Set the push constant data for the vertex shader
+            render_pass.set_push_constants(
+                wgpu::ShaderStages::VERTEX,
+                0,
+                bytemuck::bytes_of(camera_uniform),
+            );
+
+            // The rest of the drawing logic remains the same
             render_pass.set_vertex_buffer(0, self.cube_buffer.vertex.slice(..));
             render_pass.set_vertex_buffer(1, self.instances.buf.slice(..));
             render_pass
