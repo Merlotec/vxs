@@ -55,12 +55,12 @@ pub struct CameraUniform {
 
 impl Default for CameraUniform {
     fn default() -> Self {
-        let v = nalgebra_glm::look_at_lh(
-            &Vector3::<f32>::new(0.0, 10.0, 0.0),
-            &Vector3::<f32>::new(-10.0, 0.0, -10.0),
+        let v = nalgebra_glm::look_at_rh(
+            &Vector3::<f32>::new(0.0, 80.0, 0.0),
+            &Vector3::<f32>::new(40.0, 0.0, 40.0),
             &Vector3::<f32>::new(0.0, 1.0, 0.0),
         );
-        let p = nalgebra_glm::perspective(1.4, 1.3, 1.0, 200.0);
+        let p = nalgebra_glm::perspective(1.4, 0.8, 1.0, 200.0);
         Self::from_view_proj(p * v)
     }
 }
