@@ -1,9 +1,9 @@
 use crate::rasterizer::camera::CameraMatrix;
-use crate::rasterizer::{self, InstanceBuffer};
+use crate::rasterizer::{self, CellInstance, InstanceBuffer};
 use crate::rasterizer::{BufferSet, RasterizerState};
 use nalgebra::Matrix4;
 use std::sync::Arc;
-use voxelsim::VoxelGrid;
+use voxelsim::{Cell, Coord, VoxelGrid};
 use winit::event_loop::ActiveEventLoop;
 use winit::{event::*, event_loop::EventLoop, window::Window};
 
@@ -16,6 +16,7 @@ pub struct State {
     pub config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
     pub rasterizer_state: RasterizerState,
+    pub filter_buffer: InstanceBuffer,
 }
 
 impl State {
@@ -86,8 +87,10 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        let rasterizer_state =
-            RasterizerState::create(&device, &config, world, [size.width, size.height]);
+        let rasterizer_state = RasterizerState::create(&device, world, [size.width, size.height]);
+
+        let filter_buffer =
+            CellInstance::create_instance_buffer_uninit(&device, world.cells().len());
 
         Self {
             window,
@@ -97,6 +100,7 @@ impl State {
             config,
             size,
             rasterizer_state,
+            filter_buffer,
         }
     }
 
@@ -110,38 +114,69 @@ impl State {
         }
     }
 
-    // Handles input events. Returns true if the event was fully processed.
-    #[allow(unused_variables)]
-    pub fn input(&mut self, event: &WindowEvent) -> bool {
-        // Return true if you handled the event, false otherwise.
-        // For example, camera controls would go here.
-        false
-    }
-
-    // Update application state (e.g., animations, physics).
-    pub fn update(&mut self) {
-        // This is where you would update your application logic before rendering.
-    }
-
     // The main rendering function.
-    pub fn render(&mut self, camera_matrix: &CameraMatrix) -> Result<(), wgpu::SurfaceError> {
+    pub async fn run(
+        &mut self,
+        camera_matrix: &CameraMatrix,
+        filter_world: &VoxelGrid,
+    ) -> Result<WorldChangeset, wgpu::SurfaceError> {
         // Get the current texture to render to from the swap chain.
-        let output = self.surface.get_current_texture()?;
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        //let output = self.surface.get_current_texture()?;
+        //let view = output
+        //    .texture
+        //    .create_view(&wgpu::TextureViewDescriptor::default());
 
         // A command encoder builds a command buffer that we can send to the GPU.
-        let encoder = self
+        let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Main Encoder"),
+                label: Some("Rasterizer Encoder"),
             });
 
-        let cmd_buf = self.rasterizer_state.encode(encoder, &view, camera_matrix);
-        self.queue.submit(std::iter::once(cmd_buf));
-        output.present();
+        self.rasterizer_state
+            .encode_rasterizer(&mut encoder, camera_matrix);
 
-        Ok(())
+        self.queue.submit(std::iter::once(encoder.finish()));
+        //output.present();
+
+        // Update filter buffer.
+        CellInstance::write_instance_buffer(&self.queue, &self.filter_buffer, filter_world); // Run filter stage.
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Filter Encoder"),
+            });
+
+        self.rasterizer_state.encode_filter(
+            &mut encoder,
+            camera_matrix,
+            &self.filter_buffer.buf,
+            self.filter_buffer.len,
+        );
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let to_insert = rasterizer::texture::extract_cells_from_texture(
+            &self.device,
+            &self.queue,
+            &self.rasterizer_state.render_target.texture,
+        )
+        .await;
+
+        let to_remove = self
+            .rasterizer_state
+            .filter
+            .get_filter_list(&self.device, &self.queue)
+            .await;
+
+        Ok(WorldChangeset {
+            to_remove,
+            to_insert,
+        })
     }
+}
+
+pub struct WorldChangeset {
+    pub to_insert: Vec<(Coord, Cell)>,
+    pub to_remove: Vec<Coord>,
 }
