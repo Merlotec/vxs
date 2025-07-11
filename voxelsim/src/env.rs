@@ -10,7 +10,7 @@ use tinyvec::ArrayVec;
 bitflags! {
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
     #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
-    pub struct Cell: u8 {
+    pub struct Cell: u32 {
         const DRONE_OCCUPIED    = 0b0000_0001;
         const DRONE_ADJACENT    = 0b0000_0010;
         const DRONE_HISTORIC    = 0b0000_0100;
