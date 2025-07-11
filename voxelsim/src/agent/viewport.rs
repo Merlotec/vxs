@@ -52,13 +52,16 @@ impl VirtualCell {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
-struct Intersection {
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
+pub struct Intersection {
     coord: Coord,
     spread: Vector2<f32>,
     ty: Cell,
 }
 
 /// Intersection map storing the first voxel coordinate hit by each ray
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct IntersectionMap {
     pub width: usize,
     pub height: usize,
@@ -167,7 +170,7 @@ impl VirtualGrid {
         });
     }
 
-    pub fn world_from_intersection_map(map: IntersectionMap) -> VirtualGrid {
+    pub fn world_from_intersection_map(map: &IntersectionMap) -> VirtualGrid {
         let mut virtual_grid = VirtualGrid::new();
         let base_scale = Vector2::<f32>::new(map.width as f32, map.height as f32);
 
@@ -247,7 +250,7 @@ impl VirtualGrid {
         let mut collisions = ArrayVec::new();
         // We only need to check the cubes around.
         assert!(dims.x < 1.0 && dims.y < 1.0 && dims.z < 1.0);
-        for cell_coord in crate::env::adjacent_coords(centre.try_cast::<i32>().unwrap()) {
+        for cell_coord in crate::env::adjacent_coords(centre.map(|e| e.round() as i32)) {
             let coord: [i32; 3] = cell_coord.into();
             if let Some(cell) = self.cells().get(&coord) {
                 if crate::env::intersects(cell_coord, centre, dims) {

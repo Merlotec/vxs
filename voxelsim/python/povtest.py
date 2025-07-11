@@ -57,9 +57,10 @@ while listener.running:
         env.perform_sequence_on_agent(0, commands)
 
     env.update_with_callback(dynamics, delta, lambda: None, lambda i: print("Collision!"))
-    env.update_povs_py()
+    # im = env.update_pov_py()
+    
     env.send_agents(client)
-    env.send_pov(client, 0, 0)
+    # env.send_pov(client, 0, 0)
     d = time.time() - t0
     if d < delta:
         time.sleep(delta - d)
