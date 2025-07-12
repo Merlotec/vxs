@@ -50,5 +50,4 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(0.3, 0.8, 0.3, 1.0); // Sparse voxel color
     }
     return vec4<f32>(0.1, 0.1, 0.1, 1.0); // Default color
-    return in.coord;
 }

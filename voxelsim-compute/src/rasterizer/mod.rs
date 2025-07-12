@@ -1,7 +1,8 @@
 pub mod camera;
+pub mod filter;
 pub mod texture;
 
-use crate::rasterizer::texture::TextureSet;
+use crate::rasterizer::{filter::FilterBindings, texture::TextureSet};
 use camera::CameraMatrix;
 use nalgebra::Matrix4;
 use voxelsim::VoxelGrid;
@@ -108,7 +109,7 @@ impl CellInstance {
                 wgpu::VertexAttribute {
                     offset: 0,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Sint32x3,
+                    format: wgpu::VertexFormat::Sint32x4,
                 },
                 wgpu::VertexAttribute {
                     offset: std::mem::size_of::<[i32; 3]>() as wgpu::BufferAddress,
@@ -117,6 +118,38 @@ impl CellInstance {
                 },
             ],
         }
+    }
+
+    pub fn create_instance_buffer_uninit(device: &wgpu::Device, len: usize) -> InstanceBuffer {
+        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Instance Buffer"),
+            size: (std::mem::size_of::<Self>() * len) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        InstanceBuffer {
+            buf: instance_buffer,
+            len: len as u32,
+        }
+    }
+
+    pub fn write_instance_buffer(
+        queue: &wgpu::Queue,
+        instance: &InstanceBuffer,
+        world: &VoxelGrid,
+    ) {
+        let instance_data = world
+            .cells()
+            .iter()
+            .map(|(p, v)| CellInstance {
+                position: *p,
+                value: v.bits(),
+            })
+            .collect::<Vec<_>>();
+        assert!(instance_data.len() <= instance.len as usize);
+
+        queue.write_buffer(&instance.buf, 0, bytemuck::cast_slice(&instance_data));
     }
 
     pub fn create_instance_buffer(device: &wgpu::Device, world: &VoxelGrid) -> InstanceBuffer {
@@ -154,9 +187,9 @@ pub struct RasterizerPipeline {
 }
 
 impl RasterizerPipeline {
-    pub fn create_pipeline(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+    pub fn create_pipeline(device: &wgpu::Device) -> Self {
         let shader =
-            device.create_shader_module(wgpu::include_wgsl!("../../shaders/voxelview.wgsl"));
+            device.create_shader_module(wgpu::include_wgsl!("../../shaders/voxelcoord.wgsl"));
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
@@ -181,8 +214,8 @@ impl RasterizerPipeline {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    format: wgpu::TextureFormat::Rgba32Sint,
+                    blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -218,112 +251,216 @@ impl RasterizerPipeline {
         }
     }
 
-    pub fn bind_and_draw(&self, encoder: wgpu::CommandEncoder) {}
+    pub fn create_filter_pipeline(
+        device: &wgpu::Device,
+        filter_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
+        let shader = device.create_shader_module(wgpu::include_wgsl!("../../shaders/filter.wgsl"));
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Render Pipeline Layout"),
+            bind_group_layouts: &[filter_layout],
+            push_constant_ranges: &[wgpu::PushConstantRange {
+                stages: wgpu::ShaderStages::VERTEX,
+                range: 0..std::mem::size_of::<CameraMatrix>() as u32,
+            }],
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Filter Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[Vertex::desc(), CellInstance::desc()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba32Sint,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline_layout,
+            pipeline,
+        }
+    }
 }
 
 pub struct RasterizerState {
     cube_buffer: BufferSet,
     instances: InstanceBuffer,
+    pub filter: FilterBindings,
     rasterizer_pipeline: RasterizerPipeline,
+    filter_pipeline: RasterizerPipeline,
     depth: TextureSet,
-    render_target: TextureSet,
+    pub render_target: TextureSet,
+    pub filter_render_target: TextureSet,
+    pub depth_sampler: wgpu::Sampler,
 }
 
 impl RasterizerState {
     const DEPTH_TEXTURE_LABEL: &'static str = "DEPTH_TEXTURE_LABEL";
     const RENDER_TEXTURE_LABEL: &'static str = "RENDER_TEXTURE_LABEL";
 
-    pub fn create(
-        device: &wgpu::Device,
-        config: &wgpu::SurfaceConfiguration,
-        world: &VoxelGrid,
-        texture_size: [u32; 2],
-    ) -> Self {
-        let cube_buffer: BufferSet = Vertex::create_cube_buffer(&device);
-        let instances: InstanceBuffer = CellInstance::create_instance_buffer(&device, world);
-
-        // Camera buffer and binding are no longer needed here
-        let rasterizer_pipeline = RasterizerPipeline::create_pipeline(&device, config);
-
+    pub fn create(device: &wgpu::Device, world: &VoxelGrid, texture_size: [u32; 2]) -> Self {
+        let cube_buffer: BufferSet = Vertex::create_cube_buffer(device);
+        let instances: InstanceBuffer = CellInstance::create_instance_buffer(device, world);
         let depth =
             TextureSet::create_depth_texture(device, texture_size, Self::DEPTH_TEXTURE_LABEL);
+        // TODO: Here we reserve more memory than we need (assuming insances.len is the max cells in the
+        // abstract world, which is not exactly true...!!).
+        let depth_sampler = texture::create_depth_sampler(device);
+        let filter =
+            FilterBindings::create(device, &depth.view, &depth_sampler, instances.len as usize);
+        // Camera buffer and binding are no longer needed here
+        let rasterizer_pipeline = RasterizerPipeline::create_pipeline(device);
+        let filter_pipeline = RasterizerPipeline::create_filter_pipeline(device, &filter.layout);
 
         let render_target = TextureSet::create_render_target_texture(
             device,
             texture_size,
-            wgpu::TextureFormat::Rgba8UnormSrgb,
+            wgpu::TextureFormat::Rgba32Sint,
+            Self::RENDER_TEXTURE_LABEL,
+        );
+
+        let filter_render_target = TextureSet::create_render_target_texture(
+            device,
+            texture_size,
+            wgpu::TextureFormat::Rgba32Sint,
             Self::RENDER_TEXTURE_LABEL,
         );
 
         Self {
             cube_buffer,
             instances,
+            filter,
             rasterizer_pipeline,
+            filter_pipeline,
             depth,
             render_target,
+            depth_sampler,
+            filter_render_target,
         }
     }
 
-    // This function is no longer needed
-    // pub fn update_camera_buffer(&self, queue: &wgpu::Queue, uniform: CameraUniform)
-
-    pub fn encode(
+    pub fn encode_rasterizer(
         &self,
-        mut encoder: wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
+        encoder: &mut wgpu::CommandEncoder,
         camera_uniform: &CameraMatrix, // Pass camera data directly
-    ) -> wgpu::CommandBuffer {
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Voxel Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth.view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
+    ) {
+        let view = &self.render_target.view;
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Voxel Render Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
                     }),
-                    stencil_ops: None,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth.view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
                 }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
 
-            render_pass.set_pipeline(&self.rasterizer_pipeline.pipeline);
+        render_pass.set_pipeline(&self.rasterizer_pipeline.pipeline);
 
-            // Set the push constant data for the vertex shader
-            render_pass.set_push_constants(
-                wgpu::ShaderStages::VERTEX,
-                0,
-                bytemuck::bytes_of(camera_uniform),
-            );
+        // Set the push constant data for the vertex shader
+        render_pass.set_push_constants(
+            wgpu::ShaderStages::VERTEX,
+            0,
+            bytemuck::bytes_of(camera_uniform),
+        );
 
-            // The rest of the drawing logic remains the same
-            render_pass.set_vertex_buffer(0, self.cube_buffer.vertex.slice(..));
-            render_pass.set_vertex_buffer(1, self.instances.buf.slice(..));
-            render_pass
-                .set_index_buffer(self.cube_buffer.index.slice(..), wgpu::IndexFormat::Uint16);
+        // The rest of the drawing logic remains the same
+        render_pass.set_vertex_buffer(0, self.cube_buffer.vertex.slice(..));
+        render_pass.set_vertex_buffer(1, self.instances.buf.slice(..));
+        render_pass.set_index_buffer(self.cube_buffer.index.slice(..), wgpu::IndexFormat::Uint16);
 
-            render_pass.draw_indexed(
-                0..Vertex::CUBE_INDICES.len() as u32,
-                0,
-                0..self.instances.len,
-            );
-        }
+        render_pass.draw_indexed(
+            0..Vertex::CUBE_INDICES.len() as u32,
+            0,
+            0..self.instances.len,
+        );
+    }
 
-        encoder.finish()
+    pub fn encode_filter(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        camera_uniform: &CameraMatrix,
+        filter_instance_buffer: &wgpu::Buffer,
+        filter_len: u32,
+    ) {
+        let view = &self.filter_render_target.view;
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Voxel Render Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        render_pass.set_pipeline(&self.filter_pipeline.pipeline);
+        render_pass.set_bind_group(0, &self.filter.group, &[]);
+        // Set the push constant data for the vertex shader
+        render_pass.set_push_constants(
+            wgpu::ShaderStages::VERTEX,
+            0,
+            bytemuck::bytes_of(camera_uniform),
+        );
+
+        // The rest of the drawing logic remains the same
+        render_pass.set_vertex_buffer(0, self.cube_buffer.vertex.slice(..));
+        render_pass.set_vertex_buffer(1, filter_instance_buffer.slice(..));
+        render_pass.set_index_buffer(self.cube_buffer.index.slice(..), wgpu::IndexFormat::Uint16);
+
+        render_pass.draw_indexed(0..Vertex::CUBE_INDICES.len() as u32, 0, 0..filter_len);
     }
 }

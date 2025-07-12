@@ -732,6 +732,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "bitflags",
+ "bytemuck",
  "nalgebra",
  "noise",
  "pyo3",

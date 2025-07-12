@@ -1,3 +1,4 @@
+pub mod buf;
 pub mod pipeline;
 pub mod rasterizer;
 
@@ -9,21 +10,25 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use std::sync::Arc;
+use std::{sync::Arc, time::SystemTime};
 
 use pipeline::State;
 
 use crate::rasterizer::camera::CameraMatrix;
 
-#[derive(Default)]
 struct App {
     state: Option<State>,
     world: VoxelGrid,
+    ts: SystemTime,
 }
 
 impl App {
     pub fn new(world: VoxelGrid) -> Self {
-        Self { state: None, world }
+        Self {
+            state: None,
+            world,
+            ts: SystemTime::now(),
+        }
     }
 }
 
@@ -52,8 +57,20 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 let cam = CameraMatrix::default();
-                state.render(&cam).unwrap();
-                // Emits a new redraw requested event.
+                let filter = VoxelGrid::new();
+                let change = pollster::block_on(state.run(&cam, &filter)).unwrap();
+                let mut vgrid = VoxelGrid::new();
+                //for (coord, cell) in change.to_insert {
+                //    vgrid.cells_mut().insert(coord, cell);
+                //}
+                let now = SystemTime::now();
+                let dur = now.duration_since(self.ts).unwrap();
+                self.ts = now;
+                println!(
+                    "filt: {}, fps: {}",
+                    vgrid.cells().len(),
+                    1.0 / dur.as_secs_f32()
+                );
                 state.window.request_redraw();
             }
             WindowEvent::Resized(size) => {
