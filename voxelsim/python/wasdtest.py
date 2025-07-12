@@ -3,7 +3,7 @@ import voxelsim, time
 
 world = voxelsim.VoxelGrid()
 world.generate_default_terrain(100)
-dynamics = voxelsim.AgentDynamics.default_drone()
+dynamics = voxelsim.AgentDynamics.default_drone()                                                        
 agent = voxelsim.Agent(0)
 env = voxelsim.GlobalEnv(world, {0: agent})
 
