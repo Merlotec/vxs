@@ -1,12 +1,13 @@
 use nalgebra::Vector3;
 use pyo3::exceptions::PyException;
-use pyo3::{prelude::*, IntoPyObjectExt};
+use pyo3::{IntoPyObjectExt, prelude::*};
 use std::collections::HashMap;
 use tinyvec::ArrayVec;
 
 use crate::{
     agent::{
-        viewport::IntersectionMap, Action, Agent, AgentDynamics, CmdSequence, MoveCommand, MoveDir,
+        Action, Agent, AgentDynamics, CmdSequence, MoveCommand, MoveDir,
+        viewport::{CameraProjection, IntersectionMap},
     },
     env::{GlobalEnv, VoxelGrid},
     network::RendererClient,
@@ -24,6 +25,7 @@ pub fn voxelsim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AgentDynamics>()?;
     m.add_class::<RendererClient>()?;
     m.add_class::<IntersectionMap>()?;
+    m.add_class::<CameraProjection>()?;
     Ok(())
 }
 
@@ -104,12 +106,17 @@ impl GlobalEnv {
         }
     }
 
-    pub fn update_povs_py(&mut self) {
-        self.update_povs();
+    pub fn update_povs_py(&mut self, proj: &CameraProjection) {
+        self.update_povs(proj);
     }
 
-    pub fn update_pov_py(&mut self, py: Python, agent_id: usize) -> PyResult<Py<IntersectionMap>> {
-        self.update_pov(&agent_id)
+    pub fn update_pov_py(
+        &mut self,
+        py: Python,
+        proj: &CameraProjection,
+        agent_id: usize,
+    ) -> PyResult<Py<IntersectionMap>> {
+        self.update_pov(proj, &agent_id)
             .ok_or_else(|| PyException::new_err(format!("no agent with id: {}", agent_id)))
             .and_then(|x| Py::new(py, x))
     }
@@ -563,10 +570,14 @@ impl AgentDynamics {
         format!(
             "AgentDynamics(air_resistance={:.2}, gravity=({:.1}, {:.1}, {:.1}), thrust={:.1}, thrust_urgency_ceiling={:.2}, bounding_box=({:.2}, {:.2}, {:.2}))",
             self.air_resistance,
-            self.g.x, self.g.y, self.g.z,
+            self.g.x,
+            self.g.y,
+            self.g.z,
             self.thrust,
             self.thrust_urgency_ceiling,
-            self.bounding_box.x, self.bounding_box.y, self.bounding_box.z
+            self.bounding_box.x,
+            self.bounding_box.y,
+            self.bounding_box.z
         )
     }
 
@@ -588,5 +599,17 @@ impl AgentDynamics {
     /// Get the bounding box volume
     pub fn bounding_box_volume(&self) -> f32 {
         self.bounding_box.x * self.bounding_box.y * self.bounding_box.z
+    }
+}
+
+#[pymethods]
+impl CameraProjection {
+    #[new]
+    pub fn new(fov_horizontal: f32, fov_vertical: f32, max_distance: f32) -> Self {
+        Self {
+            fov_horizontal,
+            fov_vertical,
+            max_distance,
+        }
     }
 }
