@@ -1,6 +1,6 @@
 use nalgebra::{Rotation3, Unit, Vector3};
 use serde::{Deserialize, Serialize};
-use tinyvec::{array_vec, ArrayVec};
+use tinyvec::{ArrayVec, array_vec};
 
 #[cfg(feature = "python")]
 use pyo3::pyclass;
@@ -10,23 +10,6 @@ use crate::viewport::CameraView;
 pub mod viewport;
 
 const STABLE_VEL: f32 = 4.0;
-
-#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
-pub struct CameraProjection {
-    fov_horizontal: f32,
-    fov_vertical: f32,
-    max_distance: f32,
-}
-
-impl Default for CameraProjection {
-    fn default() -> Self {
-        Self {
-            fov_horizontal: 70.0_f32.to_radians(),
-            fov_vertical: 40.0_f32.to_radians(),
-            max_distance: 1_000.0,
-        }
-    }
-}
 
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct AgentDynamics {
