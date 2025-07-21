@@ -268,11 +268,6 @@ pub struct CameraView {
     pub camera_forward: Vector3<f32>,
     pub camera_up: Vector3<f32>,
     pub camera_right: Vector3<f32>,
-
-    pub fov_horizontal: f32,
-    pub fov_vertical: f32,
-
-    pub max_distance: f32,
 }
 
 impl CameraView {
@@ -281,18 +276,12 @@ impl CameraView {
         camera_forward: Vector3<f32>,
         camera_up: Vector3<f32>,
         camera_right: Vector3<f32>,
-        fov_horizontal: f32,
-        fov_vertical: f32,
-        max_distance: f32,
     ) -> Self {
         Self {
             camera_pos,
             camera_forward,
             camera_up,
             camera_right,
-            fov_horizontal,
-            fov_vertical,
-            max_distance,
         }
     }
 

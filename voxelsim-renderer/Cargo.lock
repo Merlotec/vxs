@@ -4563,6 +4563,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "bitflags 2.9.1",
+ "bytemuck",
  "nalgebra",
  "noise",
  "rand 0.9.1",
