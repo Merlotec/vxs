@@ -2,11 +2,7 @@ use crate::AgentVisionRenderer;
 use crate::WorldChangeset;
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
-use voxelsim::{
-    agent::Agent,
-    env::VoxelGrid,
-    viewport::{CameraProjection, CameraView, VirtualGrid},
-};
+use voxelsim::viewport::{CameraProjection, CameraView, VirtualGrid};
 
 use pyo3::prelude::*;
 
