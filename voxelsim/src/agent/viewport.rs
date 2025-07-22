@@ -7,12 +7,28 @@ use std::time::SystemTime;
 
 use super::*;
 
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass(get_all, set_all))]
+pub struct CameraProjection {
+    pub fov_horizontal: f32,
+    pub fov_vertical: f32,
+    pub max_distance: f32,
+}
+
+impl Default for CameraProjection {
+    fn default() -> Self {
+        Self {
+            fov_horizontal: 70.0_f32.to_radians(),
+            fov_vertical: 40.0_f32.to_radians(),
+            max_distance: 1_000.0,
+        }
+    }
+}
 pub type VirtualCollisionShell = ArrayVec<[(Coord, VirtualCell); 26]>;
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct VirtualCell {
-    pub time: SystemTime,
     pub cell: Cell,
     pub uncertainty: f32,
 }
@@ -20,7 +36,6 @@ pub struct VirtualCell {
 impl Default for VirtualCell {
     fn default() -> Self {
         Self {
-            time: SystemTime::UNIX_EPOCH,
             cell: Cell::default(),
             uncertainty: Default::default(),
         }
@@ -32,22 +47,13 @@ impl VirtualCell {
     /// Higher priority = better/more reliable data
     pub fn priority(&self) -> f32 {
         // Priority is inverse of uncertainty, plus bonus for recent data
-        let age_bonus = match self.time.elapsed() {
-            Ok(duration) => {
-                let age_seconds = duration.as_secs_f32();
-                // Newer data gets higher priority (exponential decay)
-                (-age_seconds / 60.0).exp() // 1-minute half-life
-            }
-            Err(_) => 0.0, // Future timestamps get no bonus
-        };
-
         let uncertainty_priority = if self.uncertainty > 0.0 {
             1.0 / self.uncertainty
         } else {
             1000.0 // Very high priority for zero uncertainty
         };
 
-        uncertainty_priority + age_bonus
+        uncertainty_priority.min(1000.0)
     }
 }
 
@@ -124,9 +130,9 @@ impl VirtualGrid {
 
     /// Merge two virtual grids based on camera frustum and priority
     /// Checks ALL cells within the frustum, including empty space
-    pub fn merge(&mut self, other: VirtualGrid, camera: &CameraView) {
+    pub fn merge(&mut self, other: VirtualGrid, camera: &CameraView, proj: &CameraProjection) {
         // Get all coordinates within the camera frustum
-        let frustum_coords = camera.get_frustum_coords();
+        let frustum_coords = camera.get_frustum_coords(proj);
 
         // Process each coordinate in the frustum
         for coord in frustum_coords {
@@ -184,7 +190,6 @@ impl VirtualGrid {
                 block_scale,
                 grid_pos.coord,
                 VirtualCell {
-                    time: SystemTime::now(),
                     cell: grid_pos.ty,
                     uncertainty: dist,
                 },
@@ -205,7 +210,6 @@ impl VirtualGrid {
         centre_cell: VirtualCell,
     ) -> HashMap<Coord, VirtualCell> {
         let mut block_cells = HashMap::new();
-        let current_time = SystemTime::now();
         // Calculate the half-extent of the cube
         let half_scale = (scale as i32) / 2;
 
@@ -268,11 +272,6 @@ pub struct CameraView {
     pub camera_forward: Vector3<f32>,
     pub camera_up: Vector3<f32>,
     pub camera_right: Vector3<f32>,
-
-    pub fov_horizontal: f32,
-    pub fov_vertical: f32,
-
-    pub max_distance: f32,
 }
 
 impl CameraView {
@@ -281,29 +280,23 @@ impl CameraView {
         camera_forward: Vector3<f32>,
         camera_up: Vector3<f32>,
         camera_right: Vector3<f32>,
-        fov_horizontal: f32,
-        fov_vertical: f32,
-        max_distance: f32,
     ) -> Self {
         Self {
             camera_pos,
             camera_forward,
             camera_up,
             camera_right,
-            fov_horizontal,
-            fov_vertical,
-            max_distance,
         }
     }
 
     /// Check if a coordinate is within the camera frustum
-    pub fn is_in_frustum(&self, coord: Coord) -> bool {
+    pub fn is_in_frustum(&self, proj: &CameraProjection, coord: Coord) -> bool {
         let pos = Vector3::from(coord).cast::<f32>();
         let to_point = pos - self.camera_pos;
         let distance = to_point.norm();
 
         // Check distance
-        if distance > self.max_distance {
+        if distance > proj.max_distance {
             return false;
         }
 
@@ -316,14 +309,14 @@ impl CameraView {
         // Check horizontal FOV
         let right_dot = to_point.dot(&self.camera_right);
         let horizontal_angle = (right_dot / forward_dot).abs();
-        if horizontal_angle > (self.fov_horizontal * 0.5).tan() {
+        if horizontal_angle > (proj.fov_horizontal * 0.5).tan() {
             return false;
         }
 
         // Check vertical FOV
         let up_dot = to_point.dot(&self.camera_up);
         let vertical_angle = (up_dot / forward_dot).abs();
-        if vertical_angle > (self.fov_vertical * 0.5).tan() {
+        if vertical_angle > (proj.fov_vertical * 0.5).tan() {
             return false;
         }
 
@@ -338,13 +331,13 @@ impl CameraView {
 
     /// Get all coordinates within the camera frustum
     /// This generates a bounding box and tests each coordinate for frustum inclusion
-    pub fn get_frustum_coords(&self) -> Vec<Coord> {
+    pub fn get_frustum_coords(&self, proj: &CameraProjection) -> Vec<Coord> {
         let mut coords = Vec::new();
 
         // Calculate tighter bounding box based on frustum geometry
-        let max_dist = self.max_distance;
-        let half_fov_h = self.fov_horizontal * 0.5;
-        let half_fov_v = self.fov_vertical * 0.5;
+        let max_dist = proj.max_distance;
+        let half_fov_h = proj.fov_horizontal * 0.5;
+        let half_fov_v = proj.fov_vertical * 0.5;
 
         // Calculate the frustum extents at max distance
         let far_extent_h = max_dist * half_fov_h.tan();
@@ -375,7 +368,7 @@ impl CameraView {
                         camera_coord[2] + dz,
                     ];
 
-                    if self.is_in_frustum(coord) {
+                    if self.is_in_frustum(proj, coord) {
                         coords.push(coord);
                     }
                 }
@@ -390,13 +383,14 @@ impl CameraView {
 /// Cast rays in an n×m grid and return intersection map (direct memory writing)
 pub fn raycast_slice(
     world: &VoxelGrid,
-    camera: CameraView,
+    camera: &CameraView,
+    proj: &CameraProjection,
     width: usize,
     height: usize,
 ) -> IntersectionMap {
     // Calculate ray direction parameters once
-    let half_fov_h = camera.fov_horizontal * 0.5;
-    let half_fov_v = camera.fov_vertical * 0.5;
+    let half_fov_h = proj.fov_horizontal * 0.5;
+    let half_fov_v = proj.fov_vertical * 0.5;
     let tan_half_fov_h = half_fov_h.tan();
     let tan_half_fov_v = half_fov_v.tan();
     let step_x = (2.0 * tan_half_fov_h) / (width as f32 - 1.0);
@@ -440,8 +434,7 @@ pub fn raycast_slice(
                     .normalize();
 
                 // Perform DDA ray casting and store result directly in order
-                let hit =
-                    dda_raycast_static(world, camera.camera_pos, ray_dir, camera.max_distance);
+                let hit = dda_raycast_static(world, camera.camera_pos, ray_dir, proj.max_distance);
 
                 chunk_data.push(hit.map(|(h, ty)| Intersection {
                     ty,

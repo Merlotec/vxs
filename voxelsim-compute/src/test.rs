@@ -1,7 +1,9 @@
 pub mod buf;
+//pub mod compute;
 pub mod pipeline;
 pub mod rasterizer;
 
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use voxelsim::{TerrainConfig, VoxelGrid};
 use winit::{
     application::ApplicationHandler,
@@ -59,10 +61,13 @@ impl ApplicationHandler for App {
                 let cam = CameraMatrix::default();
                 let filter = VoxelGrid::new();
                 let change = pollster::block_on(state.run(&cam, &filter)).unwrap();
-                let mut vgrid = VoxelGrid::new();
-                //for (coord, cell) in change.to_insert {
-                //    vgrid.cells_mut().insert(coord, cell);
-                //}
+                let vgrid = VoxelGrid::with_capacity(10000);
+                change.to_insert.into_par_iter().for_each(|(coord, cell)| {
+                    vgrid.cells().insert(coord, cell);
+                });
+                change.to_remove.into_par_iter().for_each(|coord| {
+                    vgrid.cells().remove(&coord);
+                });
                 let now = SystemTime::now();
                 let dur = now.duration_since(self.ts).unwrap();
                 self.ts = now;
@@ -71,6 +76,7 @@ impl ApplicationHandler for App {
                     vgrid.cells().len(),
                     1.0 / dur.as_secs_f32()
                 );
+                // println!("fps: {}", 1.0 / dur.as_secs_f32());
                 state.window.request_redraw();
             }
             WindowEvent::Resized(size) => {

@@ -1,5 +1,6 @@
 use crate::{agent::Agent, PovData};
 use bitflags::bitflags;
+use dashmap::DashMap;
 use nalgebra::Vector3;
 #[cfg(feature = "python")]
 use pyo3::pyclass;
@@ -93,7 +94,7 @@ pub struct GlobalEnv {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct VoxelGrid {
-    cells: HashMap<Coord, Cell>,
+    cells: DashMap<Coord, Cell>,
 }
 
 pub struct ArtifactNoise {
@@ -115,7 +116,13 @@ impl GlobalEnv {
 impl VoxelGrid {
     pub fn new() -> Self {
         Self {
-            cells: HashMap::new(),
+            cells: DashMap::new(),
+        }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            cells: DashMap::with_capacity(capacity),
         }
     }
 
@@ -124,11 +131,11 @@ impl VoxelGrid {
             .retain(|k, _| within_bounds(Vector3::from(*k) - centre, bounds));
     }
 
-    pub fn cells(&self) -> &HashMap<Coord, Cell> {
+    pub fn cells(&self) -> &DashMap<Coord, Cell> {
         &self.cells
     }
 
-    pub fn cells_mut(&mut self) -> &mut HashMap<Coord, Cell> {
+    pub fn cells_mut(&mut self) -> &mut DashMap<Coord, Cell> {
         &mut self.cells
     }
 
@@ -142,7 +149,7 @@ impl VoxelGrid {
     }
 
     pub fn remove(&mut self, coord: &Coord) -> Option<Cell> {
-        self.cells.remove(coord)
+        self.cells.remove(coord).map(|x| x.1)
     }
 
     /// Returns a the list of cells if an object with the given centre coordinate and dimensions collides with any
