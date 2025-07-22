@@ -1,0 +1,19 @@
+[package]
+name = "voxelsim-compute-py"
+version = "0.1.0"
+edition = "2024"
+
+
+[lib]
+name = "voxelsim_compute_py"
+crate-type = ["rlib", "cdylib"]
+
+
+[dependencies]
+voxelsim = {path = "../voxelsim", features = ["python"] }
+pyo3 = { version = "0.25.1", features = ["extension-module"] }
+nalgebra = "0.33.2"
+
+[build]
+# Link the static voxelsim compute for rendering.
+rustflags = ["-L", "../voxelsim-compute/target/release/voxelsim-compute.dylib"]

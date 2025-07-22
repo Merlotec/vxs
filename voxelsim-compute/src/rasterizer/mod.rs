@@ -6,10 +6,10 @@ use crate::rasterizer::{filter::FilterBindings, texture::TextureSet};
 use camera::CameraMatrix;
 use nalgebra::Matrix4;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use voxelsim::VoxelGrid;
+use voxelsim::{viewport::VirtualGrid, VoxelGrid};
 use wgpu::{
-    Buffer,
     util::{BufferInitDescriptor, DeviceExt},
+    Buffer,
 };
 
 #[repr(C)]
@@ -138,7 +138,7 @@ impl CellInstance {
     pub fn write_instance_buffer(
         queue: &wgpu::Queue,
         instance: &InstanceBuffer,
-        world: &VoxelGrid,
+        world: &VirtualGrid,
     ) {
         let instance_data = world
             .cells()
@@ -147,7 +147,7 @@ impl CellInstance {
                 let (p, v) = r.pair();
                 CellInstance {
                     position: *p,
-                    value: v.bits(),
+                    value: v.cell.bits(),
                 }
             })
             .collect::<Vec<_>>();

@@ -1,4 +1,5 @@
-use nalgebra::{Matrix3, Vector2, Vector3};
+use dashmap::DashMap;
+use nalgebra::{Matrix3, Matrix4, Perspective3, Point3, Vector2, Vector3};
 use rayon::prelude::*;
 
 use crate::{Cell, Coord, VoxelGrid};
@@ -13,6 +14,21 @@ pub struct CameraProjection {
     pub fov_horizontal: f32,
     pub fov_vertical: f32,
     pub max_distance: f32,
+    pub near_distance: f32,
+}
+
+impl CameraProjection {
+    pub fn projection_matrix(&self) -> Matrix4<f32> {
+        let aspect = (self.fov_horizontal * 0.5).tan() / (self.fov_vertical * 0.5).tan();
+
+        Perspective3::new(
+            aspect,             // width/height
+            self.fov_vertical,  // vertical FOV (radians)
+            self.near_distance, // near plane
+            self.max_distance,  // far plane
+        )
+        .to_homogeneous()
+    }
 }
 
 impl Default for CameraProjection {
@@ -21,6 +37,7 @@ impl Default for CameraProjection {
             fov_horizontal: 70.0_f32.to_radians(),
             fov_vertical: 40.0_f32.to_radians(),
             max_distance: 1_000.0,
+            near_distance: 0.5,
         }
     }
 }
@@ -118,13 +135,19 @@ impl IntersectionMap {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct VirtualGrid {
-    pub cells: HashMap<Coord, VirtualCell>,
+    pub cells: DashMap<Coord, VirtualCell>,
 }
 
 impl VirtualGrid {
     pub fn new() -> Self {
         Self {
-            cells: HashMap::new(),
+            cells: DashMap::new(),
+        }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            cells: DashMap::with_capacity(capacity),
         }
     }
 
@@ -232,11 +255,11 @@ impl VirtualGrid {
             .retain(|k, _| crate::env::within_bounds(Vector3::from(*k) - centre, bounds));
     }
 
-    pub fn cells(&self) -> &HashMap<Coord, VirtualCell> {
+    pub fn cells(&self) -> &DashMap<Coord, VirtualCell> {
         &self.cells
     }
 
-    pub fn cells_mut(&mut self) -> &mut HashMap<Coord, VirtualCell> {
+    pub fn cells_mut(&mut self) -> &mut DashMap<Coord, VirtualCell> {
         &mut self.cells
     }
 
@@ -245,7 +268,7 @@ impl VirtualGrid {
     }
 
     pub fn remove(&mut self, coord: &Coord) -> Option<VirtualCell> {
-        self.cells.remove(coord)
+        self.cells.remove(coord).map(|x| x.1)
     }
 
     /// Returns a the list of cells if an object with the given centre coordinate and dimensions collides with any
@@ -267,6 +290,7 @@ impl VirtualGrid {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct CameraView {
     pub camera_pos: Vector3<f32>,
     pub camera_forward: Vector3<f32>,
@@ -287,6 +311,14 @@ impl CameraView {
             camera_up,
             camera_right,
         }
+    }
+
+    pub fn view_matrix(&self) -> Matrix4<f32> {
+        Matrix4::look_at_rh(
+            &Point3::from(self.camera_pos),                       // eye
+            &Point3::from(self.camera_pos + self.camera_forward), // target
+            &self.camera_up,                                      // up
+        )
     }
 
     /// Check if a coordinate is within the camera frustum
