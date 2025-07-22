@@ -1,4 +1,4 @@
-use crate::{agent::Agent, PovData};
+use crate::{PovData, agent::Agent};
 use bitflags::bitflags;
 use dashmap::DashMap;
 use nalgebra::Vector3;

@@ -8,11 +8,14 @@ pub mod py;
 
 use nalgebra::{Matrix4, Vector2};
 use pipeline::State;
+use std::collections::VecDeque;
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
-use voxelsim::VoxelGrid;
-use voxelsim::viewport::VirtualGrid;
+use std::time::SystemTime;
+use voxelsim::viewport::{CameraProjection, VirtualGrid};
+use voxelsim::{PovData, PovDataRef, RendererClient, VoxelGrid};
 
 use crate::{pipeline::WorldChangeset, rasterizer::camera::CameraMatrix};
 
@@ -97,6 +100,53 @@ mod ffi {
     }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
+pub struct RenderFrameId(u64);
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
+pub struct FilterWorld {
+    world: Arc<Mutex<VirtualGrid>>,
+    frames: Arc<Mutex<Vec<f64>>>,
+}
+
+impl Default for FilterWorld {
+    fn default() -> Self {
+        Self {
+            world: Arc::new(Mutex::new(VirtualGrid::with_capacity(1000))),
+            frames: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl FilterWorld {
+    pub fn update(&self, changeset: WorldChangeset) {
+        changeset.update_world(self.world.lock().unwrap().deref_mut())
+    }
+
+    pub fn is_updating(&self, timestamp: f64) -> bool {
+        self.frames.lock().unwrap().contains(&timestamp)
+    }
+
+    pub fn send_pov(
+        &self,
+        client: &mut RendererClient,
+        stream_idx: usize,
+        agent_id: usize,
+        proj: CameraProjection,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        client.send_pov_ref(
+            stream_idx,
+            &PovDataRef {
+                virtual_world: self.world.lock().unwrap().deref(),
+                agent_id,
+                proj,
+            },
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct AgentVisionRenderer {
@@ -142,6 +192,27 @@ impl AgentVisionRenderer {
                 }
             }
         }
+    }
+
+    pub fn update_filter_world(
+        &self,
+        view_proj: Matrix4<f32>,
+        filter_world: FilterWorld,
+        timestamp: f64,
+    ) {
+        filter_world.frames.lock().unwrap().push(timestamp);
+        let rx = self.render(view_proj, filter_world.world.clone());
+        std::thread::spawn(move || {
+            if let Ok(change) = rx.recv() {
+                let mut vgrid = filter_world.world.lock().unwrap();
+                change.update_world(vgrid.deref_mut());
+                filter_world
+                    .frames
+                    .lock()
+                    .unwrap()
+                    .retain(|x| *x != timestamp);
+            }
+        });
     }
 
     pub fn update_world(&self, view_proj: Matrix4<f32>, filter_world: Arc<Mutex<VirtualGrid>>) {

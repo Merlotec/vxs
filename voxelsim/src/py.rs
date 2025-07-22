@@ -7,10 +7,11 @@ use tinyvec::ArrayVec;
 use crate::{
     agent::{
         Action, Agent, AgentDynamics, CmdSequence, MoveCommand, MoveDir,
-        viewport::{CameraProjection, IntersectionMap},
+        viewport::{CameraProjection, CameraView, IntersectionMap},
     },
-    env::{GlobalEnv, VoxelGrid},
+    env::{CollisionShell, Coord, GlobalEnv, VoxelGrid},
     network::RendererClient,
+    sim::Collision,
     terrain::TerrainConfig,
 };
 
@@ -26,6 +27,7 @@ pub fn voxelsim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RendererClient>()?;
     m.add_class::<IntersectionMap>()?;
     m.add_class::<CameraProjection>()?;
+    m.add_class::<Collision>()?;
     Ok(())
 }
 
@@ -33,8 +35,20 @@ pub fn voxelsim(m: &Bound<'_, PyModule>) -> PyResult<()> {
 impl RendererClient {
     /// Creates a new Client.
     #[new]
-    fn new_py(host: String, world_port: u16, agent_port: u16, pov_start_port: u16) -> Self {
-        Self::new(&host, world_port, agent_port, pov_start_port)
+    fn new_py(
+        host: String,
+        world_port: u16,
+        agent_port: u16,
+        pov_start_port: u16,
+        pov_agent_start_port: u16,
+    ) -> Self {
+        Self::new(
+            &host,
+            world_port,
+            agent_port,
+            pov_start_port,
+            pov_agent_start_port,
+        )
     }
 
     /// Connects both world and agent ports.
@@ -57,24 +71,13 @@ impl GlobalEnv {
         }
     }
 
-    pub fn update_with_callback(
+    pub fn update_py(
         &mut self,
         py: Python,
         dynamics: &AgentDynamics,
         delta: f32,
-        step_f: PyObject,
-        collide_f: PyObject,
-    ) {
-        self.update(
-            dynamics,
-            delta,
-            |env| {
-                step_f.call1(py, (env.agents.clone(),));
-            },
-            |env, agent, shell| {
-                step_f.call1(py, (agent,));
-            },
-        );
+    ) -> Vec<Collision> {
+        self.update(dynamics, delta)
     }
 
     pub fn send_agents(&self, client: &mut RendererClient) -> PyResult<()> {
@@ -175,6 +178,10 @@ impl Agent {
         }
 
         self.perform(cmd_sequence);
+    }
+
+    pub fn camera_view_py(&self) -> CameraView {
+        self.camera_view()
     }
 }
 
@@ -617,5 +624,20 @@ impl CameraProjection {
             max_distance,
             near_distance,
         }
+    }
+    #[staticmethod]
+    pub fn default_py() -> Self {
+        Self::default()
+    }
+}
+
+#[pymethods]
+impl Collision {
+    pub fn agent_id(&self) -> usize {
+        self.agent_id
+    }
+
+    pub fn shell_coords(&self) -> Vec<Coord> {
+        self.shell.iter().map(|(coord, _)| *coord).collect()
     }
 }

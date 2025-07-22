@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use bevy::platform::collections::HashMap;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
@@ -169,7 +171,7 @@ fn synchronise_world(
 ) {
     if let Some(mut world) = world.0.try_iter().last() {
         for (entity, mut cell, mut material) in cell_query.iter_mut() {
-            if let Some(v) = world.cells().get(&cell.coord).copied() {
+            if let Some(v) = world.cells().get(&cell.coord).map(|x| *x) {
                 cell.value = v;
                 // Change visual type.
                 **material = assets.material_for_cell(&v);
@@ -182,7 +184,8 @@ fn synchronise_world(
         // Add remaining cells.render.rs
 
         // Add remaining cells.
-        for (coord, cell) in world.cells().iter() {
+        for rm in world.cells().iter() {
+            let (coord, cell) = rm.pair();
             commands.spawn((
                 CellComponent {
                     // <-- NEW
