@@ -182,7 +182,8 @@ impl AgentVisionRenderer {
                     filter_world,
                     sender,
                 } => {
-                    let camera_matrix = CameraMatrix::from_view_proj(view_proj);
+                    // let camera_matrix = CameraMatrix::from_view_proj(view_proj);
+                    let camera_matrix = CameraMatrix::default();
                     if let Ok(changeset) = state
                         .run(&camera_matrix, filter_world.lock().unwrap().deref())
                         .await

@@ -35,11 +35,11 @@ pub fn run_pov_server(port_offset: u16) {
     );
 
     let (mut agent_sub, agent_receiver) = NetworkSubscriber::<HashMap<usize, Agent>>::new(
-        std::env::var("VXS_AGENT_ADDR").unwrap_or("172.0.0.1".to_string()),
-        std::env::var("VXS_AGENT_PORT")
+        std::env::var("VXS_AGENT_POV_ADDR").unwrap_or("172.0.0.1".to_string()),
+        std::env::var("VXS_AGENT_POV_PORT")
             .ok()
             .and_then(|x| x.parse::<u16>().ok())
-            .unwrap_or(9080)
+            .unwrap_or(9090)
             + port_offset,
     );
 

@@ -1,6 +1,6 @@
+use crate::rasterizer::RasterizerState;
 use crate::rasterizer::camera::CameraMatrix;
 use crate::rasterizer::{self, CellInstance, InstanceBuffer};
-use crate::rasterizer::RasterizerState;
 use nalgebra::Vector2;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use voxelsim::viewport::{VirtualCell, VirtualGrid};
@@ -139,13 +139,15 @@ pub struct WorldChangeset {
 impl WorldChangeset {
     pub fn update_world(&self, world: &mut VirtualGrid) {
         self.to_insert.par_iter().for_each(|(coord, cell)| {
-            world.cells().insert(
-                *coord,
-                VirtualCell {
-                    cell: *cell,
-                    uncertainty: 0.0,
-                },
-            );
+            if !cell.is_empty() {
+                world.cells().insert(
+                    *coord,
+                    VirtualCell {
+                        cell: *cell,
+                        uncertainty: 0.0,
+                    },
+                );
+            }
         });
         self.to_remove.par_iter().for_each(|coord| {
             world.cells().remove(coord);
