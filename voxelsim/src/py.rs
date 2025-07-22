@@ -605,11 +605,17 @@ impl AgentDynamics {
 #[pymethods]
 impl CameraProjection {
     #[new]
-    pub fn new(fov_horizontal: f32, fov_vertical: f32, max_distance: f32) -> Self {
+    pub fn new(
+        fov_horizontal: f32,
+        fov_vertical: f32,
+        max_distance: f32,
+        near_distance: f32,
+    ) -> Self {
         Self {
             fov_horizontal,
             fov_vertical,
             max_distance,
+            near_distance,
         }
     }
 }

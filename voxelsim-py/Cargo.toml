@@ -1,0 +1,13 @@
+[package]
+name = "voxelsim-py"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "voxelsim"
+crate-type=["cdylib"]
+
+[dependencies]
+voxelsim = {path = "../voxelsim", features = ["python"]}
+voxelsim-compute = {path = "../voxelsim-compute", features = ["python"]}
+pyo3 = { version = "0.25.1", features = ["extension-module"] }

@@ -3,6 +3,7 @@ use crate::rasterizer::{self, CellInstance, InstanceBuffer};
 use crate::rasterizer::{BufferSet, RasterizerState};
 use nalgebra::{Matrix4, Vector2};
 use std::sync::Arc;
+use voxelsim::viewport::VirtualGrid;
 use voxelsim::{Cell, Coord, VoxelGrid}; // Main State struct to hold all wgpu-related objects
 pub struct State {
     pub device: wgpu::Device,
@@ -68,7 +69,7 @@ impl State {
     pub async fn run(
         &mut self,
         camera_matrix: &CameraMatrix,
-        filter_world: &VoxelGrid,
+        filter_world: &VirtualGrid,
     ) -> Result<WorldChangeset, wgpu::SurfaceError> {
         // Get the current texture to render to from the swap chain.
         //let output = self.surface.get_current_texture()?;
