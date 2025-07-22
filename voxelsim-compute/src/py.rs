@@ -1,4 +1,6 @@
 use crate::AgentVisionRenderer;
+use crate::WorldChangeset;
+use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
 use voxelsim::{
     agent::Agent,
@@ -11,6 +13,7 @@ use pyo3::prelude::*;
 #[pymodule]
 pub fn voxelsim_compute(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FilterWorld>()?;
+    m.add_class::<WorldChangeset>()?;
     m.add_class::<AgentVisionRenderer>()?;
     Ok(())
 }
@@ -29,11 +32,15 @@ impl FilterWorld {
             filter_world: Arc::new(Mutex::new(VirtualGrid::with_capacity(10000))),
         }
     }
+
+    pub fn update(&self, changeset: WorldChangeset) {
+        changeset.update_world(self.filter_world.lock().unwrap().deref_mut())
+    }
 }
 
 #[pymethods]
 impl AgentVisionRenderer {
-    pub fn update_py(
+    pub fn update_filter_world(
         &self,
         camera: CameraView,
         proj: CameraProjection,
