@@ -71,7 +71,7 @@ while listener.running:
         # Here we just send the new world over to the renderer.
         if view_delta >= FRAME_DELTA_MAX:
             fw.send_pov_py(client, 0, 0, proj)
-            renderer.update_filter_world_py(agent.camera_view_py(), proj, fw, t0)
+            renderer.update_filter_world_py(env.get_agent(0).camera_view_py(), proj, fw, t0)
             last_view_time = t0
 
     commands = []
