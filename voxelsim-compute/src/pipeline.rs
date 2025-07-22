@@ -2,8 +2,9 @@ use crate::rasterizer::camera::CameraMatrix;
 use crate::rasterizer::{self, CellInstance, InstanceBuffer};
 use crate::rasterizer::{BufferSet, RasterizerState};
 use nalgebra::{Matrix4, Vector2};
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use std::sync::Arc;
-use voxelsim::viewport::VirtualGrid;
+use voxelsim::viewport::{VirtualCell, VirtualGrid};
 use voxelsim::{Cell, Coord, VoxelGrid}; // Main State struct to hold all wgpu-related objects
 pub struct State {
     pub device: wgpu::Device,
@@ -128,7 +129,27 @@ impl State {
     }
 }
 
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct WorldChangeset {
     pub to_insert: Vec<(Coord, Cell)>,
     pub to_remove: Vec<Coord>,
+}
+
+#[cfg_attr(feature = "python", pyo3::prelude::pymethods)]
+impl WorldChangeset {
+    pub fn update_world(&self, world: &mut VirtualGrid) {
+        self.to_insert.par_iter().for_each(|(coord, cell)| {
+            world.cells().insert(
+                *coord,
+                VirtualCell {
+                    cell: *cell,
+                    uncertainty: 0.0,
+                },
+            );
+        });
+        self.to_remove.par_iter().for_each(|coord| {
+            world.cells().remove(coord);
+        });
+    }
 }

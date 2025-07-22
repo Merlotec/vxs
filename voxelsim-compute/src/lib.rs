@@ -9,7 +9,7 @@ pub mod py;
 use nalgebra::{Matrix4, Vector2};
 use pipeline::State;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use voxelsim::VoxelGrid;
@@ -149,19 +149,8 @@ impl AgentVisionRenderer {
         let rx = self.render(view_proj, filter_world.clone());
         std::thread::spawn(move || {
             if let Ok(change) = rx.recv() {
-                let vgrid = filter_world.lock().unwrap();
-                change.to_insert.into_par_iter().for_each(|(coord, cell)| {
-                    vgrid.cells().insert(
-                        coord,
-                        VirtualCell {
-                            cell,
-                            uncertainty: 0.0,
-                        },
-                    );
-                });
-                change.to_remove.into_par_iter().for_each(|coord| {
-                    vgrid.cells().remove(&coord);
-                });
+                let mut vgrid = filter_world.lock().unwrap();
+                change.update_world(vgrid.deref_mut());
             }
         });
     }
