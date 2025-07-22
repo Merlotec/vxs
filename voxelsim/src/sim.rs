@@ -6,6 +6,12 @@ use crate::{
     viewport::{self, CameraProjection, IntersectionMap, VirtualGrid},
 };
 
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
+pub struct Collision {
+    pub agent_id: usize,
+    pub shell: CollisionShell,
+}
+
 impl GlobalEnv {
     pub fn n_step(&mut self, dynamics: &AgentDynamics, delta: f32, n: usize) {
         for _ in 0..n {
@@ -20,31 +26,15 @@ impl GlobalEnv {
         }
     }
 
-    pub fn update<F, C>(
-        &mut self,
-        dynamics: &AgentDynamics,
-        delta: f32,
-        mut step_f: F,
-        mut collide_f: C,
-    ) where
-        F: FnMut(&mut GlobalEnv),
-        C: FnMut(&mut GlobalEnv, Agent, CollisionShell),
-    {
+    pub fn update(&mut self, dynamics: &AgentDynamics, delta: f32) -> Vec<Collision> {
         self.step(dynamics, delta);
-
-        // Handle any collisions first (agent <-> environment)
-        let mut cols: Vec<(Agent, CollisionShell)> = Vec::new();
-        for (_id, agent) in self.agents.clone().iter() {
-            let collisions = self.world.collisions(agent.pos, dynamics.bounding_box);
-            if !collisions.is_empty() {
-                cols.push((agent.clone(), collisions));
-            }
-        }
-
-        for (agent, cols) in cols {
-            collide_f(self, agent, cols);
-        }
-        step_f(self);
+        self.agents
+            .iter()
+            .map(|(id, agent)| Collision {
+                agent_id: *id,
+                shell: self.world.collisions(agent.pos, dynamics.bounding_box),
+            })
+            .collect()
     }
 
     pub fn run_sim<F, C>(

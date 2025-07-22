@@ -7,10 +7,14 @@ dynamics = voxelsim.AgentDynamics.default_drone()
 agent = voxelsim.Agent(0)
 fw = voxelsim.FilterWorld()
 env = voxelsim.GlobalEnv(world, {0: agent})
+proj = voxelsim.CameraProjection.default_py()
 
-# … your client setup …
+# Renderer
+renderer = voxelsim.AgentViewRenderer(world, {400, 300})
 
-client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090)
+# Client
+
+client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
 client.connect_py(1)
 print("Controls: WASD=move, Space=up, Shift=down, ESC=quit")
 
@@ -44,8 +48,27 @@ listener = keyboard.Listener(on_press=on_press, on_release=on_release)
 listener.start()
 
 delta = 0.01
+
+last_view_time = time.time()
+
+FRAME_DELTA_MAX = 0.13
+
 while listener.running:
     t0 = time.time()
+    view_delta = t0 - last_view_time
+    # Rendering
+    if fw.is_updating_py(last_view_time):
+        if view_delta >= FRAME_DELTA_MAX:
+            # Do not update the simulation because we want to await the view.
+            continue;
+    else:
+        # Our next frame is ready, so wait for the frame delta time to hit then update the world
+        # used for inference.
+        # Here we just send the new world over to the renderer.
+        if view_delta >= FRAME_DELTA_MAX:
+            fw.send_pov_py(client, 0, 0, proj)
+            renderer.update_filter_world_py(agent.camera_view_py(), proj, fw)
+
     commands = []
     if 'w' in pressed: commands.append(voxelsim.MoveCommand.forward(0.8))
     if 's' in pressed: commands.append(voxelsim.MoveCommand.back(0.8))

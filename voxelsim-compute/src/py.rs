@@ -1,10 +1,11 @@
 use crate::AgentVisionRenderer;
+use crate::FilterWorld;
 use crate::WorldChangeset;
-use std::ops::DerefMut;
-use std::sync::{Arc, Mutex};
-use voxelsim::viewport::{CameraProjection, CameraView, VirtualGrid};
-
+use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
+use voxelsim::RendererClient;
+use voxelsim::env::VoxelGrid;
+use voxelsim::viewport::{CameraProjection, CameraView};
 
 #[pymodule]
 pub fn voxelsim_compute(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -14,37 +15,43 @@ pub fn voxelsim_compute(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone)]
-#[pyclass]
-pub struct FilterWorld {
-    filter_world: Arc<Mutex<VirtualGrid>>,
-}
-
 #[pymethods]
 impl FilterWorld {
     #[new]
     pub fn new() -> Self {
-        Self {
-            filter_world: Arc::new(Mutex::new(VirtualGrid::with_capacity(10000))),
-        }
+        Self::default()
     }
 
-    pub fn update(&self, changeset: WorldChangeset) {
-        changeset.update_world(self.filter_world.lock().unwrap().deref_mut())
+    pub fn is_updating_py(&self, timestamp: f64) -> bool {
+        self.is_updating(timestamp)
+    }
+
+    pub fn send_pov_py(
+        &self,
+        client: &mut RendererClient,
+        stream_idx: usize,
+        agent_id: usize,
+        proj: CameraProjection,
+    ) -> PyResult<()> {
+        self.send_pov(client, stream_idx, agent_id, proj)
+            .map_err(|e| PyException::new_err(format!("Could not send pov: {}", e)))
     }
 }
 
 #[pymethods]
 impl AgentVisionRenderer {
-    pub fn update_filter_world(
+    #[new]
+    pub fn init_py(world: &VoxelGrid, view_size: [u32; 2]) -> Self {
+        Self::init(world, view_size.into())
+    }
+    pub fn update_filter_world_py(
         &self,
         camera: CameraView,
         proj: CameraProjection,
-        filter_world: &FilterWorld,
+        filter_world: FilterWorld,
+        timestamp: f64,
     ) {
-        self.update_world(
-            proj.projection_matrix() * camera.view_matrix(),
-            filter_world.filter_world.clone(),
-        );
+        let view_proj = proj.projection_matrix() * camera.view_matrix();
+        self.update_filter_world(view_proj, filter_world, timestamp)
     }
 }
