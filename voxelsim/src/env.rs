@@ -139,7 +139,7 @@ impl VoxelGrid {
         &mut self.cells
     }
 
-    pub fn artifact(mut self, falloff: f32, uncertainty: f32) -> Self {
+    pub fn artifact(self, falloff: f32, uncertainty: f32) -> Self {
         // TODO: implement artifacting that mimics the uncertainty of the drone.
         self
     }

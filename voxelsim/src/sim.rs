@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime};
 use crate::{
     agent::{Agent, AgentDynamics},
     env::{CollisionShell, GlobalEnv},
-    viewport::{self, CameraProjection, CameraView, IntersectionMap, VirtualGrid},
+    viewport::{self, CameraProjection, IntersectionMap, VirtualGrid},
 };
 
 impl GlobalEnv {

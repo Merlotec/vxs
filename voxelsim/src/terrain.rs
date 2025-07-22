@@ -816,7 +816,7 @@ impl VoxelGrid {
         &mut self,
         cfg: &TerrainConfig,
         //                     ▼ trait-object, no generics
-        mut passage_fn: &mut dyn FnMut(i32, i32, i32) -> bool,
+        passage_fn: &mut dyn FnMut(i32, i32, i32) -> bool,
     ) {
         let [max_x, max_y, max_z] = cfg.size;
         for x in 0..=max_x {
@@ -876,7 +876,7 @@ impl VoxelGrid {
         let cave_scale = 20.0;
         let threshold = 0.8;
 
-        let mut passage_fn = move |x: i32, y: i32, z: i32| -> bool {
+        let passage_fn = move |x: i32, y: i32, z: i32| -> bool {
             if y <= 1 {
                 return false;
             }
