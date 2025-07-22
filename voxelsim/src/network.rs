@@ -70,6 +70,8 @@ impl RendererClient {
                     virtual_world_stream,
                     agent_stream,
                 });
+            } else {
+                return Err(format!("Could not connect pov/agent stream for agent {}", i).into());
             }
         }
 

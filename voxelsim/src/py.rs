@@ -134,6 +134,18 @@ impl GlobalEnv {
             .perform_sequence(cmds);
         Ok(())
     }
+
+    pub fn get_agent_pos(&self, agent_id: usize) -> Option<[f32; 3]> {
+        self.agents.get(&agent_id).map(|x| x.pos.into())
+    }
+
+    pub fn set_agent_pos(&mut self, agent_id: usize, pos: [f32; 3]) -> PyResult<()> {
+        self.agents
+            .get_mut(&agent_id)
+            .ok_or(PyException::new_err("Invalid agent id!"))?
+            .pos = pos.into();
+        Ok(())
+    }
 }
 
 // --------------- PYTHON-EXPOSED IMPL -----------------------------

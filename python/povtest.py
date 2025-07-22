@@ -9,16 +9,20 @@ fw = voxelsim.FilterWorld()
 env = voxelsim.GlobalEnv(world, {0: agent})
 proj = voxelsim.CameraProjection.default_py()
 
+
 # Renderer
-renderer = voxelsim.AgentViewRenderer(world, {400, 300})
+renderer = voxelsim.AgentVisionRenderer(world, [400, 300])
 
 # Client
 
 client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
+# Specify the number of agent renderers we want to connect to.
 client.connect_py(1)
 print("Controls: WASD=move, Space=up, Shift=down, ESC=quit")
 
 env.send_world(client)
+
+env.set_agent_pos(0, [50.0, 20.0, 50.0])
 
 pressed = set()
 
@@ -67,7 +71,8 @@ while listener.running:
         # Here we just send the new world over to the renderer.
         if view_delta >= FRAME_DELTA_MAX:
             fw.send_pov_py(client, 0, 0, proj)
-            renderer.update_filter_world_py(agent.camera_view_py(), proj, fw)
+            renderer.update_filter_world_py(agent.camera_view_py(), proj, fw, t0)
+            last_view_time = t0
 
     commands = []
     if 'w' in pressed: commands.append(voxelsim.MoveCommand.forward(0.8))
@@ -80,7 +85,9 @@ while listener.running:
     if commands:
         env.perform_sequence_on_agent(0, commands)
 
-    env.update_with_callback(dynamics, delta, lambda: None, lambda i: print("Collision!"))
+    collisions = env.update_py(dynamics, delta)
+    # if len(collisions) > 0:
+    #     print("Collision!")
     # im = env.update_pov_py()
     
     env.send_agents(client)
