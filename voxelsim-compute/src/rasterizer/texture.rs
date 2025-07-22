@@ -1,4 +1,3 @@
-use nalgebra::Vector2;
 
 pub struct TextureSet {
     pub texture: wgpu::Texture,
@@ -100,8 +99,7 @@ pub struct CellTexel {
     value: u32,
 }
 
-use voxelsim::{Cell, Coord};
-use wgpu::util::DeviceExt;
+use voxelsim::Coord;
 
 pub async fn extract_texture_data<T>(
     device: &wgpu::Device,

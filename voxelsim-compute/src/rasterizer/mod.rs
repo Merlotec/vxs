@@ -4,7 +4,6 @@ pub mod texture;
 
 use crate::rasterizer::{filter::FilterBindings, texture::TextureSet};
 use camera::CameraMatrix;
-use nalgebra::Matrix4;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use voxelsim::{viewport::VirtualGrid, VoxelGrid};
 use wgpu::{

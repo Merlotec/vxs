@@ -8,12 +8,11 @@ pub mod py;
 
 use nalgebra::{Matrix4, Vector2};
 use pipeline::State;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::ops::{Deref, DerefMut};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use voxelsim::VoxelGrid;
-use voxelsim::viewport::{VirtualCell, VirtualGrid};
+use voxelsim::viewport::VirtualGrid;
 
 use crate::{pipeline::WorldChangeset, rasterizer::camera::CameraMatrix};
 

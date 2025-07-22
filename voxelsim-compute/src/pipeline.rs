@@ -1,9 +1,8 @@
 use crate::rasterizer::camera::CameraMatrix;
 use crate::rasterizer::{self, CellInstance, InstanceBuffer};
-use crate::rasterizer::{BufferSet, RasterizerState};
-use nalgebra::{Matrix4, Vector2};
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
-use std::sync::Arc;
+use crate::rasterizer::RasterizerState;
+use nalgebra::Vector2;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use voxelsim::viewport::{VirtualCell, VirtualGrid};
 use voxelsim::{Cell, Coord, VoxelGrid}; // Main State struct to hold all wgpu-related objects
 pub struct State {
