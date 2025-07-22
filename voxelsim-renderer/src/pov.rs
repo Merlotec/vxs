@@ -308,10 +308,9 @@ fn synchronise_world(
         // Change the camera projection.
         let proj = pov.proj;
         for mut camera_proj in camera_projection_query.iter_mut() {
-            let aspect_ratio = (proj.fov_horizontal * 0.5).tan() / (proj.fov_vertical * 0.5).tan();
             *camera_proj = Projection::Perspective(PerspectiveProjection {
                 fov: proj.fov_vertical,
-                aspect_ratio,
+                aspect_ratio: proj.aspect,
                 near: proj.near_distance,
                 far: proj.max_distance,
                 ..default()

@@ -109,21 +109,6 @@ impl GlobalEnv {
         }
     }
 
-    pub fn update_povs_py(&mut self, proj: &CameraProjection) {
-        self.update_povs(proj);
-    }
-
-    pub fn update_pov_py(
-        &mut self,
-        py: Python,
-        proj: &CameraProjection,
-        agent_id: usize,
-    ) -> PyResult<Py<IntersectionMap>> {
-        self.update_pov(proj, &agent_id)
-            .ok_or_else(|| PyException::new_err(format!("no agent with id: {}", agent_id)))
-            .and_then(|x| Py::new(py, x))
-    }
-
     pub fn perform_sequence_on_agent(
         &mut self,
         agent_id: usize,
@@ -133,6 +118,14 @@ impl GlobalEnv {
             .ok_or_else(|| PyException::new_err(format!("no agent with id: {}", agent_id)))?
             .perform_sequence(cmds);
         Ok(())
+    }
+
+    pub fn get_agent(&self, agent_id: usize) -> PyResult<Agent> {
+        Ok(self
+            .agents
+            .get(&agent_id)
+            .ok_or(PyException::new_err("Invalid agent id!"))?
+            .clone())
     }
 
     pub fn get_agent_pos(&self, agent_id: usize) -> Option<[f32; 3]> {
@@ -624,14 +617,9 @@ impl AgentDynamics {
 #[pymethods]
 impl CameraProjection {
     #[new]
-    pub fn new(
-        fov_horizontal: f32,
-        fov_vertical: f32,
-        max_distance: f32,
-        near_distance: f32,
-    ) -> Self {
+    pub fn new(aspect: f32, fov_vertical: f32, max_distance: f32, near_distance: f32) -> Self {
         Self {
-            fov_horizontal,
+            aspect,
             fov_vertical,
             max_distance,
             near_distance,
