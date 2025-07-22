@@ -153,7 +153,7 @@ impl VoxelGrid {
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
-                    let cell = self.cells_mut().entry(coord).or_insert(Cell::empty());
+                    let mut cell = self.cells_mut().entry(coord).or_insert(Cell::empty());
                     *cell |= Cell::GROUND | Cell::FILLED;
                 }
             }
@@ -188,7 +188,7 @@ impl VoxelGrid {
                             if !within_bounds_arr(&coord, &cfg.size) {
                                 continue;
                             }
-                            let cell = self.cells_mut().entry(coord).or_insert(Cell::empty());
+                            let mut cell = self.cells_mut().entry(coord).or_insert(Cell::empty());
                             *cell |= Cell::GROUND | Cell::FILLED;
                         }
                     }
@@ -362,7 +362,7 @@ impl VoxelGrid {
                         continue;
                     }
 
-                    let entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
+                    let mut entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
                     if !entry.intersects(forbidden) {
                         *entry |= Cell::FILLED;
                     }
@@ -440,16 +440,17 @@ impl VoxelGrid {
                         continue;
                     }
 
-                    let entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
-                    if entry.intersects(forbidden) {
-                        continue;
+                    {
+                        let mut entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
+                        if entry.intersects(forbidden) {
+                            continue;
+                        }
+                        *entry |= if rng.random::<f32>() < 0.7 {
+                            Cell::SPARSE
+                        } else {
+                            Cell::FILLED
+                        }; // Prefer SPARSE for branches
                     }
-                    *entry |= if rng.random::<f32>() < 0.7 {
-                        Cell::SPARSE
-                    } else {
-                        Cell::FILLED
-                    }; // Prefer SPARSE for branches
-
                     // Add needle clusters around branches
                     if r > branch_length / 3 {
                         for _ in 0..3 {
@@ -463,7 +464,7 @@ impl VoxelGrid {
                             }
 
                             if rng.random::<f32>() < params.leaf_density {
-                                let entry = self
+                                let mut entry = self
                                     .cells_mut()
                                     .entry(needle_coord)
                                     .or_insert(Cell::empty());
@@ -521,7 +522,7 @@ impl VoxelGrid {
                                 continue;
                             }
 
-                            let entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
+                            let mut entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
                             if !entry.intersects(forbidden) {
                                 *entry |= if rng.random::<f32>() < 0.7 {
                                     Cell::SPARSE
@@ -548,7 +549,7 @@ impl VoxelGrid {
                             continue;
                         }
 
-                        let entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
+                        let mut entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
                         if !entry.intersects(forbidden) {
                             *entry |= if rng.random::<f32>() < 0.7 {
                                 Cell::SPARSE
@@ -584,11 +585,10 @@ impl VoxelGrid {
                     }
 
                     // Check if near a branch for higher density
-                    let entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
+                    let mut entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
                     if !entry.intersects(forbidden) {
-                        *entry |= Cell::FILLED;  // Always set FILLED for canopy leaves
+                        *entry |= Cell::FILLED; // Always set FILLED for canopy leaves
                     }
-                    
                 }
             }
         }
@@ -630,16 +630,16 @@ impl VoxelGrid {
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
-
-                    let entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
-                    if !entry.intersects(forbidden) {
-                        *entry |= if rng.random::<f32>() < 0.7 {
-                            Cell::SPARSE
-                        } else {
-                            Cell::FILLED
-                        }; // Prefer SPARSE
+                    {
+                        let mut entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
+                        if !entry.intersects(forbidden) {
+                            *entry |= if rng.random::<f32>() < 0.7 {
+                                Cell::SPARSE
+                            } else {
+                                Cell::FILLED
+                            }; // Prefer SPARSE
+                        }
                     }
-
                     // Leaf clusters for connectivity
                     if r > length / 2 || y < ground_y + trunk_height {
                         for _ in 0..3 {
@@ -655,7 +655,7 @@ impl VoxelGrid {
 
                             if rng.random::<f32>() < params.leaf_density * 1.2 {
                                 // Reduced density
-                                let entry =
+                                let mut entry =
                                     self.cells_mut().entry(leaf_coord).or_insert(Cell::empty());
                                 if !entry.intersects(forbidden) {
                                     *entry |= if rng.random::<f32>() < 0.5 {
@@ -690,7 +690,7 @@ impl VoxelGrid {
 
                     if rng.random::<f32>() < params.leaf_density * (1.0 - y_progress * 0.2) {
                         // Slightly less dense
-                        let entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
+                        let mut entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
                         if !entry.intersects(forbidden) {
                             *entry |= if rng.random::<f32>() < 0.3 {
                                 Cell::SPARSE
@@ -742,16 +742,16 @@ impl VoxelGrid {
                 if !within_bounds_arr(&coord, &cfg.size) {
                     continue;
                 }
-
-                let entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
-                if !entry.intersects(forbidden) {
-                    *entry |= if rng.random::<f32>() < 0.7 {
-                        Cell::SPARSE
-                    } else {
-                        Cell::FILLED
-                    }; // Prefer SPARSE for branches
+                {
+                    let mut entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
+                    if !entry.intersects(forbidden) {
+                        *entry |= if rng.random::<f32>() < 0.7 {
+                            Cell::SPARSE
+                        } else {
+                            Cell::FILLED
+                        }; // Prefer SPARSE for branches
+                    }
                 }
-
                 // Hanging leaves along the branch
                 if t > 2 {
                     for dy in -2..=0 {
@@ -761,7 +761,8 @@ impl VoxelGrid {
                         }
 
                         if rng.random::<f32>() < params.leaf_density {
-                            let entry = self.cells_mut().entry(leaf_coord).or_insert(Cell::empty());
+                            let mut entry =
+                                self.cells_mut().entry(leaf_coord).or_insert(Cell::empty());
                             if !entry.intersects(forbidden) {
                                 *entry |= if rng.random::<f32>() < 0.5 {
                                     Cell::SPARSE
@@ -791,7 +792,7 @@ impl VoxelGrid {
 
                     if rng.random::<f32>() < params.leaf_density * 1.0 {
                         // Reduced from 1.2 to 1.0 for more gaps
-                        let entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
+                        let mut entry = self.cells_mut().entry(coord).or_insert(Cell::empty());
                         if !entry.intersects(forbidden) {
                             *entry |= if rng.random::<f32>() < 0.5 {
                                 Cell::SPARSE
@@ -825,12 +826,16 @@ impl VoxelGrid {
                         continue;
                     }
                     let coord = [x, y, z];
-                    if let Some(cell) = self.cells_mut().get_mut(&coord) {
+                    let mut to_remove = None;
+                    if let Some(mut cell) = self.cells_mut().get_mut(&coord) {
                         if cell.contains(Cell::SPARSE | Cell::GROUND) {
                             *cell &= !Cell::FILLED;
                         } else {
-                            self.cells_mut().remove(&coord);
+                            to_remove = Some(coord);
                         }
+                    }
+                    if let Some(to_remove) = to_remove {
+                        self.cells_mut().remove(&to_remove);
                     }
                 }
             }

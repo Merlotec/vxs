@@ -1,29 +1,20 @@
 use crate::rasterizer::camera::CameraMatrix;
 use crate::rasterizer::{self, CellInstance, InstanceBuffer};
 use crate::rasterizer::{BufferSet, RasterizerState};
-use nalgebra::Matrix4;
+use nalgebra::{Matrix4, Vector2};
 use std::sync::Arc;
-use voxelsim::{Cell, Coord, VoxelGrid};
-use winit::event_loop::ActiveEventLoop;
-use winit::{event::*, event_loop::EventLoop, window::Window};
-
-// Main State struct to hold all wgpu-related objects
+use voxelsim::{Cell, Coord, VoxelGrid}; // Main State struct to hold all wgpu-related objects
 pub struct State {
-    pub window: Arc<Window>,
-    pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    pub config: wgpu::SurfaceConfiguration,
-    pub size: winit::dpi::PhysicalSize<u32>,
+    pub size: Vector2<u32>,
     pub rasterizer_state: RasterizerState,
     pub filter_buffer: InstanceBuffer,
 }
 
 impl State {
     // Creating some of the wgpu types requires async code
-    pub async fn create(window: Arc<Window>, world: &VoxelGrid) -> Self {
-        let size = window.inner_size();
-
+    pub async fn create(world: &VoxelGrid, view_size: Vector2<u32>) -> Self {
         // The instance is a handle to our GPU
         // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
@@ -31,15 +22,11 @@ impl State {
             ..Default::default()
         });
 
-        // The surface is the part of the window that we draw to.
-        // This is unsafe because it involves raw window handles.
-        let surface = instance.create_surface(window.clone()).unwrap();
-
         // The adapter is a handle to a physical graphics card.
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
+                compatible_surface: None,
                 force_fallback_adapter: false,
             })
             .await
@@ -63,54 +50,17 @@ impl State {
             .await
             .unwrap();
 
-        let surface_caps = surface.get_capabilities(&adapter);
-        // Shader code in this tutorial assumes an sRGB surface texture. Using a different
-        // one will result all the colors coming out darker. If you want to support non
-        // sRGB surfaces, you'll need to account for that when drawing to the frame.
-        let surface_format = surface_caps
-            .formats
-            .iter()
-            .copied()
-            .filter(|f| f.is_srgb())
-            .next()
-            .unwrap_or(surface_caps.formats[0]);
-
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
-            width: size.width,
-            height: size.height,
-            present_mode: surface_caps.present_modes[0],
-            alpha_mode: surface_caps.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &config);
-
-        let rasterizer_state = RasterizerState::create(&device, world, [size.width, size.height]);
+        let rasterizer_state = RasterizerState::create(&device, world, [view_size.x, view_size.y]);
 
         let filter_buffer =
             CellInstance::create_instance_buffer_uninit(&device, world.cells().len());
 
         Self {
-            window,
-            surface,
             device,
             queue,
-            config,
-            size,
+            size: view_size,
             rasterizer_state,
             filter_buffer,
-        }
-    }
-
-    // Handles window resizing.
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        if new_size.width > 0 && new_size.height > 0 {
-            self.size = new_size;
-            self.config.width = new_size.width;
-            self.config.height = new_size.height;
-            self.surface.configure(&self.device, &self.config);
         }
     }
 
@@ -156,12 +106,13 @@ impl State {
 
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        let to_insert = rasterizer::texture::extract_cells_from_texture(
+        let to_insert = rasterizer::texture::extract_texture_data(
             &self.device,
             &self.queue,
             &self.rasterizer_state.render_target.texture,
         )
-        .await;
+        .await
+        .unwrap();
 
         let to_remove = self
             .rasterizer_state

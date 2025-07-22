@@ -1,6 +1,6 @@
 use nalgebra::{Rotation3, Unit, Vector3};
 use serde::{Deserialize, Serialize};
-use tinyvec::{array_vec, ArrayVec};
+use tinyvec::{ArrayVec, array_vec};
 
 #[cfg(feature = "python")]
 use pyo3::pyclass;
@@ -99,19 +99,7 @@ impl Agent {
         }
     }
 
-    pub fn camera(&self) -> CameraView {
-        /// Tunables ─ feel free to move these to a `config.rs` or similar.
-        const FOV_HORIZONTAL: f32 = 70.0_f32.to_radians();
-        const FOV_VERTICAL: f32 = 40.0_f32.to_radians();
-        const MAX_DISTANCE: f32 = 1_000.0;
-
-        /// Maximum downward tilt (in radians) reached as thrust → ∞.
-        const MAX_PITCH: f32 = 45.0_f32.to_radians();
-        /// “Speed” of approach to `MAX_PITCH`.  Bigger → faster.
-        const PITCH_RESPONSE: f32 = 0.75;
-        // ------------------------------------------------------------------
-        // 1. Horizontal orientation (yaw) – look where we’re thrusting.
-        // ------------------------------------------------------------------
+    pub fn camera_view(&self) -> CameraView {
         let horiz = Vector3::new(self.thrust.x, 0.0, self.thrust.z);
         let forward_h = if horiz.magnitude_squared() > 1.0e-6 {
             Unit::new_normalize(horiz)
@@ -120,20 +108,19 @@ impl Agent {
             Unit::new_normalize(Vector3::new(0.0, 0.0, -1.0))
         };
 
-        // ------------------------------------------------------------------
-        // 2. Downward tilt (pitch) – asymptotic to MAX_PITCH
-        //    pitch(t) = MAX_PITCH · (1 − e^(−k·|t|))
-        // ------------------------------------------------------------------
-        let pitch = MAX_PITCH * (1.0 - (-PITCH_RESPONSE * self.thrust.magnitude()).exp());
+        // projection of b onto a: (b·a)/(a·a) * a
+        let proj_fwd_thrust =
+            self.thrust * (forward_h.dot(&self.thrust) / self.thrust.dot(&self.thrust));
+
+        // subtract to get the part of b orthogonal to a
+        let orthogonal = forward_h.into_inner() - proj_fwd_thrust;
 
         // Axis to pitch about = camera-right (world-up × forward).
         let world_up = Vector3::y_axis(); // Y is up
         let right = Unit::new_normalize(world_up.cross(&forward_h));
 
         // Rotate the horizontal-only forward vector downward by `pitch`.
-        let forward = Rotation3::from_axis_angle(&right, -pitch) // negative ==> downward
-                         * forward_h.into_inner();
-
+        let forward = orthogonal;
         // Re-derive an exact orthonormal basis.
         let camera_right = right.into_inner(); // already unit
         let camera_up = camera_right.cross(&forward).normalize();
@@ -143,9 +130,6 @@ impl Agent {
             camera_forward: forward, // Vector3<f32>
             camera_up,               // Vector3<f32>
             camera_right,            // Vector3<f32>
-            fov_horizontal: FOV_HORIZONTAL,
-            fov_vertical: FOV_VERTICAL,
-            max_distance: MAX_DISTANCE,
         }
     }
 

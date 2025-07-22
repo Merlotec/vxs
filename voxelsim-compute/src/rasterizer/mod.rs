@@ -5,10 +5,11 @@ pub mod texture;
 use crate::rasterizer::{filter::FilterBindings, texture::TextureSet};
 use camera::CameraMatrix;
 use nalgebra::Matrix4;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use voxelsim::VoxelGrid;
 use wgpu::{
-    util::{BufferInitDescriptor, DeviceExt},
     Buffer,
+    util::{BufferInitDescriptor, DeviceExt},
 };
 
 #[repr(C)]
@@ -141,10 +142,13 @@ impl CellInstance {
     ) {
         let instance_data = world
             .cells()
-            .iter()
-            .map(|(p, v)| CellInstance {
-                position: *p,
-                value: v.bits(),
+            .par_iter()
+            .map(|r| {
+                let (p, v) = r.pair();
+                CellInstance {
+                    position: *p,
+                    value: v.bits(),
+                }
             })
             .collect::<Vec<_>>();
         assert!(instance_data.len() <= instance.len as usize);
@@ -155,10 +159,13 @@ impl CellInstance {
     pub fn create_instance_buffer(device: &wgpu::Device, world: &VoxelGrid) -> InstanceBuffer {
         let instance_data = world
             .cells()
-            .iter()
-            .map(|(p, v)| CellInstance {
-                position: *p,
-                value: v.bits(),
+            .par_iter()
+            .map(|r| {
+                let (p, v) = r.pair();
+                CellInstance {
+                    position: *p,
+                    value: v.bits(),
+                }
             })
             .collect::<Vec<_>>();
 

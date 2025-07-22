@@ -103,26 +103,14 @@ pub struct CellTexel {
 use voxelsim::{Cell, Coord};
 use wgpu::util::DeviceExt;
 
-pub async fn extract_cells_from_texture(
+pub async fn extract_texture_data<T>(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
-) -> Vec<(Coord, Cell)> {
-    let data = extract_texture_bytes(device, queue, texture).await.unwrap();
-    let cells: &[(Coord, Cell)] = unsafe {
-        std::slice::from_raw_parts(
-            data.as_ptr() as *const (Coord, Cell),
-            data.len() / std::mem::size_of::<(Coord, Cell)>(),
-        )
-    };
-    cells.to_vec()
-}
-
-pub async fn extract_texture_bytes(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-) -> Result<Vec<u8>, wgpu::Error> {
+) -> Result<Vec<T>, wgpu::Error>
+where
+    T: Copy,
+{
     let texture_format = texture.format();
     let (block_width, block_height) = texture_format.block_dimensions();
     let bytes_per_block = texture_format.block_copy_size(None).unwrap();
@@ -163,19 +151,29 @@ pub async fn extract_texture_bytes(
 
     // 3. Submit and map the buffer
     queue.submit(Some(encoder.finish()));
+    let data = {
+        let buffer_slice = output_buffer.slice(..);
+        buffer_slice.map_async(wgpu::MapMode::Read, |result| {
+            if let Err(e) = result {
+                eprintln!("Failed to map buffer: {:?}", e);
+            }
+        });
 
-    let buffer_slice = output_buffer.slice(..);
-    buffer_slice.map_async(wgpu::MapMode::Read, |result| {
-        if let Err(e) = result {
-            eprintln!("Failed to map buffer: {:?}", e);
-        }
-    });
+        // You must poll the device to drive the async map operation.
+        // In a real app, this would be part of your event loop.
+        device.poll(wgpu::PollType::Wait).unwrap();
 
-    // You must poll the device to drive the async map operation.
-    // In a real app, this would be part of your event loop.
-    device.poll(wgpu::PollType::Wait);
+        let data = buffer_slice.get_mapped_range();
 
-    let data = buffer_slice.get_mapped_range().to_vec();
+        let data_slice = unsafe {
+            std::slice::from_raw_parts::<T>(
+                data.as_ptr() as *const T,
+                data.len() / std::mem::size_of::<T>(),
+            )
+        };
+
+        data_slice.to_vec()
+    };
     output_buffer.unmap();
 
     Ok(data)

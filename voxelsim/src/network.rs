@@ -1,4 +1,4 @@
-use crate::viewport::VirtualGrid;
+use crate::viewport::{CameraProjection, VirtualGrid};
 use crate::{Agent, VoxelGrid};
 use serde::{Deserialize, Serialize};
 
@@ -119,4 +119,5 @@ impl Drop for RendererClient {
 pub struct PovData {
     pub virtual_world: VirtualGrid,
     pub agent_id: usize,
+    pub proj: CameraProjection,
 }
