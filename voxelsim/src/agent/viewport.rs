@@ -1,10 +1,9 @@
 use dashmap::DashMap;
-use nalgebra::{Matrix3, Matrix4, Perspective3, Point3, Vector2, Vector3};
+use nalgebra::{Matrix4, Perspective3, Point3, Vector2, Vector3};
 use rayon::prelude::*;
 
 use crate::{Cell, Coord, VoxelGrid};
 use std::collections::HashMap;
-use std::time::SystemTime;
 
 use super::*;
 
@@ -200,7 +199,7 @@ impl VirtualGrid {
     }
 
     pub fn world_from_intersection_map(map: &IntersectionMap) -> VirtualGrid {
-        let mut virtual_grid = VirtualGrid::new();
+        let virtual_grid = VirtualGrid::new();
         let base_scale = Vector2::<f32>::new(map.width as f32, map.height as f32);
 
         for grid_pos in map.intersections.iter().flatten() {

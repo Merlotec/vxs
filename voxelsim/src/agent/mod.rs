@@ -1,4 +1,4 @@
-use nalgebra::{Rotation3, Unit, Vector3};
+use nalgebra::{Unit, Vector3};
 use serde::{Deserialize, Serialize};
 use tinyvec::{ArrayVec, array_vec};
 
