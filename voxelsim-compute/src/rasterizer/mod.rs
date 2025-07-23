@@ -5,10 +5,10 @@ pub mod texture;
 use crate::rasterizer::{filter::FilterBindings, texture::TextureSet};
 use camera::CameraMatrix;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use voxelsim::{viewport::VirtualGrid, VoxelGrid};
+use voxelsim::{VoxelGrid, viewport::VirtualGrid};
 use wgpu::{
-    util::{BufferInitDescriptor, DeviceExt},
     Buffer,
+    util::{BufferInitDescriptor, DeviceExt},
 };
 
 #[repr(C)]
@@ -351,6 +351,9 @@ impl RasterizerState {
             device,
             texture_size,
             wgpu::TextureFormat::Rgba32Sint,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             Self::RENDER_TEXTURE_LABEL,
         );
 
@@ -358,6 +361,7 @@ impl RasterizerState {
             device,
             texture_size,
             wgpu::TextureFormat::Rgba32Sint,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             Self::RENDER_TEXTURE_LABEL,
         );
 

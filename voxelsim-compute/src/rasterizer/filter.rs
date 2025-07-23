@@ -11,7 +11,7 @@ pub struct FilterBindings {
 
 impl FilterBindings {
     pub async fn get_filter_list(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<Coord> {
-        let data = crate::buf::read_gpu_buffer(device, queue, &self.output_buffer).await;
+        let data = crate::buf::read_gpu_buffer(device, queue, &self.output_buffer, true).await;
         let count = u32::from_le_bytes(data[0..4].try_into().unwrap());
 
         let output_data_slice: &[Coord] = bytemuck::cast_slice(&data[4..]);
@@ -79,7 +79,9 @@ impl FilterBindings {
             label: Some("Output Buffer"),
             size: output_buffer_size,
             // Needs STORAGE for shader writes, and COPY_SRC to read it back on the CPU.
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -105,7 +107,7 @@ impl FilterBindings {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(depth_texture_sampler), // You need to create a sampler
+                    resource: wgpu::BindingResource::Sampler(depth_texture_sampler),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -125,5 +127,9 @@ impl FilterBindings {
             flags_buffer,
             flags_buffer_size,
         }
+    }
+
+    pub async fn clear_buffers(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        crate::buf::clear_gpu_buffer(device, queue, &self.flags_buffer).await
     }
 }

@@ -28,7 +28,7 @@ struct AtomicFlags {
 @group(0) @binding(2) var<storage, read_write> output_buffer: OutputBuffer;
 @group(0) @binding(3) var<storage, read_write> instance_flags: AtomicFlags;
 
-
+const EPSILON: f32 = 0.000001;
 
 struct InstanceInput {
     @builtin(instance_index) index: u32,
@@ -72,10 +72,11 @@ fn vs_main(
 fn fs_main(in: VertexOutput) -> @location(0) vec4<i32> {
     // 1. Sample the external depth texture at the fragment's screen coordinate
     let frag_coords: vec2<f32> = in.clip_position.xy;
-    let sampled_depth = textureSample(external_depth_texture, external_depth_sampler, frag_coords);
-
+    //let sampled_depth = textureSample(external_depth_texture, external_depth_sampler, frag_coords);
+    let coord = vec2<i32>(floor(frag_coords));
+    let sampled_depth = textureLoad(external_depth_texture, coord, 0);
     // 2. Perform the depth check
-    if (in.clip_position.z < sampled_depth) {
+    if (in.clip_position.z + EPSILON < sampled_depth) {
         // 3. Try to claim the write for this instance.
         // atomicExchange sets the flag to 1 and returns the *old* value.
         let previous_flag = atomicExchange(&instance_flags.flags[in.instance_index], 1u);
@@ -92,5 +93,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<i32> {
     }
 
     // 5. Discard the fragment. We don't want to write to any color/depth attachment.
-    return vec4<i32>(in.coord, bitcast<i32>(in.value));
+    return vec4<i32>(0, 0, 0, bitcast<i32>(in.value));
 }
