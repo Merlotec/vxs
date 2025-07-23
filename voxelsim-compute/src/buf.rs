@@ -42,7 +42,7 @@ pub async fn read_gpu_buffer(
 
     // You must poll the device to ensure the async operations complete.
     // In a real application, this would be part of your event loop.
-    device.poll(wgpu::wgt::PollType::Wait);
+    device.poll(wgpu::wgt::PollType::Wait).unwrap();
 
     // Wait for the mapping to complete and check for errors.
     if let Some(Ok(())) = receiver.receive().await {

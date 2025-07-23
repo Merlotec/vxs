@@ -1,4 +1,4 @@
-use nalgebra::{Rotation3, Unit, Vector3};
+use nalgebra::{Unit, Vector3};
 use serde::{Deserialize, Serialize};
 use tinyvec::{ArrayVec, array_vec};
 
@@ -100,22 +100,25 @@ impl Agent {
     }
 
     pub fn camera_view(&self) -> CameraView {
-        let horiz = Vector3::new(self.thrust.x, 0.0, self.thrust.z);
-        let forward_h = if horiz.magnitude_squared() > 1.0e-6 {
-            Unit::new_normalize(horiz)
-        } else {
-            // Degeneracy: no thrust -> look along world −Z
-            Unit::new_normalize(Vector3::new(0.0, 0.0, -1.0))
-        };
+        let forward_h = self.vel.normalize();
+        // let horiz = Vector3::new(self.thrust.x, 0.0, self.thrust.z);
+        // let forward_h = if horiz.magnitude_squared() > 1.0e-6 {
+        //     Unit::new_normalize(horiz)
+        // } else {
+        //     // Degeneracy: no thrust -> look along world −Z
+        //     Unit::new_normalize(Vector3::new(0.0, 0.0, -1.0))
+        // };
 
-        // projection of b onto a: (b·a)/(a·a) * a
-        let proj_fwd_thrust =
-            self.thrust * (forward_h.dot(&self.thrust) / self.thrust.dot(&self.thrust));
+        // // projection of b onto a: (b·a)/(a·a) * a
+        // let proj_fwd_thrust =
+        //     self.thrust * (forward_h.dot(&self.thrust) / self.thrust.dot(&self.thrust));
 
-        // subtract to get the part of b orthogonal to a
-        let orthogonal = forward_h.into_inner() - proj_fwd_thrust;
+        // // subtract to get the part of b orthogonal to a
+        // let orthogonal = forward_h.into_inner() - proj_fwd_thrust;
 
-        // Axis to pitch about = camera-right (world-up × forward).
+        let orthogonal = (forward_h + Vector3::new(0.0, -0.4, 0.0)).normalize();
+
+        // // Axis to pitch about = camera-right (world-up × forward).
         let world_up = Vector3::y_axis(); // Y is up
         let right = Unit::new_normalize(world_up.cross(&forward_h));
 
