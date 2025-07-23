@@ -147,6 +147,12 @@ impl VoxelGrid {
             ..Default::default()
         });
     }
+
+     pub fn get_cell(&self, x: i32, y: i32, z: i32) -> Option<u32> {
+        self.cells().get(&[x, y, z]).map(|cell| cell.bits())
+    }
+
+
 }
 
 #[pymethods]
