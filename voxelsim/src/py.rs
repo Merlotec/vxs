@@ -7,10 +7,11 @@ use tinyvec::ArrayVec;
 use crate::{
     agent::{
         Action, Agent, AgentDynamics, CmdSequence, MoveCommand, MoveDir,
-        viewport::{CameraProjection, IntersectionMap},
+        viewport::{CameraProjection, CameraView, IntersectionMap},
     },
-    env::{GlobalEnv, VoxelGrid},
+    env::{CollisionShell, Coord, GlobalEnv, VoxelGrid},
     network::RendererClient,
+    sim::Collision,
     terrain::TerrainConfig,
 };
 
@@ -26,6 +27,7 @@ pub fn voxelsim(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RendererClient>()?;
     m.add_class::<IntersectionMap>()?;
     m.add_class::<CameraProjection>()?;
+    m.add_class::<Collision>()?;
     Ok(())
 }
 
@@ -33,8 +35,20 @@ pub fn voxelsim(m: &Bound<'_, PyModule>) -> PyResult<()> {
 impl RendererClient {
     /// Creates a new Client.
     #[new]
-    fn new_py(host: String, world_port: u16, agent_port: u16, pov_start_port: u16) -> Self {
-        Self::new(&host, world_port, agent_port, pov_start_port)
+    fn new_py(
+        host: String,
+        world_port: u16,
+        agent_port: u16,
+        pov_start_port: u16,
+        pov_agent_start_port: u16,
+    ) -> Self {
+        Self::new(
+            &host,
+            world_port,
+            agent_port,
+            pov_start_port,
+            pov_agent_start_port,
+        )
     }
 
     /// Connects both world and agent ports.
@@ -57,24 +71,13 @@ impl GlobalEnv {
         }
     }
 
-    pub fn update_with_callback(
+    pub fn update_py(
         &mut self,
         py: Python,
         dynamics: &AgentDynamics,
         delta: f32,
-        step_f: PyObject,
-        collide_f: PyObject,
-    ) {
-        self.update(
-            dynamics,
-            delta,
-            |env| {
-                step_f.call1(py, (env.agents.clone(),));
-            },
-            |env, agent, shell| {
-                step_f.call1(py, (agent,));
-            },
-        );
+    ) -> Vec<Collision> {
+        self.update(dynamics, delta)
     }
 
     pub fn send_agents(&self, client: &mut RendererClient) -> PyResult<()> {
@@ -106,21 +109,6 @@ impl GlobalEnv {
         }
     }
 
-    pub fn update_povs_py(&mut self, proj: &CameraProjection) {
-        self.update_povs(proj);
-    }
-
-    pub fn update_pov_py(
-        &mut self,
-        py: Python,
-        proj: &CameraProjection,
-        agent_id: usize,
-    ) -> PyResult<Py<IntersectionMap>> {
-        self.update_pov(proj, &agent_id)
-            .ok_or_else(|| PyException::new_err(format!("no agent with id: {}", agent_id)))
-            .and_then(|x| Py::new(py, x))
-    }
-
     pub fn perform_sequence_on_agent(
         &mut self,
         agent_id: usize,
@@ -129,6 +117,26 @@ impl GlobalEnv {
         self.agent_mut(&agent_id)
             .ok_or_else(|| PyException::new_err(format!("no agent with id: {}", agent_id)))?
             .perform_sequence(cmds);
+        Ok(())
+    }
+
+    pub fn get_agent(&self, agent_id: usize) -> PyResult<Agent> {
+        Ok(self
+            .agents
+            .get(&agent_id)
+            .ok_or(PyException::new_err("Invalid agent id!"))?
+            .clone())
+    }
+
+    pub fn get_agent_pos(&self, agent_id: usize) -> Option<[f32; 3]> {
+        self.agents.get(&agent_id).map(|x| x.pos.into())
+    }
+
+    pub fn set_agent_pos(&mut self, agent_id: usize, pos: [f32; 3]) -> PyResult<()> {
+        self.agents
+            .get_mut(&agent_id)
+            .ok_or(PyException::new_err("Invalid agent id!"))?
+            .pos = pos.into();
         Ok(())
     }
 }
@@ -181,6 +189,10 @@ impl Agent {
         }
 
         self.perform(cmd_sequence);
+    }
+
+    pub fn camera_view_py(&self) -> CameraView {
+        self.camera_view()
     }
 }
 
@@ -611,11 +623,27 @@ impl AgentDynamics {
 #[pymethods]
 impl CameraProjection {
     #[new]
-    pub fn new(fov_horizontal: f32, fov_vertical: f32, max_distance: f32) -> Self {
+    pub fn new(aspect: f32, fov_vertical: f32, max_distance: f32, near_distance: f32) -> Self {
         Self {
-            fov_horizontal,
+            aspect,
             fov_vertical,
             max_distance,
+            near_distance,
         }
+    }
+    #[staticmethod]
+    pub fn default_py() -> Self {
+        Self::default()
+    }
+}
+
+#[pymethods]
+impl Collision {
+    pub fn agent_id(&self) -> usize {
+        self.agent_id
+    }
+
+    pub fn shell_coords(&self) -> Vec<Coord> {
+        self.shell.iter().map(|(coord, _)| *coord).collect()
     }
 }

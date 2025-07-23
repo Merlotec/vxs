@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use bevy::platform::collections::HashMap;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
@@ -166,10 +168,11 @@ fn synchronise_world(
     action_cell_query: Query<(Entity, &ActionCell)>,
     action_origin_cell_query: Query<(Entity, &OriginCell)>,
     mut agent_query: Query<(Entity, &mut AgentComponent, &mut Transform)>,
+    mut gizmos: Gizmos, // <-- MODIFICATION: Add Gizmos resource to the system
 ) {
     if let Some(mut world) = world.0.try_iter().last() {
         for (entity, mut cell, mut material) in cell_query.iter_mut() {
-            if let Some(v) = world.cells().get(&cell.coord).copied() {
+            if let Some(v) = world.cells().get(&cell.coord).map(|x| *x) {
                 cell.value = v;
                 // Change visual type.
                 **material = assets.material_for_cell(&v);
@@ -182,7 +185,8 @@ fn synchronise_world(
         // Add remaining cells.render.rs
 
         // Add remaining cells.
-        for (coord, cell) in world.cells().iter() {
+        for rm in world.cells().iter() {
+            let (coord, cell) = rm.pair();
             commands.spawn((
                 CellComponent {
                     // <-- NEW
@@ -262,31 +266,58 @@ fn synchronise_world(
             ));
         }
 
-        for (entity, mut agent, mut transform) in agent_query.iter_mut() {
-            let mut keep = false;
-            agents.retain(|_id, a| {
-                if agent.agent.id == a.id {
-                    transform.translation = Vec3::from_array(a.pos.into());
-                    agent.agent = a.clone();
-                    keep = true;
-                    false
+        // --- MODIFICATION START ---
+        // The original agent update loop was refactored slightly to correctly
+        // extract agent data and allow for adding the visualization logic.
+
+        for (entity, mut agent_component, mut transform) in agent_query.iter_mut() {
+            let mut was_found_and_updated = false;
+
+            // Use retain to find a matching agent from the network data.
+            // If found, we update the Bevy component, transform, and draw the gizmo.
+            // The agent is then removed from the `agents` HashMap so we know it's been processed.
+            agents.retain(|_id, network_agent| {
+                if agent_component.agent.id == network_agent.id {
+                    // Update position and agent data
+                    transform.translation = Vec3::from_array(network_agent.pos.into());
+                    agent_component.agent = network_agent.clone();
+
+                    // Visualize the agent's forward direction
+                    let fwd = agent_component.agent.camera_view().camera_forward;
+                    let direction_vec = Vec3::new(fwd.x, fwd.y, fwd.z);
+                    let line_end = transform.translation + direction_vec * 5.0; // 5.0 is the line length
+                    gizmos.line(transform.translation, line_end, Color::Srgba(Srgba::RED));
+
+                    was_found_and_updated = true;
+                    false // Remove from map, as it's been handled
                 } else {
-                    true
+                    true // Keep in map to check against other entities
                 }
             });
 
-            if !keep {
+            // If the agent entity in our world was not in the network update, despawn it.
+            if !was_found_and_updated {
                 commands.entity(entity).despawn();
             }
         }
 
-        for (_id, a) in agents.iter() {
+        // Any agents left in the `agents` map are new and need to be spawned.
+        for (_id, agent_to_spawn) in agents.iter() {
+            let start_pos = Vec3::from_array(agent_to_spawn.pos.into());
             commands.spawn((
-                AgentComponent { agent: a.clone() },
+                AgentComponent {
+                    agent: agent_to_spawn.clone(),
+                },
                 Mesh3d(assets.drone_mesh.clone()),
                 MeshMaterial3d(assets.drone_body_mat.clone()),
-                Transform::from_translation(Vec3::from_array(a.pos.into())),
+                Transform::from_translation(start_pos),
             ));
+
+            // Also visualize the forward direction for newly spawned agents
+            let fwd = agent_to_spawn.camera_view().camera_forward;
+            let direction_vec = Vec3::new(fwd.x, fwd.y, fwd.z);
+            let line_end = start_pos + direction_vec * 5.0; // 5.0 is the line length
+            gizmos.line(start_pos, line_end, Color::Srgba(Srgba::RED));
         }
     }
 }

@@ -1,8 +1,10 @@
+use std::ops::{Deref, DerefMut};
+
 use bevy::platform::collections::HashMap;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Vector3;
-use voxelsim::viewport::VirtualGrid;
+use voxelsim::viewport::{CameraProjection, VirtualGrid};
 
 use crate::network::NetworkSubscriber;
 use crate::render::{
@@ -33,11 +35,12 @@ pub fn run_pov_server(port_offset: u16) {
     );
 
     let (mut agent_sub, agent_receiver) = NetworkSubscriber::<HashMap<usize, Agent>>::new(
-        std::env::var("VXS_AGENT_ADDR").unwrap_or("172.0.0.1".to_string()),
-        std::env::var("VXS_AGENT_PORT")
+        std::env::var("VXS_AGENT_POV_ADDR").unwrap_or("172.0.0.1".to_string()),
+        std::env::var("VXS_AGENT_POV_PORT")
             .ok()
             .and_then(|x| x.parse::<u16>().ok())
-            .unwrap_or(8081),
+            .unwrap_or(9090)
+            + port_offset,
     );
 
     // Start network listener in background thread with its own tokio runtime
@@ -199,7 +202,7 @@ fn centre_camera_system(
         if camera_mode.is_pov {
             // POV mode: position camera at agent center with velocity-based rotation and thrust tilt
             if let Ok((mut pov_transform, _)) = pov_camera_query.single_mut() {
-                update_pov_camera(&mut pov_transform, pos, agent);
+                update_pov_camera_transform(&mut pov_transform, pos, agent);
             }
         } else {
             // Pan orbit mode: set target focus
@@ -215,7 +218,7 @@ fn centre_camera_system(
         for (t, a) in agent_query.iter() {
             if a.agent.id == focused.0 {
                 if let Ok((mut pov_transform, _)) = pov_camera_query.single_mut() {
-                    update_pov_camera(&mut pov_transform, &t.translation, &a.agent);
+                    update_pov_camera_transform(&mut pov_transform, &t.translation, &a.agent);
                 }
                 break;
             }
@@ -223,17 +226,10 @@ fn centre_camera_system(
     }
 }
 
-fn update_pov_camera(camera_transform: &mut Transform, agent_pos: &Vec3, agent: &Agent) {
+fn update_pov_camera_transform(camera_transform: &mut Transform, agent_pos: &Vec3, agent: &Agent) {
     // Position camera at agent center
     camera_transform.translation = *agent_pos;
-
-    // Use Agent's camera method to get CameraView
-    // Default FOV and max distance values - these could be configurable
-    let fov_horizontal = 90.0_f32.to_radians();
-    let fov_vertical = 60.0_f32.to_radians();
-    let max_distance = 100.0;
-
-    let camera_view = agent.camera();
+    let camera_view = agent.camera_view();
 
     // Convert CameraView vectors to Bevy Vec3
     let forward = Vec3::new(
@@ -273,10 +269,19 @@ fn synchronise_world(
     action_cell_query: Query<(Entity, &ActionCell)>,
     action_origin_cell_query: Query<(Entity, &OriginCell)>,
     mut agent_query: Query<(Entity, &mut AgentComponent, &mut Transform)>,
+    mut camera_projection_query: Query<
+        (&mut Projection),
+        (With<Camera3d>, With<PovCamera>, Without<AgentComponent>),
+    >,
 ) {
     if let Some(mut pov) = pov.0.try_iter().last() {
         for (entity, mut cell, mut material) in cell_query.iter_mut() {
-            if let Some(v) = pov.virtual_world.cells().get(&cell.coord).copied() {
+            if let Some(v) = pov
+                .virtual_world
+                .cells()
+                .get(&cell.coord)
+                .map(|x| *x.deref())
+            {
                 cell.value = v;
                 // Change visual type.
                 **material = assets.material_for_cell(&v.cell);
@@ -285,11 +290,9 @@ fn synchronise_world(
                 commands.entity(entity).despawn();
             }
         }
-
-        // Add remaining cells.render.rs
-
         // Add remaining cells.
-        for (coord, cell) in pov.virtual_world.cells().iter() {
+        for rm in pov.virtual_world.cells().iter() {
+            let (coord, cell) = rm.pair();
             commands.spawn((
                 VirtualCellComponent {
                     // <-- NEW
@@ -300,6 +303,18 @@ fn synchronise_world(
                 MeshMaterial3d(assets.material_for_cell(&cell.cell)),
                 Transform::from_xyz(coord[0] as f32, coord[1] as f32, coord[2] as f32),
             ));
+        }
+
+        // Change the camera projection.
+        let proj = pov.proj;
+        for mut camera_proj in camera_projection_query.iter_mut() {
+            *camera_proj = Projection::Perspective(PerspectiveProjection {
+                fov: proj.fov_vertical,
+                aspect_ratio: proj.aspect,
+                near: proj.near_distance,
+                far: proj.max_distance,
+                ..default()
+            });
         }
     }
 

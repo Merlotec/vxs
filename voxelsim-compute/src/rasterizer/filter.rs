@@ -1,5 +1,4 @@
 use voxelsim::Coord;
-use wgpu::{hal::Queue, wgc::device::queue};
 
 pub struct FilterBindings {
     pub layout: wgpu::BindGroupLayout,
