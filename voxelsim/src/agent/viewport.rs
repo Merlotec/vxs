@@ -1,8 +1,7 @@
 use dashmap::DashMap;
 use nalgebra::{Matrix4, Perspective3, Point3, Vector2, Vector3};
-use rayon::prelude::*;
 
-use crate::{Cell, Coord, VoxelGrid};
+use crate::{Cell, Coord};
 use std::collections::HashMap;
 
 use super::*;
