@@ -1,0 +1,8 @@
+[workspace]
+members = [
+  "voxelsim",
+  "voxelsim-simulator",
+  "voxelsim-compute",
+  "voxelsim-renderer",
+  "voxelsim-py",
+]

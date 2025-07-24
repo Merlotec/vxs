@@ -82,14 +82,6 @@ pub(crate) fn within_bounds<N: PartialOrd>(v: Vector3<N>, b: Vector3<N>) -> bool
     v.iter().zip(b.iter()).all(|(vi, bi)| vi <= bi)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
-pub struct GlobalEnv {
-    pub world: VoxelGrid,
-    pub agents: HashMap<usize, Agent>,
-    pub povs: HashMap<usize, PovData>,
-}
-
 // Dynamic height voxel grid.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
@@ -97,27 +89,15 @@ pub struct VoxelGrid {
     cells: DashMap<Coord, Cell>,
 }
 
-pub struct ArtifactNoise {
-    distance_falloff: f32,
-    pos_variance: f32,
-    map_uncertainty: f32,
-}
-
-impl GlobalEnv {
-    pub fn agent(&self, id: &usize) -> Option<&Agent> {
-        self.agents.get(id)
-    }
-
-    pub fn agent_mut(&mut self, id: &usize) -> Option<&mut Agent> {
-        self.agents.get_mut(id)
-    }
-}
-
 impl VoxelGrid {
     pub fn new() -> Self {
         Self {
             cells: DashMap::new(),
         }
+    }
+
+    pub fn from_cells(cells: DashMap<Coord, Cell>) -> Self {
+        Self { cells }
     }
 
     pub fn with_capacity(capacity: usize) -> Self {

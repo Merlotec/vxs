@@ -1,6 +1,10 @@
-use crate::env::{Cell, VoxelGrid};
+use dashmap::DashMap;
 use noise::{NoiseFn, Perlin};
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
+use voxelsim::{
+    Coord,
+    env::{Cell, VoxelGrid},
+};
 
 // Created structure for holding terrain configuration parameters.
 pub struct TerrainConfig {
@@ -111,9 +115,31 @@ impl TreeParams {
     }
 }
 
-// --------------- RUST-ONLY IMPL ----------------------------------
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
+pub struct TerrainGenerator {
+    cells: DashMap<Coord, Cell>,
+}
 
-impl VoxelGrid {
+impl TerrainGenerator {
+    pub fn new() -> Self {
+        Self {
+            cells: DashMap::new(),
+        }
+    }
+    pub fn cells_mut(&mut self) -> &mut DashMap<Coord, Cell> {
+        &mut self.cells
+    }
+
+    pub fn cells(&mut self) -> &DashMap<Coord, Cell> {
+        &self.cells
+    }
+
+    pub fn generate_world(self) -> VoxelGrid {
+        VoxelGrid::from_cells(self.cells)
+    }
+}
+
+impl TerrainGenerator {
     // ---------------------------------------------------------------------
     // 1. BUILD GROUND ------------------------------------------------------
     // ---------------------------------------------------------------------
@@ -316,7 +342,15 @@ impl VoxelGrid {
             // Detailed debug output for each tree
             println!(
                 "Tree {}: placing {} at ({}, {}, {}) with height {}, trunk radius {}, canopy radius {}, canopy height {}",
-                i, format!("{:?}", tree_type), x, ground_y, z, params.height, params.trunk_radius, params.canopy_radius, params.canopy_height
+                i,
+                format!("{:?}", tree_type),
+                x,
+                ground_y,
+                z,
+                params.height,
+                params.trunk_radius,
+                params.canopy_radius,
+                params.canopy_height
             );
 
             let mut rng = StdRng::seed_from_u64(cfg.seed as u64 ^ ((x as u64) << 32) ^ z as u64);
