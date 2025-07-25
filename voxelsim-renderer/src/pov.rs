@@ -185,11 +185,7 @@ fn centre_camera_system(
         positions.sort_by_key(|(k, _, _)| *k);
 
         let next_i = if let Some(i) = positions.iter().position(|(k, _, _)| *k == focused.0) {
-            if (i + 1) < positions.len() {
-                i + 1
-            } else {
-                0
-            }
+            if (i + 1) < positions.len() { i + 1 } else { 0 }
         } else if !positions.is_empty() {
             0
         } else {
@@ -233,22 +229,22 @@ fn update_pov_camera_transform(camera_transform: &mut Transform, agent_pos: &Vec
 
     // Convert CameraView vectors to Bevy Vec3
     let forward = Vec3::new(
-        camera_view.camera_forward.x,
-        camera_view.camera_forward.y,
-        camera_view.camera_forward.z,
+        camera_view.camera_forward.x as f32,
+        camera_view.camera_forward.y as f32,
+        camera_view.camera_forward.z as f32,
     );
     let up = Vec3::new(
-        camera_view.camera_up.x,
-        camera_view.camera_up.y,
-        camera_view.camera_up.z,
+        camera_view.camera_up.x as f32,
+        camera_view.camera_up.y as f32,
+        camera_view.camera_up.z as f32,
     );
 
     // Create rotation from forward and up vectors
     camera_transform.rotation = Quat::from_mat3(&Mat3::from_cols(
         Vec3::new(
-            camera_view.camera_right.x,
-            camera_view.camera_right.y,
-            camera_view.camera_right.z,
+            camera_view.camera_right.x as f32,
+            camera_view.camera_right.y as f32,
+            camera_view.camera_right.z as f32,
         ),
         up,
         -forward, // Bevy uses -Z as forward
@@ -309,10 +305,10 @@ fn synchronise_world(
         let proj = pov.proj;
         for mut camera_proj in camera_projection_query.iter_mut() {
             *camera_proj = Projection::Perspective(PerspectiveProjection {
-                fov: proj.fov_vertical,
-                aspect_ratio: proj.aspect,
-                near: proj.near_distance,
-                far: proj.max_distance,
+                fov: proj.fov_vertical as f32,
+                aspect_ratio: proj.aspect as f32,
+                near: proj.near_distance as f32,
+                far: proj.max_distance as f32,
                 ..default()
             });
         }
@@ -328,7 +324,7 @@ fn synchronise_world(
                 origin_cells.push(buf);
 
                 for cmd in action.cmd_sequence.iter() {
-                    if let Some(dir_vec) = cmd.dir.dir_vec() {
+                    if let Some(dir_vec) = cmd.dir.dir_vector() {
                         buf += dir_vec;
                     }
                     action_cells.push(buf);
@@ -388,7 +384,7 @@ fn synchronise_world(
             let mut keep = false;
             agents.retain(|_id, a| {
                 if agent.agent.id == a.id {
-                    transform.translation = Vec3::from_array(a.pos.into());
+                    transform.translation = Vec3::from_array(a.pos.cast::<f32>().into());
                     agent.agent = a.clone();
                     keep = true;
                     false
@@ -407,7 +403,7 @@ fn synchronise_world(
                 AgentComponent { agent: a.clone() },
                 Mesh3d(assets.drone_mesh.clone()),
                 MeshMaterial3d(assets.drone_body_mat.clone()),
-                Transform::from_translation(Vec3::from_array(a.pos.into())),
+                Transform::from_translation(Vec3::from_array(a.pos.cast::<f32>().into())),
             ));
         }
     }

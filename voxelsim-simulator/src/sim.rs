@@ -40,7 +40,7 @@ impl GlobalEnv {
         &mut self,
         dynamics: &D,
         env: &EnvState,
-        delta: f32,
+        delta: f64,
     ) -> Vec<Collision> {
         self.agents
             .iter_mut()

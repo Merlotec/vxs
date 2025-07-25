@@ -1,14 +1,14 @@
 use nalgebra::Vector3;
 use pyo3::exceptions::PyException;
-use pyo3::{IntoPyObjectExt, prelude::*};
+use pyo3::prelude::*;
 use tinyvec::ArrayVec;
 
 use crate::{
     agent::{
-        Action, Agent, CmdSequence, MoveCommand, MoveDir,
+        Action, Agent, MoveCommand, MoveDir,
         viewport::{CameraProjection, CameraView, IntersectionMap},
     },
-    env::{CollisionShell, Coord, VoxelGrid},
+    env::VoxelGrid,
     network::RendererClient,
 };
 
@@ -24,6 +24,8 @@ pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CameraProjection>()?;
     Ok(())
 }
+
+pub type PyCoord = [i32; 3];
 
 #[pymethods]
 impl RendererClient {
@@ -64,6 +66,7 @@ impl Agent {
             vel: Vector3::zeros(),
             thrust: Vector3::zeros(),
             action: None,
+            trajectory: None,
             yaw: 0.0,
         }
     }
@@ -86,12 +89,16 @@ impl Agent {
     pub fn camera_view_py(&self) -> CameraView {
         self.camera_view()
     }
+
+    pub fn get_action(&self) -> Option<Action> {
+        self.action.clone()
+    }
 }
 
 #[pymethods]
 impl MoveCommand {
     #[new]
-    pub fn new(dir: MoveDir, urgency: f32, yaw_delta: f32) -> Self {
+    pub fn new(dir: MoveDir, urgency: f64, yaw_delta: f64) -> Self {
         Self {
             dir,
             urgency,
@@ -104,7 +111,7 @@ impl MoveCommand {
     }
 
     /// Get the urgency value
-    pub fn get_urgency(&self) -> f32 {
+    pub fn get_urgency(&self) -> f64 {
         self.urgency
     }
 }
@@ -127,6 +134,10 @@ impl Action {
         } else {
             false
         }
+    }
+
+    pub fn get_commands(&self) -> Vec<MoveCommand> {
+        self.cmd_sequence.clone().to_vec()
     }
 
     /// Get the number of commands in the sequence
@@ -221,7 +232,7 @@ impl MoveDir {
 
     /// Get the direction vector as a tuple (x, y, z) or None if undecided
     pub fn get_direction_vector(&self) -> Option<(i32, i32, i32)> {
-        self.dir_vec().map(|v| (v.x, v.y, v.z))
+        self.dir_vector().map(|v| (v.x, v.y, v.z))
     }
 
     /// Check if this direction represents movement
@@ -260,7 +271,7 @@ impl MoveDir {
 #[pymethods]
 impl CameraProjection {
     #[new]
-    pub fn new(aspect: f32, fov_vertical: f32, max_distance: f32, near_distance: f32) -> Self {
+    pub fn new(aspect: f64, fov_vertical: f64, max_distance: f64, near_distance: f64) -> Self {
         Self {
             aspect,
             fov_vertical,

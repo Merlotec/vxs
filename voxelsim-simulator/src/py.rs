@@ -1,8 +1,8 @@
 use nalgebra::Vector3;
 use pyo3::exceptions::PyException;
-use pyo3::{IntoPyObjectExt, prelude::*};
+use pyo3::prelude::*;
 use std::collections::HashMap;
-use tinyvec::ArrayVec;
+use voxelsim::py::PyCoord;
 use voxelsim::{Agent, Coord, MoveCommand, RendererClient, VoxelGrid};
 
 use crate::dynamics::EnvState;
@@ -35,7 +35,7 @@ impl GlobalEnv {
         py: Python,
         dynamics: &StandardDynamics,
         env: &EnvState,
-        delta: f32,
+        delta: f64,
     ) -> Vec<Collision> {
         self.update(dynamics, env, delta)
     }
@@ -71,11 +71,11 @@ impl GlobalEnv {
             .clone())
     }
 
-    pub fn get_agent_pos(&self, agent_id: usize) -> Option<[f32; 3]> {
+    pub fn get_agent_pos(&self, agent_id: usize) -> Option<[f64; 3]> {
         self.agents.get(&agent_id).map(|x| x.pos.into())
     }
 
-    pub fn set_agent_pos(&mut self, agent_id: usize, pos: [f32; 3]) -> PyResult<()> {
+    pub fn set_agent_pos(&mut self, agent_id: usize, pos: [f64; 3]) -> PyResult<()> {
         self.agents
             .get_mut(&agent_id)
             .ok_or(PyException::new_err("Invalid agent id!"))?
@@ -96,18 +96,22 @@ impl GlobalEnv {
             agents,
         }
     }
+
+    pub fn clone_world(&self) -> VoxelGrid {
+        self.world.clone()
+    }
 }
 #[pymethods]
 impl StandardDynamics {
     #[new]
     pub fn new(
-        air_resistance: f32,
-        gravity: (f32, f32, f32),
-        thrust: f32,
-        thrust_urgency_ceiling: f32,
-        bounding_box: (f32, f32, f32),
-        jerk_coeff: f32,
-        yaw_rate: f32,
+        air_resistance: f64,
+        gravity: (f64, f64, f64),
+        thrust: f64,
+        thrust_urgency_ceiling: f64,
+        bounding_box: (f64, f64, f64),
+        jerk_coeff: f64,
+        yaw_rate: f64,
     ) -> Self {
         Self {
             air_resistance,
@@ -135,23 +139,23 @@ impl StandardDynamics {
     }
 
     // Getters for all properties
-    pub fn get_air_resistance(&self) -> f32 {
+    pub fn get_air_resistance(&self) -> f64 {
         self.air_resistance
     }
 
-    pub fn get_gravity(&self) -> (f32, f32, f32) {
+    pub fn get_gravity(&self) -> (f64, f64, f64) {
         (self.g.x, self.g.y, self.g.z)
     }
 
-    pub fn get_thrust(&self) -> f32 {
+    pub fn get_thrust(&self) -> f64 {
         self.thrust
     }
 
-    pub fn get_thrust_urgency_ceiling(&self) -> f32 {
+    pub fn get_thrust_urgency_ceiling(&self) -> f64 {
         self.thrust_urgency_ceiling
     }
 
-    pub fn get_bounding_box(&self) -> (f32, f32, f32) {
+    pub fn get_bounding_box(&self) -> (f64, f64, f64) {
         (
             self.bounding_box.x,
             self.bounding_box.y,
@@ -160,23 +164,23 @@ impl StandardDynamics {
     }
 
     // Setters for all properties
-    pub fn set_air_resistance(&mut self, value: f32) {
+    pub fn set_air_resistance(&mut self, value: f64) {
         self.air_resistance = value;
     }
 
-    pub fn set_gravity(&mut self, x: f32, y: f32, z: f32) {
+    pub fn set_gravity(&mut self, x: f64, y: f64, z: f64) {
         self.g = Vector3::new(x, y, z);
     }
 
-    pub fn set_thrust(&mut self, value: f32) {
+    pub fn set_thrust(&mut self, value: f64) {
         self.thrust = value;
     }
 
-    pub fn set_thrust_urgency_ceiling(&mut self, value: f32) {
+    pub fn set_thrust_urgency_ceiling(&mut self, value: f64) {
         self.thrust_urgency_ceiling = value;
     }
 
-    pub fn set_bounding_box(&mut self, x: f32, y: f32, z: f32) {
+    pub fn set_bounding_box(&mut self, x: f64, y: f64, z: f64) {
         self.bounding_box = Vector3::new(x, y, z);
     }
 
@@ -207,12 +211,12 @@ impl StandardDynamics {
     }
 
     /// Get the effective gravity magnitude
-    pub fn gravity_magnitude(&self) -> f32 {
+    pub fn gravity_magnitude(&self) -> f64 {
         self.g.norm()
     }
 
     /// Get the bounding box volume
-    pub fn bounding_box_volume(&self) -> f32 {
+    pub fn bounding_box_volume(&self) -> f64 {
         self.bounding_box.x * self.bounding_box.y * self.bounding_box.z
     }
 }
@@ -222,7 +226,10 @@ impl Collision {
         self.agent_id
     }
 
-    pub fn shell_coords(&self) -> Vec<Coord> {
-        self.shell.iter().map(|(coord, _)| *coord).collect()
+    pub fn shell_coords(&self) -> Vec<PyCoord> {
+        self.shell
+            .iter()
+            .map(|(coord, _)| (*coord).into())
+            .collect()
     }
 }
