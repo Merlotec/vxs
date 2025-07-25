@@ -1,11 +1,7 @@
-use crate::{PovData, agent::Agent};
 use bitflags::bitflags;
 use dashmap::DashMap;
 use nalgebra::Vector3;
-#[cfg(feature = "python")]
-use pyo3::pyclass;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use tinyvec::ArrayVec;
 
 bitflags! {
@@ -24,7 +20,7 @@ bitflags! {
 
 }
 
-pub type Coord = [i32; 3];
+pub type Coord = Vector3<i32>;
 
 pub type GridShell = [Vector3<i32>; 26];
 pub type CollisionShell = ArrayVec<[(Coord, Cell); 26]>;
@@ -51,17 +47,17 @@ pub(crate) fn adjacent_coords(coord: Vector3<i32>) -> GridShell {
 ///
 /// Touching faces/edges counts as an intersection; change the comparisons
 /// from `>=` to `>` if you need strictly positive volume overlap.
-pub fn intersects(coord: Vector3<i32>, pos: Vector3<f32>, dims: Vector3<f32>) -> bool {
+pub fn intersects(coord: Vector3<i32>, pos: Vector3<f64>, dims: Vector3<f64>) -> bool {
     // --- Unit-cube bounds (½-extent is 0.5 on every axis) ------------------
     let cube_min = Vector3::new(
-        coord.x as f32 - 0.5,
-        coord.y as f32 - 0.5,
-        coord.z as f32 - 0.5,
+        coord.x as f64 - 0.5,
+        coord.y as f64 - 0.5,
+        coord.z as f64 - 0.5,
     );
     let cube_max = Vector3::new(
-        coord.x as f32 + 0.5,
-        coord.y as f32 + 0.5,
-        coord.z as f32 + 0.5,
+        coord.x as f64 + 0.5,
+        coord.y as f64 + 0.5,
+        coord.z as f64 + 0.5,
     );
 
     // --- Object bounds -----------------------------------------------------
@@ -119,11 +115,6 @@ impl VoxelGrid {
         &mut self.cells
     }
 
-    pub fn artifact(self, falloff: f32, uncertainty: f32) -> Self {
-        // TODO: implement artifacting that mimics the uncertainty of the drone.
-        self
-    }
-
     pub fn set(&mut self, coord: Coord, cell: Cell) {
         self.cells.insert(coord, cell);
     }
@@ -134,15 +125,14 @@ impl VoxelGrid {
 
     /// Returns a the list of cells if an object with the given centre coordinate and dimensions collides with any
     /// cells.
-    pub fn collisions(&self, centre: Vector3<f32>, dims: Vector3<f32>) -> CollisionShell {
+    pub fn collisions(&self, centre: Vector3<f64>, dims: Vector3<f64>) -> CollisionShell {
         let mut collisions = ArrayVec::new();
         // We only need to check the cubes around.
         assert!(dims.x < 1.0 && dims.y < 1.0 && dims.z < 1.0);
         for cell_coord in adjacent_coords(centre.try_cast::<i32>().unwrap()) {
-            let coord: [i32; 3] = cell_coord.into();
-            if let Some(cell) = self.cells().get(&coord) {
+            if let Some(cell) = self.cells().get(&cell_coord) {
                 if intersects(cell_coord, centre, dims) {
-                    collisions.push((coord, *cell));
+                    collisions.push((cell_coord, *cell));
                 }
             }
         }

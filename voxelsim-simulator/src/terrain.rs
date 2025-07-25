@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use nalgebra::Vector3;
 use noise::{NoiseFn, Perlin};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use voxelsim::{
@@ -8,7 +9,7 @@ use voxelsim::{
 
 // Created structure for holding terrain configuration parameters.
 pub struct TerrainConfig {
-    pub size: [i32; 3],
+    pub size: Vector3<i32>,
     pub height_scale: f64,
     pub flat_band: f64,
     pub max_terrain_height: i32,
@@ -21,7 +22,7 @@ pub struct TerrainConfig {
 impl Default for TerrainConfig {
     fn default() -> Self {
         Self {
-            size: [200, 64, 200],
+            size: Vector3::new(200, 64, 200),
             height_scale: 100.0,
             flat_band: 0.1,
             max_terrain_height: 32,
@@ -153,7 +154,7 @@ impl TerrainGenerator {
         height_fn: &mut dyn FnMut(i32, i32) -> f64,
     ) -> Vec<Vec<i32>> {
         // Return height map
-        let [max_x, _max_y, max_z] = cfg.size;
+        let [max_x, _max_y, max_z] = cfg.size.into();
 
         // --- 1. collect surface heights ---------------------------------
         let mut height_map = vec![vec![0i32; (max_z + 1) as usize]; (max_x + 1) as usize];
@@ -175,7 +176,7 @@ impl TerrainGenerator {
 
                 // Fill current column up to its own height
                 for y in bottom_y..=h_here {
-                    let coord = [x, y, z];
+                    let coord = Vector3::new(x, y, z);
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
@@ -210,7 +211,7 @@ impl TerrainGenerator {
 
                         // Fill the gap between the two heights
                         for y in min_height..=max_height {
-                            let coord = [x, y, z];
+                            let coord = Vector3::new(x, y, z);
                             if !within_bounds_arr(&coord, &cfg.size) {
                                 continue;
                             }
@@ -240,7 +241,7 @@ impl TerrainGenerator {
         height_map: &Vec<Vec<i32>>,
         max_trees: usize,
     ) {
-        let [max_x, max_y, max_z] = cfg.size;
+        let [max_x, max_y, max_z] = cfg.size.into();
         let min_distance_sq = 64; // Minimum squared distance between trees
         let tree_density_threshold = 0.7; // Threshold for placing trees in groves
 
@@ -391,7 +392,7 @@ impl TerrainGenerator {
                         continue;
                     }
 
-                    let coord = [x + dx + curve_offset, ground_y + y, z + dz];
+                    let coord = Vector3::new(x + dx + curve_offset, ground_y + y, z + dz);
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
@@ -469,7 +470,7 @@ impl TerrainGenerator {
                     let bx = x + (angle.cos() * r as f32) as i32;
                     let bz = z + (angle.sin() * r as f32) as i32;
 
-                    let coord = [bx, y, bz];
+                    let coord = Vector3::new(bx, y, bz);
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
@@ -492,7 +493,7 @@ impl TerrainGenerator {
                             let dy = rng.random_range(-1..=0);
                             let dz = rng.random_range(-1..=1);
 
-                            let needle_coord = [bx + dx, y + dy, bz + dz];
+                            let needle_coord = Vector3::new(bx + dx, y + dy, bz + dz);
                             if !within_bounds_arr(&needle_coord, &cfg.size) {
                                 continue;
                             }
@@ -551,7 +552,7 @@ impl TerrainGenerator {
                                 continue;
                             }
 
-                            let coord = [bx + dx, by + dy, bz + dz];
+                            let coord = Vector3::new(bx + dx, by + dy, bz + dz);
                             if !within_bounds_arr(&coord, &cfg.size) {
                                 continue;
                             }
@@ -578,7 +579,7 @@ impl TerrainGenerator {
                         let sby = by + rng.random_range(-1..=1);
                         let sbz = bz + (sub_angle.sin() * s as f32) as i32;
 
-                        let coord = [sbx, sby, sbz];
+                        let coord = Vector3::new(sbx, sby, sbz);
                         if !within_bounds_arr(&coord, &cfg.size) {
                             continue;
                         }
@@ -613,7 +614,7 @@ impl TerrainGenerator {
                         continue;
                     }
 
-                    let coord = [x + dx, canopy_center_y + dy, z + dz];
+                    let coord = Vector3::new(x + dx, canopy_center_y + dy, z + dz);
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
@@ -660,7 +661,7 @@ impl TerrainGenerator {
                     let by = y + (r as f32 * 0.3) as i32; // Gentler upward curve
                     let bz = z + (angle.sin() * r as f32) as i32;
 
-                    let coord = [bx, by, bz];
+                    let coord = Vector3::new(bx, by, bz);
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
@@ -678,11 +679,11 @@ impl TerrainGenerator {
                     if r > length / 2 || y < ground_y + trunk_height {
                         for _ in 0..3 {
                             // Reduced for narrower canopy
-                            let leaf_coord = [
+                            let leaf_coord = Vector3::new(
                                 bx + rng.random_range(-1..=1),
                                 by + rng.random_range(-1..=1),
                                 bz + rng.random_range(-1..=1),
-                            ];
+                            );
                             if !within_bounds_arr(&leaf_coord, &cfg.size) {
                                 continue;
                             }
@@ -717,7 +718,7 @@ impl TerrainGenerator {
                         continue;
                     }
 
-                    let coord = [x + dx, canopy_top_y + dy, z + dz];
+                    let coord = Coord::new(x + dx, canopy_top_y + dy, z + dz);
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
@@ -772,7 +773,7 @@ impl TerrainGenerator {
                     break;
                 } // Don't go below ground
 
-                let coord = [bx, by, bz];
+                let coord = Vector3::new(bx, by, bz);
                 if !within_bounds_arr(&coord, &cfg.size) {
                     continue;
                 }
@@ -789,7 +790,7 @@ impl TerrainGenerator {
                 // Hanging leaves along the branch
                 if t > 2 {
                     for dy in -2..=0 {
-                        let leaf_coord = [bx, by + dy, bz];
+                        let leaf_coord = Vector3::new(bx, by + dy, bz);
                         if !within_bounds_arr(&leaf_coord, &cfg.size) {
                             continue;
                         }
@@ -819,7 +820,7 @@ impl TerrainGenerator {
                         continue;
                     }
 
-                    let coord = [x + dx, canopy_y + dy, z + dz];
+                    let coord = Vector3::new(x + dx, canopy_y + dy, z + dz);
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
@@ -852,14 +853,14 @@ impl TerrainGenerator {
         //                     ▼ trait-object, no generics
         passage_fn: &mut dyn FnMut(i32, i32, i32) -> bool,
     ) {
-        let [max_x, max_y, max_z] = cfg.size;
+        let [max_x, max_y, max_z] = cfg.size.into();
         for x in 0..=max_x {
             for y in 0..=max_y {
                 for z in 0..=max_z {
                     if !passage_fn(x, y, z) {
                         continue;
                     }
-                    let coord = [x, y, z];
+                    let coord = Vector3::new(x, y, z);
                     let mut to_remove = None;
                     if let Some(mut cell) = self.cells_mut().get_mut(&coord) {
                         if cell.contains(Cell::SPARSE | Cell::GROUND) {
@@ -925,7 +926,7 @@ impl TerrainGenerator {
     }
 }
 
-fn within_bounds_arr(v: &[i32; 3], max: &[i32; 3]) -> bool {
+fn within_bounds_arr(v: &Coord, max: &Vector3<i32>) -> bool {
     v.iter()
         .zip(max.iter())
         .all(|(vi, bi)| *vi >= 0 && *vi <= *bi)

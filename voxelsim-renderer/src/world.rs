@@ -4,6 +4,7 @@ use bevy::platform::collections::HashMap;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Vector3;
+use voxelsim::trajectory::Trajectory;
 
 use crate::network::NetworkSubscriber;
 use crate::render::{
@@ -135,11 +136,7 @@ fn centre_camera_system(
         }
         positions.sort_by_key(|(k, _)| *k);
         let next_i = if let Some(i) = positions.iter().position(|(k, _)| *k == focused.0) {
-            if (i + 1) < positions.len() {
-                i + 1
-            } else {
-                0
-            }
+            if (i + 1) < positions.len() { i + 1 } else { 0 }
         } else if !positions.is_empty() {
             0
         } else {
@@ -210,7 +207,7 @@ fn synchronise_world(
                 origin_cells.push(buf);
 
                 for cmd in action.cmd_sequence.iter() {
-                    if let Some(dir_vec) = cmd.dir.dir_vec() {
+                    if let Some(dir_vec) = cmd.dir.dir_vector() {
                         buf += dir_vec;
                     }
                     action_cells.push(buf);
@@ -279,14 +276,24 @@ fn synchronise_world(
             agents.retain(|_id, network_agent| {
                 if agent_component.agent.id == network_agent.id {
                     // Update position and agent data
-                    transform.translation = Vec3::from_array(network_agent.pos.into());
+                    transform.translation =
+                        Vec3::from_array(network_agent.pos.cast::<f32>().into());
                     agent_component.agent = network_agent.clone();
 
                     // Visualize the agent's forward direction
                     let fwd = agent_component.agent.camera_view().camera_forward;
-                    let direction_vec = Vec3::new(fwd.x, fwd.y, fwd.z);
+                    let direction_vec = Vec3::from_array(fwd.cast::<f32>().into());
                     let line_end = transform.translation + direction_vec * 5.0; // 5.0 is the line length
                     gizmos.line(transform.translation, line_end, Color::Srgba(Srgba::RED));
+                    if let Some(trajectory) = &agent_component.agent.trajectory {
+                        draw_spline(&mut gizmos, trajectory);
+                    }
+
+                    // if let Some(action) = &agent_component.agent.action {
+                    //     let trajectory =
+                    //         Trajectory::generate(agent_component.agent.pos, &action.centroids());
+                    //     draw_spline(&mut gizmos, &trajectory);
+                    // }
 
                     was_found_and_updated = true;
                     false // Remove from map, as it's been handled
@@ -303,7 +310,7 @@ fn synchronise_world(
 
         // Any agents left in the `agents` map are new and need to be spawned.
         for (_id, agent_to_spawn) in agents.iter() {
-            let start_pos = Vec3::from_array(agent_to_spawn.pos.into());
+            let start_pos = Vec3::from_array(agent_to_spawn.pos.cast::<f32>().into());
             commands.spawn((
                 AgentComponent {
                     agent: agent_to_spawn.clone(),
@@ -315,9 +322,32 @@ fn synchronise_world(
 
             // Also visualize the forward direction for newly spawned agents
             let fwd = agent_to_spawn.camera_view().camera_forward;
-            let direction_vec = Vec3::new(fwd.x, fwd.y, fwd.z);
+            let direction_vec = Vec3::new(fwd.x as f32, fwd.y as f32, fwd.z as f32);
             let line_end = start_pos + direction_vec * 5.0; // 5.0 is the line length
             gizmos.line(start_pos, line_end, Color::Srgba(Srgba::RED));
         }
     }
+}
+
+fn draw_spline(gizmos: &mut Gizmos, spline: &Trajectory) {
+    let traj = spline.inner();
+
+    // How many segments to draw?
+    let segments = 200;
+    let mut pts = Vec::with_capacity(segments + 1);
+
+    let (dom_min, dom_max) = spline.inner().knot_domain();
+    // println!("dmin: {}, dmax: {}", dom_min, dom_max);
+    // Sample t in [0,1]
+    for i in 0..=segments {
+        let t = dom_min + (i as f64 / segments as f64) * (dom_max - dom_min);
+        let p = traj.point(t);
+        // Convert from f64 to f32 for Bevy
+        pts.push(Vec3::new(p.x as f32, p.y as f32, p.z as f32));
+    }
+
+    // println!("last: {:?}", pts.last());
+
+    // Draw a connected line strip in cyan
+    gizmos.linestrip(pts.into_iter(), Color::Srgba(Srgba::BLUE));
 }

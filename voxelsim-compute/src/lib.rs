@@ -32,7 +32,7 @@ mod ffi {
 
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn render_borrowed(
-        camera_view_proj: Matrix4<f32>,
+        camera_view_proj: Matrix4<f64>,
         filter_world: *mut VirtualGrid,
         render_state: *mut State,
     ) {
@@ -58,7 +58,7 @@ mod ffi {
 
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn render_shared(
-        camera_view_proj: Matrix4<f32>,
+        camera_view_proj: Matrix4<f64>,
         filter_world: Arc<Mutex<VirtualGrid>>,
         render_state: *mut State,
     ) {
@@ -156,7 +156,7 @@ pub struct AgentVisionRenderer {
 pub enum RenderCommand {
     Exit,
     Render {
-        view_proj: Matrix4<f32>,
+        view_proj: Matrix4<f64>,
         filter_world: Arc<Mutex<VirtualGrid>>,
         sender: SyncSender<WorldChangeset>,
     },
@@ -182,7 +182,7 @@ impl AgentVisionRenderer {
                     filter_world,
                     sender,
                 } => {
-                    let camera_matrix = CameraMatrix::from_view_proj(view_proj);
+                    let camera_matrix = CameraMatrix::from_view_proj(view_proj.cast());
                     // let camera_matrix = CameraMatrix::default();
                     if let Ok(changeset) = state
                         .run(&camera_matrix, filter_world.lock().unwrap().deref())
@@ -197,7 +197,7 @@ impl AgentVisionRenderer {
 
     pub fn update_filter_world(
         &self,
-        view_proj: Matrix4<f32>,
+        view_proj: Matrix4<f64>,
         filter_world: FilterWorld,
         timestamp: f64,
     ) {
@@ -216,7 +216,7 @@ impl AgentVisionRenderer {
         });
     }
 
-    pub fn update_world(&self, view_proj: Matrix4<f32>, filter_world: Arc<Mutex<VirtualGrid>>) {
+    pub fn update_world(&self, view_proj: Matrix4<f64>, filter_world: Arc<Mutex<VirtualGrid>>) {
         let rx = self.render(view_proj, filter_world.clone());
         std::thread::spawn(move || {
             if let Ok(change) = rx.recv() {
@@ -228,7 +228,7 @@ impl AgentVisionRenderer {
 
     pub fn render(
         &self,
-        view_proj: Matrix4<f32>,
+        view_proj: Matrix4<f64>,
         filter_world: Arc<Mutex<VirtualGrid>>,
     ) -> Receiver<WorldChangeset> {
         let (tx, rx) = mpsc::sync_channel(1000);

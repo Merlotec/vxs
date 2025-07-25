@@ -5,7 +5,7 @@ pub mod texture;
 use crate::rasterizer::{filter::FilterBindings, texture::TextureSet};
 use camera::CameraMatrix;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use voxelsim::{VoxelGrid, viewport::VirtualGrid};
+use voxelsim::{Coord, VoxelGrid, viewport::VirtualGrid};
 use wgpu::{
     Buffer,
     util::{BufferInitDescriptor, DeviceExt},
@@ -96,7 +96,7 @@ pub struct BufferSet {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CellInstance {
-    pub position: [i32; 3],
+    pub position: Coord,
     pub value: u32,
 }
 

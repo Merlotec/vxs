@@ -1,8 +1,8 @@
 use nalgebra::{Unit, Vector3};
 use serde::{Deserialize, Serialize};
-use tinyvec::{ArrayVec, array_vec};
+use tinyvec::ArrayVec;
 
-use crate::viewport::CameraView;
+use crate::{Coord, trajectory::Trajectory, viewport::CameraView};
 
 pub mod trajectory;
 pub mod viewport;
@@ -10,21 +10,22 @@ pub mod viewport;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct Agent {
-    pub pos: Vector3<f32>,
-    pub vel: Vector3<f32>,
+    pub pos: Vector3<f64>,
+    pub vel: Vector3<f64>,
 
     // Thrust is specified in units of ACCELERATION!
     // It is also assumed that if there is no change from previous action then the thrust will
     // remain the same.
-    pub thrust: Vector3<f32>,
+    pub thrust: Vector3<f64>,
 
     // Given in units of radians around the thrust axis.
-    pub yaw: f32,
+    pub yaw: f64,
 
     pub id: usize,
 
     // Current action being processed by the agent.
     pub action: Option<Action>,
+    pub trajectory: Option<Trajectory>,
 }
 
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
@@ -43,7 +44,7 @@ pub enum MoveDir {
 }
 
 impl MoveDir {
-    pub fn dir_vec(&self) -> Option<Vector3<i32>> {
+    pub fn dir_vector(&self) -> Option<Coord> {
         match self {
             MoveDir::None => Some(Vector3::zeros()),
             MoveDir::Up => Some(Vector3::new(0, 1, 0)),
@@ -61,8 +62,8 @@ impl MoveDir {
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct MoveCommand {
     pub dir: MoveDir,
-    pub urgency: f32,
-    pub yaw_delta: f32,
+    pub urgency: f64,
+    pub yaw_delta: f64,
 }
 
 pub type CmdSequence = ArrayVec<[MoveCommand; MAX_ACTIONS]>;
@@ -76,6 +77,38 @@ pub struct Action {
     pub origin: Vector3<i32>,
 }
 
+impl Action {
+    // Gets the relative position of the centroid of the grid at position t (unscaled) from the
+    // centroid of the starting cell.
+    pub fn relative_centroid_pos(&self, t: usize) -> Option<Coord> {
+        if self.cmd_sequence.len() >= t {
+            Some(
+                self.cmd_sequence
+                    .iter()
+                    .take(t)
+                    .filter_map(|x| x.dir.dir_vector())
+                    .sum(),
+            )
+        } else {
+            None
+        }
+    }
+
+    pub fn centroids(&self) -> Vec<Coord> {
+        let mut total: Coord = self.origin;
+        let mut centroids = Vec::new();
+        for seq in self.cmd_sequence.iter() {
+            if let Some(dir_vector) = seq.dir.dir_vector() {
+                let centroid = total + dir_vector;
+                centroids.push(centroid);
+                total = centroid;
+            }
+        }
+
+        centroids
+    }
+}
+
 pub const MAX_ACTIONS: usize = 6;
 
 impl Agent {
@@ -85,8 +118,9 @@ impl Agent {
             pos: Vector3::zeros(),
             vel: Vector3::zeros(),
             thrust: Vector3::zeros(),
-            action: None,
             yaw: 0.0,
+            action: None,
+            trajectory: None,
         }
     }
 
@@ -121,22 +155,22 @@ impl Agent {
         let camera_up = camera_right.cross(&forward).normalize();
 
         CameraView {
-            camera_pos: self.pos,    // assumed Point3<f32>
-            camera_forward: forward, // Vector3<f32>
-            camera_up,               // Vector3<f32>
-            camera_right,            // Vector3<f32>
+            camera_pos: self.pos,    // assumed Point3<f64>
+            camera_forward: forward, // Vector3<f64>
+            camera_up,               // Vector3<f64>
+            camera_right,            // Vector3<f64>
         }
     }
 
-    pub fn set_position(&mut self, x: f32, y: f32, z: f32) {
+    pub fn set_position(&mut self, x: f64, y: f64, z: f64) {
         self.pos = Vector3::new(x, y, z);
     }
 
-    pub fn get_position(&self) -> (f32, f32, f32) {
+    pub fn get_position(&self) -> (f64, f64, f64) {
         (self.pos.x, self.pos.y, self.pos.z)
     }
 
-    pub fn set_velocity(&mut self, x: f32, y: f32, z: f32) {
+    pub fn set_velocity(&mut self, x: f64, y: f64, z: f64) {
         self.vel = Vector3::new(x, y, z);
     }
 
@@ -149,9 +183,12 @@ impl Agent {
     }
 
     pub fn perform(&mut self, cmd_sequence: CmdSequence) {
-        self.action = Some(Action {
+        let action = Action {
             cmd_sequence,
             origin: self.pos.map(|e| e.round() as i32),
-        })
+        };
+        let cells = action.centroids();
+        self.trajectory = Some(Trajectory::generate(self.pos, &cells));
+        self.action = Some(action);
     }
 }
