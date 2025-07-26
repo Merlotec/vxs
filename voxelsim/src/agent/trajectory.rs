@@ -228,12 +228,22 @@ impl Default for Trajectory {
 
 impl Trajectory {
     /// Generates a spline through the grid path for target times specified in the tuple (coord, time).
-    pub fn generate(start: Vector3<f64>, cells: &[(Coord, f64)]) -> Self {
-        let (cells, times): (Vec<Coord>, Vec<f64>) = cells.to_vec().into_iter().unzip();
+    pub fn generate(start: Vector3<f64>, cells: &[(Coord, f64, f64)]) -> Self {
+        let (mut xs, mut ys, mut zs) = (Vec::new(), Vec::new(), Vec::new());
+        let (cells, times, yaw_seq): (Vec<Coord>, Vec<f64>, Vec<f64>) =
+            cells
+                .into_iter()
+                .fold((xs, ys, zs), |(mut xs, mut ys, mut zs), (x, y, z)| {
+                    xs.push(*x);
+                    ys.push(*y);
+                    zs.push(*z);
+                    (xs, ys, zs)
+                });
+
         Self {
             spline: generate_spline(start, &cells),
             urgencies: times,
-            yaw_seq: Vec::new(),
+            yaw_seq,
             progress: 0.0,
         }
     }

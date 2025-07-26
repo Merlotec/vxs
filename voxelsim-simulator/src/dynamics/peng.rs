@@ -1,6 +1,9 @@
 use nalgebra::{Matrix3, Rotation3, Vector3};
 use peng_quad::{PlannerManager, QPpolyTrajPlanner, Quadrotor, config::SimulationConfig};
-use voxelsim::{Agent, chase::ChaseTarget};
+use voxelsim::{
+    Agent,
+    chase::{ActionProgress, ChaseTarget},
+};
 
 use crate::dynamics::{
     AgentDynamics,
@@ -24,16 +27,12 @@ impl Default for PengQuadDynamics {
             9.81,
             0.1,
             Matrix3::new(0.0347563, 0.0, 0.0, 0.0, 0.0458929, 0.0, 0.0, 0.0, 0.0977),
-            Vector3::new(0.5, 0.1, 0.5),
+            Vector3::new(0.5, 0.5, 0.1),
         )
     }
 }
 
 impl PengQuadDynamics {
-    pub fn switch_vec<T: Copy>(v: Vector3<T>) -> Vector3<T> {
-        Vector3::new(v[0], v[2], v[1])
-    }
-
     pub fn new(
         mass: f64,
         gravity: f64,
@@ -51,7 +50,7 @@ impl PengQuadDynamics {
         .unwrap();
         Self {
             quad,
-            bounding_box: Self::switch_vec(bounding_box),
+            bounding_box: bounding_box,
             pos_params: Default::default(),
             pos_state: Default::default(),
             rate_params: Default::default(),
@@ -68,9 +67,26 @@ impl AgentDynamics for PengQuadDynamics {
         chaser: &ChaseTarget,
         delta: f64,
     ) {
-        self.quad.time_step = delta as f32;
-        self.quad.position = Self::switch_vec(agent.pos.cast::<f32>());
-        self.quad.velocity = Self::switch_vec(agent.pos.cast::<f32>());
+        // 1) Advance trajectory progress
+        match chaser.progress {
+            ActionProgress::ProgressTo(p) => {
+                if let Some(action) = &mut agent.action {
+                    action.trajectory.progress = p;
+                }
+            }
+            ActionProgress::Complete => {
+                agent.action = None;
+                return;
+            }
+            ActionProgress::Hold => return,
+        }
+
+        // 2) Sync quad state to our Agent
+        self.quad.position = agent.pos.cast::<f32>();
+        self.quad.velocity = agent.vel.cast::<f32>();
+
+        // 3) Compute desired acceleration to chase the target
+        println!("chaser: {:?}", chaser);
         let a_cmd = drone::compute_accel_cmd(
             self.quad.position.cast::<f64>(),
             self.quad.velocity.cast::<f64>(),
@@ -81,31 +97,63 @@ impl AgentDynamics for PengQuadDynamics {
             &mut self.pos_state,
             delta,
         );
+        println!("a_cmd = {:?}", a_cmd);
 
+        // 4) Add gravity, compute thrust magnitude
         let a_total = a_cmd + Vector3::new(0.0, 0.0, self.quad.gravity as f64);
+        println!("a_total = {:?}", a_total);
         let thrust = self.quad.mass as f64 * a_total.norm();
 
-        let z_b_cmd = -a_total.normalize();
-        let yaw_cmd = chaser.yaw;
-        let r_cmd = Rotation3::from_matrix_unchecked(drone::build_body_rotation(&z_b_cmd, yaw_cmd));
+        // 5) Compute desired body-z axis (with zero‐vector guard)
+        let norm = a_total.norm();
+        let z_b_cmd = if norm > 1e-6 {
+            -a_total / norm
+        } else {
+            Vector3::new(0.0, 0.0, 1.0)
+        };
 
-        let yaw_rate_ff = 0.0; // zero if no feed-forward
+        // 6) Build attitude setpoint
+        let r_cmd =
+            Rotation3::from_matrix_unchecked(drone::build_body_rotation(&z_b_cmd, chaser.yaw));
         let rate_sp = drone::attitude_to_bodyrate(
             &r_cmd,
             &self.quad.orientation.to_rotation_matrix().cast::<f64>(),
-            yaw_rate_ff,
+            0.0, // no yaw feed‐forward
         );
 
+        // 7) Rate error & raw torque from PID
         let rate_error = rate_sp - self.quad.angular_velocity.cast::<f64>();
-        let torque =
+        let raw_torque =
             drone::control_torque(rate_error, &mut self.rate_state, &self.rate_params, delta);
-        // TODO: should really sync everything, but for speed will just update from this.
+        println!("raw torque = {:?}", raw_torque);
+
+        // 8) Anti‐windup: clamp the integral state
+        let mi = self.rate_params.max_integral;
+        self.rate_state.integral.x = self.rate_state.integral.x.clamp(-mi.x, mi.x);
+        self.rate_state.integral.y = self.rate_state.integral.y.clamp(-mi.y, mi.y);
+        self.rate_state.integral.z = self.rate_state.integral.z.clamp(-mi.z, mi.z);
+
+        // 9) Torque clamp: enforce physical max torque
+        let mt = self.rate_params.max_torque;
+        let torque = Vector3::new(
+            raw_torque.x.clamp(-mt.x, mt.x),
+            raw_torque.y.clamp(-mt.y, mt.y),
+            raw_torque.z.clamp(-mt.z, mt.z),
+        );
+        println!("clamped torque = {:?}", torque);
+
+        // 10) Optionally cap the integration timestep
+        let dt = delta.min(0.02);
+        self.quad.time_step = dt as f32;
+
+        // 11) Integrate dynamics via RK4
         self.quad
             .update_dynamics_with_controls_rk4(thrust as f32, &torque.cast::<f32>());
 
-        // Update the agent from the quad.
-        agent.pos = Self::switch_vec(self.quad.position.cast::<f64>());
-        agent.vel = Self::switch_vec(self.quad.velocity.cast::<f64>());
+        // 12) Write back into Agent
+        agent.pos = self.quad.position.cast::<f64>();
+        agent.vel = self.quad.velocity.cast::<f64>();
+        println!("outpos: {}", agent.pos);
     }
     fn bounding_box(&self) -> Vector3<f64> {
         self.bounding_box

@@ -8,7 +8,7 @@ use voxelsim::{
     VoxelGrid,
     agent::Agent,
     env::CollisionShell,
-    viewport::{self, CameraProjection, IntersectionMap, VirtualGrid},
+    viewport::{self, CameraProjection, VirtualGrid},
 };
 
 use crate::dynamics::{AgentDynamics, EnvDynamics, EnvState};
