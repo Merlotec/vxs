@@ -8,6 +8,7 @@ use voxelsim::{
 };
 
 // Created structure for holding terrain configuration parameters.
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct TerrainConfig {
     pub size: Vector3<i32>,
     pub height_scale: f64,
@@ -116,6 +117,7 @@ impl TreeParams {
     }
 }
 
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct TerrainGenerator {
     cells: DashMap<Coord, Cell>,

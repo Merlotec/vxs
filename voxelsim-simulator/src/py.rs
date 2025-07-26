@@ -2,11 +2,12 @@ use nalgebra::Vector3;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use std::collections::HashMap;
+use voxelsim::chase::ChaseTarget;
 use voxelsim::py::PyCoord;
 use voxelsim::{Agent, Coord, MoveCommand, RendererClient, VoxelGrid};
 
-use crate::dynamics::EnvState;
-use crate::sim::GlobalEnv;
+use crate::dynamics::peng::PengQuadDynamics;
+use crate::dynamics::{AgentDynamics, EnvState};
 use crate::{
     dynamics::standard::StandardDynamics,
     sim::Collision,
@@ -15,91 +16,32 @@ use crate::{
 
 #[pymodule]
 pub fn voxelsim_simulator(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<GlobalEnv>()?;
     m.add_class::<Collision>()?;
     m.add_class::<StandardDynamics>()?;
+    m.add_class::<PengQuadDynamics>()?;
     m.add_class::<TerrainGenerator>()?;
+    m.add_class::<TerrainConfig>()?;
     m.add_class::<EnvState>()?;
     Ok(())
 }
 
 #[pymethods]
-impl GlobalEnv {
-    #[new]
-    pub fn new(world: VoxelGrid, agents: HashMap<usize, Agent>) -> Self {
-        Self { world, agents }
-    }
-
-    pub fn update_py(
-        &mut self,
-        py: Python,
-        dynamics: &StandardDynamics,
-        env: &EnvState,
-        delta: f64,
-    ) -> Vec<Collision> {
-        self.update(dynamics, env, delta)
-    }
-
-    pub fn send_agents(&self, client: &mut RendererClient) -> PyResult<()> {
-        client
-            .send_agents(&self.agents)
-            .map_err(|e| PyException::new_err(e.to_string()))
-    }
-
-    pub fn send_world(&self, client: &mut RendererClient) -> PyResult<()> {
-        client
-            .send_world(&self.world)
-            .map_err(|e| PyException::new_err(e.to_string()))
-    }
-
-    pub fn perform_sequence_on_agent(
-        &mut self,
-        agent_id: usize,
-        cmds: Vec<MoveCommand>,
-    ) -> PyResult<()> {
-        self.agent_mut(&agent_id)
-            .ok_or_else(|| PyException::new_err(format!("no agent with id: {}", agent_id)))?
-            .perform_sequence(cmds);
-        Ok(())
-    }
-
-    pub fn get_agent(&self, agent_id: usize) -> PyResult<Agent> {
-        Ok(self
-            .agents
-            .get(&agent_id)
-            .ok_or(PyException::new_err("Invalid agent id!"))?
-            .clone())
-    }
-
-    pub fn get_agent_pos(&self, agent_id: usize) -> Option<[f64; 3]> {
-        self.agents.get(&agent_id).map(|x| x.pos.into())
-    }
-
-    pub fn set_agent_pos(&mut self, agent_id: usize, pos: [f64; 3]) -> PyResult<()> {
-        self.agents
-            .get_mut(&agent_id)
-            .ok_or(PyException::new_err("Invalid agent id!"))?
-            .pos = pos.into();
-        Ok(())
-    }
-
-    pub fn clone_world(&self) -> VoxelGrid {
-        self.world.clone()
-    }
-    /// Simple Python wrapper (no complex args).
+impl PengQuadDynamics {
     #[staticmethod]
-    pub fn new_default_terrain(seed: u32, agents: HashMap<usize, Agent>) -> Self {
-        let mut world = TerrainGenerator::new();
-        world.generate_terrain(&TerrainConfig {
-            seed,
-            ..Default::default()
-        });
-        Self {
-            world: world.generate_world(),
-            agents,
-        }
+    pub fn default_py() -> Self {
+        Self::default()
+    }
+    pub fn update_agent_dynamics_py(
+        &mut self,
+        agent: &mut Agent,
+        env: &EnvState,
+        chaser: &ChaseTarget,
+        delta: f64,
+    ) {
+        self.update_agent_dynamics(agent, env, chaser, delta);
     }
 }
+
 #[pymethods]
 impl StandardDynamics {
     #[new]
@@ -238,5 +180,28 @@ impl EnvState {
     #[staticmethod]
     pub fn default_py() -> Self {
         Self::default()
+    }
+}
+
+#[pymethods]
+impl TerrainConfig {
+    #[staticmethod]
+    pub fn default_py() -> Self {
+        Self::default()
+    }
+}
+
+#[pymethods]
+impl TerrainGenerator {
+    #[new]
+    pub fn new_py() -> Self {
+        Self::new()
+    }
+
+    pub fn generate_terrain_py(&mut self, cfg: &TerrainConfig) {
+        self.generate_terrain(cfg);
+    }
+    pub fn generate_world_py(&self) -> VoxelGrid {
+        self.clone().generate_world()
     }
 }

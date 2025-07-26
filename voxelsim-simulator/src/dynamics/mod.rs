@@ -1,4 +1,4 @@
-pub mod ardupilot;
+pub mod drone;
 pub mod peng;
 pub mod standard;
 
@@ -24,7 +24,13 @@ impl Default for EnvState {
 // Completely controls how the agent's position is updated in the world through time.
 pub trait AgentDynamics {
     // Responsible for updating agent physics and action state (i.e. removing actions when they have been completed).
-    fn update_agent(&mut self, agent: &mut Agent, env: &EnvState, chaser: &ChaseTarget, delta: f64);
+    fn update_agent_dynamics(
+        &mut self,
+        agent: &mut Agent,
+        env: &EnvState,
+        chaser: &ChaseTarget,
+        delta: f64,
+    );
 
     fn bounding_box(&self) -> Vector3<f64>;
 }

@@ -1,4 +1,5 @@
 use nalgebra::Vector3;
+use voxelsim::chase::ChaseTarget;
 
 use crate::dynamics::{AgentDynamics, EnvState};
 
@@ -17,7 +18,14 @@ pub struct StandardDynamics {
 }
 
 impl AgentDynamics for StandardDynamics {
-    fn update_agent(&mut self, agent: &mut voxelsim::Agent, env: &EnvState, delta: f64) {}
+    fn update_agent_dynamics(
+        &mut self,
+        agent: &mut voxelsim::Agent,
+        env: &EnvState,
+        chaser: &ChaseTarget,
+        delta: f64,
+    ) {
+    }
 
     fn bounding_box(&self) -> Vector3<f64> {
         self.bounding_box
