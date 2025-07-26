@@ -1,71 +1,94 @@
 use nalgebra::{Matrix3, Vector3};
 use peng_quad::{PlannerManager, QPpolyTrajPlanner, Quadrotor, config::SimulationConfig};
-use voxelsim::Agent;
+use voxelsim::{Agent, chase::ChaseTarget};
 
-use crate::dynamics::AgentDynamics;
+use crate::dynamics::{
+    AgentDynamics,
+    ardupilot::{self, PosPIDParams, PosPIDState, RatePIDParams, RatePIDState},
+};
 
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct PengQuadDynamics {
     quad: Quadrotor,
-    planner_manager: PlannerManager,
-    internal_time: f64,
     bounding_box: Vector3<f64>,
+    pos_params: PosPIDParams,
+    pos_state: PosPIDState,
+    rate_params: RatePIDParams,
+    rate_state: RatePIDState,
 }
 
 impl PengQuadDynamics {
+    pub fn switch_vec<T: Copy>(v: Vector3<T>) -> Vector3<T> {
+        Vector3::new(v[0], v[2], v[1])
+    }
+
     pub fn new(
-        pos: Vector3<f32>,
-        time_step: f32,
-        mass: f32,
-        gravity: f32,
-        drag_coefficient: f32,
-        inertia_matrix: Matrix3<f32>,
+        mass: f64,
+        gravity: f64,
+        drag_coefficient: f64,
+        inertia_matrix: Matrix3<f64>,
         bounding_box: Vector3<f64>,
     ) -> Self {
-        let mut quad = Quadrotor::new(
-                time_step,
-                mass,
-                gravity,
-                drag_coefficient,
-                inertia_matrix.as_slice().try_into().unwrap(),
-            )
-            .unwrap();
-        quad.position = pos;
+        let quad = Quadrotor::new(
+            0.01,
+            mass as f32,
+            gravity as f32,
+            drag_coefficient as f32,
+            inertia_matrix.cast::<f32>().as_slice().try_into().unwrap(),
+        )
+        .unwrap();
         Self {
             quad,
-            internal_time: 0.0,
-            planner_manager: PlannerManager::new(Vector3::zeros(), 0.0),
-            bounding_box,
-        }
-    }
-
-    pub fn next_state(
-        &mut self,
-        agent: &mut Agent,
-        delta: f64,
-    ) -> (Vector3<f64>, Vector3<f32>, f64) {
-        self.internal_time += delta;
-        let (pos, vel, yaw) = self.planner_manager.current_planner.plan(
-            agent.pos.cast(),
-            agent.vel.cast(),
-            self.internal_time as f32,
-        );
-
-        (pos.cast(), vel.cast(), yaw as f64)
-    }
-
-    pub fn update_planner(&mut self, agent: &Agent) {
-        if let Some(waypoints) = agent.trajectory.map(|x| x.waypoints(30)) {
-        let planner = QPpolyTrajPlanner::new(waypoints,)
+            bounding_box: Self::switch_vec(bounding_box),
+            pos_params: Default::default(),
+            pos_state: Default::default(),
+            rate_params: Default::default(),
+            rate_state: Default::default(),
         }
     }
 }
 
 impl AgentDynamics for PengQuadDynamics {
-    fn update_agent(&mut self, agent: &mut Agent, env: &super::EnvState, delta: f64) {
-        self.next_state(agent, delta);
-    }
+    fn update_agent(
+        &mut self,
+        agent: &mut Agent,
+        env: &super::EnvState,
+        chaser: &ChaseTarget,
+        delta: f64,
+    ) {
+        self.quad.time_step = delta as f32;
+        self.quad.position = Self::switch_vec(agent.pos.cast::<f32>());
+        self.quad.velocity = Self::switch_vec(agent.pos.cast::<f32>());
+        let a_cmd = ardupilot::compute_accel_cmd(
+            self.quad.position.cast::<f64>(),
+            self.quad.velocity.cast::<f64>(),
+            chaser.pos,
+            chaser.vel,
+            chaser.acc,
+            &self.pos_params,
+            &mut self.pos_state,
+            delta,
+        );
 
+        let a_total = a_cmd + Vector3::new(0.0, 0.0, self.quad.gravity as f64);
+        let thrust = self.quad.mass as f64 * a_total.norm();
+
+        let z_b_cmd = -a_total.normalize();
+        let yaw_cmd = chaser.yaw;
+        let r_cmd = Rotation3::from_matrix_unchecked(build_body_rotation(&z_b_cmd, yaw_cmd));
+
+        let yaw_rate_ff = 0.0; // zero if no feed-forward
+        let rate_sp = ardupilot::attitude_to_bodyrate(&r_cmd, &vehicle_state.attitude, yaw_rate_ff);
+
+        let rate_error = rate_sp - vehicle_state.angular_velocity;
+        let torque = ardupilot::control_torque(rate_error, &mut rate_pid_state, &rate_params, dt);
+        // TODO: should really sync everything, but for speed will just update from this.
+        self.quad.update_dynamics_with_controls_rk4(thrust, torque);
+
+        // Update the agent from the quad.
+        agent.pos = Self::switch_vec(self.quad.position.cast::<f64>());
+        agent.vel = Self::switch_vec(self.quad.velocity.cast::<f64>());
+    }
     fn bounding_box(&self) -> Vector3<f64> {
         self.bounding_box
     }

@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use argmin::core::{CostFunction, Error, Executor, Gradient};
+use argmin::solver::linesearch::BacktrackingLineSearch;
 use argmin::solver::linesearch::condition::ArmijoCondition;
-use argmin::solver::linesearch::{BacktrackingLineSearch, MoreThuenteLineSearch};
 use argmin::solver::quasinewton::LBFGS;
 use bspline::BSpline;
 use finitediff::FiniteDiff;
@@ -57,7 +57,6 @@ fn uniform_knots(num_ctrl: usize, degree: usize) -> Vec<f64> {
     knots
 }
 
-/// Cost struct for L-BFGS optimisation
 struct SplineCost {
     degree: usize,
     knots: Vec<f64>,
@@ -126,21 +125,24 @@ impl Gradient for SplineCost {
     }
 }
 
-// pub fn generate_spline(start: Vector3<f64>, cells: &[Coord]) -> BSpline<Vector3<f64>, f64> {
-//     // build the list of control points: the start + each cell’s centroid
-//     let control_points: Vec<_> = std::iter::once(start)
-//         .chain(cells.iter().map(|c| c.cast::<f64>()))
-//         .collect();
+pub fn generate_centroid_fit_spline(
+    start: Vector3<f64>,
+    cells: &[Coord],
+) -> BSpline<Vector3<f64>, f64> {
+    // build the list of control points: the start + each cell’s centroid
+    let control_points: Vec<_> = std::iter::once(start)
+        .chain(cells.iter().map(|c| c.cast::<f64>()))
+        .collect();
 
-//     // pick degree = 3, but no higher than n-1, and at least 1
-//     let degree = std::cmp::min(3, control_points.len().saturating_sub(1)).max(1);
+    // pick degree = 3, but no higher than n-1, and at least 1
+    let degree = std::cmp::min(3, control_points.len().saturating_sub(1)).max(1);
 
-//     // uniform, clamped knot vector
-//     let knots = uniform_knots(control_points.len(), degree);
+    // uniform, clamped knot vector
+    let knots = uniform_knots(control_points.len(), degree);
 
-//     // build and return the spline
-//     BSpline::new(degree, control_points, knots)
-// }
+    // build and return the spline
+    BSpline::new(degree, control_points, knots)
+}
 
 /// Generate an optimised B-spline through the integer grid cells
 pub fn generate_spline(start: Vector3<f64>, cells: &[Coord]) -> BSpline<Vector3<f64>, f64> {
@@ -209,7 +211,7 @@ pub fn generate_spline(start: Vector3<f64>, cells: &[Coord]) -> BSpline<Vector3<
 pub struct Trajectory {
     spline: BSpline<Vector3<f64>, f64>,
     urgencies: Vec<f64>,
-    progress: f64,
+    pub progress: f64,
 }
 
 impl Default for Trajectory {
@@ -242,26 +244,27 @@ impl Trajectory {
     }
 
     #[inline(always)]
-    pub fn position(&self, t: f64) -> Vector3<f64> {
-        self.inner().point(t)
+    pub fn position(&self, t: f64) -> Option<Vector3<f64>> {
+        Some(self.inner().point(self.domain_t(t)?))
     }
 
     #[inline(always)]
-    pub fn velocity(&self, t: f64) -> Vector3<f64> {
+    pub fn velocity(&self, t: f64) -> Option<Vector3<f64>> {
         let h = 1e-3;
-        let (t0, t1) = self.inner().knot_domain();
-        let t_lo = (t - h).max(t0);
-        let t_hi = (t + h).min(t1);
-        (self.position(t_hi) - self.position(t_lo)) * (1.0 / (t_hi - t_lo))
+        let t_lo = (t - h).max(0.0);
+        let t_hi = (t + h).min(1.0);
+        Some((self.position(t_hi)? - self.position(t_lo)?) * (1.0 / (t_hi - t_lo)))
     }
 
     #[inline(always)]
-    pub fn acceleration(&self, t: f64) -> Vector3<f64> {
+    pub fn acceleration(&self, t: f64) -> Option<Vector3<f64>> {
         let h = 1e-3;
-        let (t0, t1) = self.inner().knot_domain();
-        let t_lo = (t - h).max(t0);
-        let t_hi = (t + h).min(t1);
-        (self.position(t_hi) - 2.0 * self.position(t) + self.position(t_lo)) * (1.0 / (h * h))
+        let t_lo = (t - h).max(0.0);
+        let t_hi = (t + h).min(0.0);
+        Some(
+            (self.position(t_hi)? - 2.0 * self.position(t)? + self.position(t_lo)?)
+                * (1.0 / (h * h)),
+        )
     }
 
     /// Returns (position, t) of the waypoint.
@@ -280,6 +283,10 @@ impl Trajectory {
 
     pub fn urgencies(&self) -> &[f64] {
         &self.urgencies
+    }
+
+    pub fn len(&self) -> f64 {
+        self.urgencies.len() as f64
     }
 
     pub fn domain_t(&self, t: f64) -> Option<f64> {
@@ -311,6 +318,46 @@ impl Trajectory {
         let p = self.inner().point(t);
         let u = self.sample_urgencies(t)?;
         Some((p, u))
+    }
+
+    pub fn find_nearest_param_in_range(
+        &self,
+        start: f64,
+        end: f64,
+        point: &Vector3<f64>,
+    ) -> Option<f64> {
+        // Coarse uniform sampling to find initial guess
+        let samples = 100;
+        let mut best_t = start;
+        let mut best_dist2 = f64::MAX;
+        for i in 0..=samples {
+            let t = start + (end - start) * (i as f64) / (samples as f64);
+            let p = self.position(t)?;
+            let d2 = (p - point).norm_squared();
+            if d2 < best_dist2 {
+                best_dist2 = d2;
+                best_t = t;
+            }
+        }
+
+        // Refine with a ternary search around best_t
+        let delta = (end - start) / (samples as f64);
+        let mut left = (best_t - delta).max(start);
+        let mut right = (best_t + delta).min(end);
+        for _ in 0..10 {
+            let t1 = left + (right - left) / 3.0;
+            let t2 = right - (right - left) / 3.0;
+            let d1 = (self.position(t1)? - point).norm_squared();
+            let d2 = (self.position(t2)? - point).norm_squared();
+            if d1 < d2 {
+                right = t2;
+            } else {
+                left = t1;
+            }
+        }
+
+        // Return midpoint of final interval
+        Some((left + right) / 2.0)
     }
 }
 

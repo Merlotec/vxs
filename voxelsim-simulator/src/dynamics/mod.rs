@@ -1,9 +1,10 @@
+pub mod ardupilot;
 pub mod peng;
 pub mod standard;
 
 use nalgebra::Vector3;
 
-use voxelsim::Agent;
+use voxelsim::{Agent, chase::ChaseTarget};
 
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct EnvState {
@@ -23,7 +24,8 @@ impl Default for EnvState {
 // Completely controls how the agent's position is updated in the world through time.
 pub trait AgentDynamics {
     // Responsible for updating agent physics and action state (i.e. removing actions when they have been completed).
-    fn update_agent(&mut self, agent: &mut Agent, env: &EnvState, delta: f64);
+    fn update_agent(&mut self, agent: &mut Agent, env: &EnvState, chaser: &ChaseTarget, delta: f64);
+
     fn bounding_box(&self) -> Vector3<f64>;
 }
 
