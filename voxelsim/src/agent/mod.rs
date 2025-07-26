@@ -4,6 +4,7 @@ use tinyvec::ArrayVec;
 
 use crate::{Coord, trajectory::Trajectory, viewport::CameraView};
 
+pub mod chase;
 pub mod trajectory;
 pub mod viewport;
 
@@ -25,7 +26,6 @@ pub struct Agent {
 
     // Current action being processed by the agent.
     pub action: Option<Action>,
-    pub trajectory: Option<Trajectory>,
 }
 
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
@@ -74,6 +74,7 @@ pub type CmdSequence = ArrayVec<[MoveCommand; MAX_ACTIONS]>;
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct Action {
     pub cmd_sequence: CmdSequence,
+    pub trajectory: Trajectory,
     pub origin: Vector3<i32>,
 }
 

@@ -83,6 +83,9 @@ impl GlobalEnv {
         Ok(())
     }
 
+    pub fn clone_world(&self) -> VoxelGrid {
+        self.world.clone()
+    }
     /// Simple Python wrapper (no complex args).
     #[staticmethod]
     pub fn new_default_terrain(seed: u32, agents: HashMap<usize, Agent>) -> Self {
@@ -95,10 +98,6 @@ impl GlobalEnv {
             world: world.generate_world(),
             agents,
         }
-    }
-
-    pub fn clone_world(&self) -> VoxelGrid {
-        self.world.clone()
     }
 }
 #[pymethods]
@@ -231,5 +230,13 @@ impl Collision {
             .iter()
             .map(|(coord, _)| (*coord).into())
             .collect()
+    }
+}
+
+#[pymethods]
+impl EnvState {
+    #[staticmethod]
+    pub fn default_py() -> Self {
+        Self::default()
     }
 }
