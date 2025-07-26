@@ -131,3 +131,20 @@ pub fn control_torque(
     pid_state.last_error = rate_error;
     p_term + i_term + d_term
 }
+
+pub fn build_body_rotation(z_b_cmd: &Vector3<f64>, yaw: f64) -> Matrix3<f64> {
+    // 1) Ensure Z is unit length
+    let z_b = z_b_cmd.normalize();
+
+    // 2) Desired “course” X projected onto the horizontal plane
+    let x_c = Vector3::new(yaw.cos(), yaw.sin(), 0.0);
+
+    // 3) Compute body-Y = Z × Xc, then normalize
+    let y_b = z_b.cross(&x_c).normalize();
+
+    // 4) Body-X = Y × Z
+    let x_b = y_b.cross(&z_b);
+
+    // 5) Build rotation matrix: columns are Xb, Yb, Zb
+    Matrix3::from_columns(&[x_b, y_b, z_b])
+}

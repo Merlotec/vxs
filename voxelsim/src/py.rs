@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use nalgebra::Vector3;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -8,7 +10,7 @@ use crate::{
         Action, Agent, MoveCommand, MoveDir,
         viewport::{CameraProjection, CameraView, IntersectionMap},
     },
-    chase::{ChaseTarget, FixedLookaheadChaser},
+    chase::{ChaseTarget, FixedLookaheadChaser, TrajectoryChaser},
     env::VoxelGrid,
     network::RendererClient,
 };
@@ -29,35 +31,6 @@ pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 pub type PyCoord = [i32; 3];
-
-#[pymethods]
-impl RendererClient {
-    /// Creates a new Client.
-    #[new]
-    fn new_py(
-        host: String,
-        world_port: u16,
-        agent_port: u16,
-        pov_start_port: u16,
-        pov_agent_start_port: u16,
-    ) -> Self {
-        Self::new(
-            &host,
-            world_port,
-            agent_port,
-            pov_start_port,
-            pov_agent_start_port,
-        )
-    }
-
-    /// Connects both world and agent ports.
-    ///
-    /// Raises a Python exception on error.
-    fn connect_py(&mut self, pov_count: u16) -> PyResult<()> {
-        self.connect(pov_count)
-            .map_err(|e| PyException::new_err(e.to_string()))
-    }
-}
 
 #[pymethods]
 impl Agent {
@@ -263,6 +236,39 @@ impl MoveDir {
 }
 
 #[pymethods]
+impl RendererClient {
+    #[new]
+    fn new_py(
+        host: String,
+        world_port: u16,
+        agent_port: u16,
+        pov_start_port: u16,
+        pov_agent_start_port: u16,
+    ) -> Self {
+        Self::new(
+            &host,
+            world_port,
+            agent_port,
+            pov_start_port,
+            pov_agent_start_port,
+        )
+    }
+
+    fn connect_py(&mut self, pov_count: u16) -> PyResult<()> {
+        self.connect(pov_count)
+            .map_err(|e| PyException::new_err(e.to_string()))
+    }
+    pub fn send_agents_py(&mut self, agents: HashMap<usize, Agent>) -> PyResult<()> {
+        self.send_agents(&agents)
+            .map_err(|e| PyException::new_err(format!("Failed to send agents: {}", e)))
+    }
+    pub fn send_world_py(&mut self, world: &VoxelGrid) -> PyResult<()> {
+        self.send_world(world)
+            .map_err(|e| PyException::new_err(format!("Failed to send world: {}", e)))
+    }
+}
+
+#[pymethods]
 impl CameraProjection {
     #[new]
     pub fn new(aspect: f64, fov_vertical: f64, max_distance: f64, near_distance: f64) -> Self {
@@ -284,5 +290,9 @@ impl FixedLookaheadChaser {
     #[staticmethod]
     pub fn default_py() -> Self {
         Self::default()
+    }
+
+    pub fn step_chase_py(&self, agent: &Agent, delta: f64) -> ChaseTarget {
+        self.step_chase(agent, delta)
     }
 }

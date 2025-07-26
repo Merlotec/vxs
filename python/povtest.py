@@ -4,10 +4,15 @@ import voxelsim, time
 # dynamics = voxelsim.AgentDynamics.default_drone()
 agent = voxelsim.Agent(0)
 fw = voxelsim.FilterWorld()
-env = voxelsim.GlobalEnv.new_default_terrain(100, {0: agent})
+dynamics = voxelsim.PengQuadDynamics.default_py()
+
+chaser = voxelsim.FixedLookaheadChaser.default_py()
+
+generator = voxelsim.TerrainGenerator()
+generator.generate_terrrain_py(voxelsim.TerrainConfig.default_py())
+world = generator.generate_world_py()
 proj = voxelsim.CameraProjection.default_py()
 
-dynamics = voxelsim.StandardDynamics.default_drone()
 
 # Renderer
 renderer = voxelsim.AgentVisionRenderer(env.clone_world(), [400, 300])
@@ -19,9 +24,9 @@ client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
 client.connect_py(1)
 print("Controls: WASD=move, Space=up, Shift=down, ESC=quit")
 
-env.send_world(client)
+client.send_world_py(world)
 
-env.set_agent_pos(0, [50.0, 20.0, 50.0])
+agent.set_pos([50.0, 20.0, 50.0])
 
 pressed = set()
 just_pressed = set()

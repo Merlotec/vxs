@@ -211,6 +211,7 @@ pub fn generate_spline(start: Vector3<f64>, cells: &[Coord]) -> BSpline<Vector3<
 pub struct Trajectory {
     spline: BSpline<Vector3<f64>, f64>,
     urgencies: Vec<f64>,
+    yaw_seq: Vec<f64>,
     pub progress: f64,
 }
 
@@ -219,6 +220,7 @@ impl Default for Trajectory {
         Self {
             spline: BSpline::new(0, Vec::new(), Vec::new()),
             urgencies: Vec::new(),
+            yaw_seq: Vec::new(),
             progress: 0.0,
         }
     }
@@ -231,6 +233,7 @@ impl Trajectory {
         Self {
             spline: generate_spline(start, &cells),
             urgencies: times,
+            yaw_seq: Vec::new(),
             progress: 0.0,
         }
     }
@@ -285,6 +288,10 @@ impl Trajectory {
         &self.urgencies
     }
 
+    pub fn yaw_seq(&self) -> &[f64] {
+        &self.yaw_seq
+    }
+
     pub fn len(&self) -> f64 {
         self.urgencies.len() as f64
     }
@@ -302,6 +309,18 @@ impl Trajectory {
                 let w = t - floor;
                 let weighted_urgency = floor * w + ceil * (1.0 - w);
                 Some(weighted_urgency)
+            } else {
+                Some(*floor)
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn sample_yaw(&self, t: f64) -> Option<f64> {
+        if let Some(floor) = self.yaw_seq.get(t.floor() as usize) {
+            if let Some(ceil) = self.yaw_seq.get(t.ceil() as usize) {
+                Some(*ceil)
             } else {
                 Some(*floor)
             }
@@ -371,6 +390,7 @@ struct SplineData {
     ctrl_pts: Vec<[f64; 3]>,
     // In knot domain.
     urgencies: Vec<f64>,
+    yaw_seq: Vec<f64>,
     // In knot domain.
     progress: f64,
 }
@@ -398,6 +418,7 @@ impl Serialize for Trajectory {
             knots,
             ctrl_pts,
             urgencies: self.urgencies.clone(),
+            yaw_seq: self.yaw_seq.clone(),
             progress: self.progress,
         };
         data.serialize(serializer)
@@ -425,6 +446,7 @@ impl<'de> Deserialize<'de> for Trajectory {
         Ok(Trajectory {
             spline: BSpline::new(data.degree, cps, data.knots),
             urgencies: data.urgencies,
+            yaw_seq: data.yaw_seq,
             progress: data.progress,
         })
     }

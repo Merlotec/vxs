@@ -54,7 +54,10 @@ impl TrajectoryChaser for FixedLookaheadChaser {
 
             let s_cur = action.trajectory.progress;
             let s_end = action.trajectory.len();
-            if let Some(urgency) = action.trajectory.sample_urgencies(s_cur) {
+            if let (Some(urgency), Some(yaw)) = (
+                action.trajectory.sample_urgencies(s_cur),
+                action.trajectory.sample_yaw(s_cur),
+            ) {
                 let v_max_cur = self.v_max_base * urgency;
                 let ds_max = v_max_cur * delta;
                 let s_lookahead = self.s_lookahead_base * urgency;
@@ -85,7 +88,7 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                     pos: p_tgt,
                     vel: v_tgt,
                     acc: a_tgt,
-
+                    yaw,
                     progress,
                 };
             }
