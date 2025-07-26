@@ -95,13 +95,13 @@ impl Action {
         }
     }
 
-    pub fn centroids(&self) -> Vec<Coord> {
-        let mut total: Coord = self.origin;
+    pub fn centroids(cmd_sequence: &[MoveCommand], origin: Vector3<i32>) -> Vec<(Coord, f64)> {
+        let mut total: Coord = origin;
         let mut centroids = Vec::new();
-        for seq in self.cmd_sequence.iter() {
+        for seq in cmd_sequence.iter() {
             if let Some(dir_vector) = seq.dir.dir_vector() {
                 let centroid = total + dir_vector;
-                centroids.push(centroid);
+                centroids.push((centroid, seq.urgency));
                 total = centroid;
             }
         }
@@ -121,7 +121,6 @@ impl Agent {
             thrust: Vector3::zeros(),
             yaw: 0.0,
             action: None,
-            trajectory: None,
         }
     }
 
@@ -184,12 +183,13 @@ impl Agent {
     }
 
     pub fn perform(&mut self, cmd_sequence: CmdSequence) {
+        let origin = self.pos.map(|e| e.round() as i32);
+        let cells = Action::centroids(&cmd_sequence, origin);
         let action = Action {
             cmd_sequence,
-            origin: self.pos.map(|e| e.round() as i32),
+            origin,
+            trajectory: Trajectory::generate(self.pos, &cells),
         };
-        let cells = action.centroids();
-        self.trajectory = Some(Trajectory::generate(self.pos, &cells));
         self.action = Some(action);
     }
 }

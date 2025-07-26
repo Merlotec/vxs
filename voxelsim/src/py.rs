@@ -8,6 +8,7 @@ use crate::{
         Action, Agent, MoveCommand, MoveDir,
         viewport::{CameraProjection, CameraView, IntersectionMap},
     },
+    chase::{ChaseTarget, FixedLookaheadChaser},
     env::VoxelGrid,
     network::RendererClient,
 };
@@ -22,6 +23,8 @@ pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RendererClient>()?;
     m.add_class::<IntersectionMap>()?;
     m.add_class::<CameraProjection>()?;
+    m.add_class::<FixedLookaheadChaser>()?;
+    m.add_class::<ChaseTarget>()?;
     Ok(())
 }
 
@@ -66,7 +69,6 @@ impl Agent {
             vel: Vector3::zeros(),
             thrust: Vector3::zeros(),
             action: None,
-            trajectory: None,
             yaw: 0.0,
         }
     }
@@ -118,23 +120,15 @@ impl MoveCommand {
 
 #[pymethods]
 impl Action {
-    #[new]
-    pub fn new() -> Self {
-        Self {
-            cmd_sequence: ArrayVec::new(),
-            origin: Vector3::zeros(),
-        }
-    }
-
     /// Add a move command to the action sequence
-    pub fn add_command(&mut self, command: MoveCommand) -> bool {
-        if self.cmd_sequence.len() < crate::agent::MAX_ACTIONS {
-            self.cmd_sequence.push(command);
-            true
-        } else {
-            false
-        }
-    }
+    // pub fn add_command(&mut self, command: MoveCommand) -> bool {
+    //     if self.cmd_sequence.len() < crate::agent::MAX_ACTIONS {
+    //         self.cmd_sequence.push(command);
+    //         true
+    //     } else {
+    //         false
+    //     }
+    // }
 
     pub fn get_commands(&self) -> Vec<MoveCommand> {
         self.cmd_sequence.clone().to_vec()
@@ -279,6 +273,14 @@ impl CameraProjection {
             near_distance,
         }
     }
+    #[staticmethod]
+    pub fn default_py() -> Self {
+        Self::default()
+    }
+}
+
+#[pymethods]
+impl FixedLookaheadChaser {
     #[staticmethod]
     pub fn default_py() -> Self {
         Self::default()
