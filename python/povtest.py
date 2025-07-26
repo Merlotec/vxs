@@ -3,19 +3,21 @@ import voxelsim, time
 
 # dynamics = voxelsim.AgentDynamics.default_drone()
 agent = voxelsim.Agent(0)
+agent.set_pos([50.0, 50.0, 20.0])
+
 fw = voxelsim.FilterWorld()
 dynamics = voxelsim.PengQuadDynamics.default_py()
 
 chaser = voxelsim.FixedLookaheadChaser.default_py()
 
 generator = voxelsim.TerrainGenerator()
-generator.generate_terrrain_py(voxelsim.TerrainConfig.default_py())
+generator.generate_terrain_py(voxelsim.TerrainConfig.default_py())
 world = generator.generate_world_py()
 proj = voxelsim.CameraProjection.default_py()
-
+env = voxelsim.EnvState.default_py()
 
 # Renderer
-renderer = voxelsim.AgentVisionRenderer(env.clone_world(), [400, 300])
+renderer = voxelsim.AgentVisionRenderer(world, [400, 300])
 
 # Client
 
@@ -25,8 +27,7 @@ client.connect_py(1)
 print("Controls: WASD=move, Space=up, Shift=down, ESC=quit")
 
 client.send_world_py(world)
-
-agent.set_pos([50.0, 20.0, 50.0])
+client.send_agents_py({0: agent})
 
 pressed = set()
 just_pressed = set()
@@ -89,10 +90,9 @@ while listener.running:
         # Here we just send the new world over to the renderer.
         if view_delta >= FRAME_DELTA_MAX:
             fw.send_pov_py(client, 0, 0, proj)
-            renderer.update_filter_world_py(env.get_agent(0).camera_view_py(), proj, fw, t0)
+            renderer.update_filter_world_py(agent.camera_view_py(), proj, fw, t0)
             last_view_time = t0
 
-    agent = env.get_agent(0)
     action = agent.get_action()
     commands = []
     if action:
@@ -103,8 +103,12 @@ while listener.running:
     if 'd' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Right, 0.8, 0.0))
     if 'space' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Up, 0.8, 0.0))
     if 'shift' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Down, 0.8, 0.0))
-    if commands:
-        env.perform_sequence_on_agent(0, commands)
+    if not action or commands != action.get_commands():
+        agent.perform_dyn_sequence(commands)
+
+    # The point in space that the drone should be chasing.
+    chase_target = chaser.step_chase_py(agent, delta)
+    dynamics.update_agent_dynamics_py(agent, env, chase_target, delta)
 
     just_pressed.clear()
     # collisions = env.update_py(dynamics, delta)
@@ -112,7 +116,7 @@ while listener.running:
     #     print("Collision!")
     # im = env.update_pov_py()
     
-    env.send_agents(client)
+    client.send_agents_py({0: agent})
     # env.send_pov(client, 0, 0)
     d = time.time() - t0
     if d < delta:

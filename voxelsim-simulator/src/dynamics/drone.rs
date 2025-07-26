@@ -18,6 +18,8 @@ pub struct RatePIDParams {
     pub kp: Vector3<f64>,
     pub ki: Vector3<f64>,
     pub kd: Vector3<f64>,
+    pub max_torque: Vector3<f64>,
+    pub max_integral: Vector3<f64>,
 }
 
 /// Holds integrals and previous errors for PID
@@ -49,10 +51,18 @@ impl Default for PosPIDState {
 impl Default for RatePIDParams {
     fn default() -> Self {
         RatePIDParams {
-            // ArduPilot default gains for rate P: (4.5,4.5,8.0), I: (0.2,0.2,0.1), D: (0.03,0.03,0.0)
-            kp: Vector3::new(4.5, 4.5, 8.0),
-            ki: Vector3::new(0.2, 0.2, 0.1),
-            kd: Vector3::new(0.03, 0.03, 0.0),
+            // roughly half of the ArduPilot defaults
+            kp: Vector3::new(2.0, 2.0, 4.0),
+            // quarter the I‐gain to slow down windup
+            ki: Vector3::new(0.05, 0.05, 0.02),
+            // bump up D slightly to help damp any residual oscillation
+            kd: Vector3::new(0.02, 0.02, 0.01),
+
+            // clamp torques to a realistic small‐quad range
+            max_torque: Vector3::new(0.1, 0.1, 0.2),
+
+            // prevent the integral term from growing unbounded
+            max_integral: Vector3::new(0.2, 0.2, 0.1),
         }
     }
 }

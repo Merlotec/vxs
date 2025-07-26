@@ -8,6 +8,7 @@ use voxelsim::{
 };
 
 // Created structure for holding terrain configuration parameters.
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct TerrainConfig {
     pub size: Vector3<i32>,
@@ -137,8 +138,14 @@ impl TerrainGenerator {
         &self.cells
     }
 
+    // Performs a coordinate switch to make z vertical which is very important!
     pub fn generate_world(self) -> VoxelGrid {
-        VoxelGrid::from_cells(self.cells)
+        VoxelGrid::from_cells(
+            self.cells
+                .into_iter()
+                .map(|(k, v)| (Vector3::new(k.x, k.z, k.y), v))
+                .collect(),
+        )
     }
 }
 
@@ -314,10 +321,6 @@ impl TerrainGenerator {
                 // Ensure canopy doesn't intersect ground or exceed bounds
                 let canopy_bottom_y = ground_y + (params.height as f32 * 0.5) as i32;
                 if canopy_bottom_y + params.canopy_height >= max_y || canopy_bottom_y <= ground_y {
-                    println!(
-                        "Skipping {} at ({}, {}, {}): invalid canopy placement (bottom_y={}, canopy_height={})",
-                        type_name, x, ground_y, z, canopy_bottom_y, params.canopy_height
-                    );
                     continue;
                 }
 
@@ -924,6 +927,8 @@ impl TerrainGenerator {
             ]);
             (n + 1.0) * 0.5 > threshold
         };
+
+        // Flip coordinates.
         // self.carve_passages(&cfg, &mut passage_fn);
     }
 }

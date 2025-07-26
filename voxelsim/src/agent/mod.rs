@@ -47,12 +47,12 @@ impl MoveDir {
     pub fn dir_vector(&self) -> Option<Coord> {
         match self {
             MoveDir::None => Some(Vector3::zeros()),
-            MoveDir::Up => Some(Vector3::new(0, 1, 0)),
-            MoveDir::Down => Some(Vector3::new(0, -1, 0)),
+            MoveDir::Up => Some(Vector3::new(0, 0, 1)),
+            MoveDir::Down => Some(Vector3::new(0, 0, -1)),
             MoveDir::Left => Some(Vector3::new(-1, 0, 0)),
             MoveDir::Right => Some(Vector3::new(1, 0, 0)),
-            MoveDir::Forward => Some(Vector3::new(0, 0, -1)),
-            MoveDir::Back => Some(Vector3::new(0, 0, 1)),
+            MoveDir::Forward => Some(Vector3::new(0, 1, 0)),
+            MoveDir::Back => Some(Vector3::new(0, -1, 0)),
             MoveDir::Undecided => None,
         }
     }
@@ -95,13 +95,13 @@ impl Action {
         }
     }
 
-    pub fn centroids(cmd_sequence: &[MoveCommand], origin: Vector3<i32>) -> Vec<(Coord, f64)> {
+    pub fn centroids(cmd_sequence: &[MoveCommand], origin: Vector3<i32>) -> Vec<(Coord, f64, f64)> {
         let mut total: Coord = origin;
         let mut centroids = Vec::new();
         for seq in cmd_sequence.iter() {
             if let Some(dir_vector) = seq.dir.dir_vector() {
                 let centroid = total + dir_vector;
-                centroids.push((centroid, seq.urgency));
+                centroids.push((centroid, seq.urgency, seq.yaw_delta));
                 total = centroid;
             }
         }
@@ -127,25 +127,10 @@ impl Agent {
     // TODO: fix to use yaw.
     pub fn camera_view(&self) -> CameraView {
         let forward_h = self.vel.normalize();
-        // let horiz = Vector3::new(self.thrust.x, 0.0, self.thrust.z);
-        // let forward_h = if horiz.magnitude_squared() > 1.0e-6 {
-        //     Unit::new_normalize(horiz)
-        // } else {
-        //     // Degeneracy: no thrust -> look along world −Z
-        //     Unit::new_normalize(Vector3::new(0.0, 0.0, -1.0))
-        // };
-
-        // // projection of b onto a: (b·a)/(a·a) * a
-        // let proj_fwd_thrust =
-        //     self.thrust * (forward_h.dot(&self.thrust) / self.thrust.dot(&self.thrust));
-
-        // // subtract to get the part of b orthogonal to a
-        // let orthogonal = forward_h.into_inner() - proj_fwd_thrust;
-
-        let orthogonal = (forward_h + Vector3::new(0.0, -0.4, 0.0)).normalize();
+        let orthogonal = (forward_h + Vector3::new(0.0, 0.0, -0.4)).normalize();
 
         // // Axis to pitch about = camera-right (world-up × forward).
-        let world_up = Vector3::y_axis(); // Y is up
+        let world_up = Vector3::z_axis(); // Y is up
         let right = Unit::new_normalize(world_up.cross(&forward_h));
 
         // Rotate the horizontal-only forward vector downward by `pitch`.
@@ -183,6 +168,9 @@ impl Agent {
     }
 
     pub fn perform(&mut self, cmd_sequence: CmdSequence) {
+        if cmd_sequence.is_empty() {
+            return;
+        }
         let origin = self.pos.map(|e| e.round() as i32);
         let cells = Action::centroids(&cmd_sequence, origin);
         let action = Action {

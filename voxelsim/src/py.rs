@@ -8,7 +8,7 @@ use tinyvec::ArrayVec;
 use crate::{
     agent::{
         Action, Agent, MoveCommand, MoveDir,
-        viewport::{CameraProjection, CameraView, IntersectionMap},
+        viewport::{CameraProjection, CameraView},
     },
     chase::{ChaseTarget, FixedLookaheadChaser, TrajectoryChaser},
     env::VoxelGrid,
@@ -23,7 +23,6 @@ pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Action>()?;
     m.add_class::<MoveCommand>()?;
     m.add_class::<RendererClient>()?;
-    m.add_class::<IntersectionMap>()?;
     m.add_class::<CameraProjection>()?;
     m.add_class::<FixedLookaheadChaser>()?;
     m.add_class::<ChaseTarget>()?;
@@ -48,6 +47,9 @@ impl Agent {
 
     /// Python-friendly method to perform a sequence of move commands
     pub fn perform_dyn_sequence(&mut self, commands: Vec<MoveCommand>) {
+        if commands.is_empty() {
+            return;
+        }
         let mut cmd_sequence = ArrayVec::new();
 
         // Convert Vec to ArrayVec, respecting the MAX_ACTIONS limit
@@ -67,6 +69,14 @@ impl Agent {
 
     pub fn get_action(&self) -> Option<Action> {
         self.action.clone()
+    }
+
+    pub fn set_pos(&mut self, pos: [f64; 3]) {
+        self.pos = Vector3::from(pos)
+    }
+
+    pub fn get_pos(&self) -> [f64; 3] {
+        self.pos.into()
     }
 }
 

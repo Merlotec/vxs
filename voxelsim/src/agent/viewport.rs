@@ -2,7 +2,6 @@ use dashmap::DashMap;
 use nalgebra::{Matrix4, Perspective3, Point3, Vector2, Vector3};
 
 use crate::{Cell, Coord};
-use std::collections::HashMap;
 
 use super::*;
 
@@ -37,6 +36,7 @@ impl Default for CameraProjection {
         }
     }
 }
+
 pub type VirtualCollisionShell = ArrayVec<[(Coord, VirtualCell); 26]>;
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,64 +70,6 @@ impl VirtualCell {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
-#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
-pub struct Intersection {
-    coord: Coord,
-    spread: Vector2<f64>,
-    ty: Cell,
-}
-
-/// Intersection map storing the first voxel coordinate hit by each ray
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
-pub struct IntersectionMap {
-    pub width: usize,
-    pub height: usize,
-    pub camera_pos: Vector3<f64>,
-    pub intersections: Vec<Option<Intersection>>,
-}
-
-impl IntersectionMap {
-    pub fn new(width: usize, height: usize, camera_pos: Vector3<f64>) -> Self {
-        Self {
-            width,
-            height,
-            intersections: vec![None; width * height],
-            camera_pos,
-        }
-    }
-
-    /// Create an uninitialized intersection map for direct chunk writing
-    pub fn new_uninitialized(width: usize, height: usize, camera_pos: Vector3<f64>) -> Self {
-        Self {
-            width,
-            height,
-            intersections: Vec::with_capacity(width * height),
-            camera_pos,
-        }
-    }
-
-    pub fn get(&self, x: usize, y: usize) -> Option<Intersection> {
-        if x < self.width && y < self.height {
-            self.intersections[y * self.width + x]
-        } else {
-            None
-        }
-    }
-
-    pub fn set(&mut self, x: usize, y: usize, coord: Option<Intersection>) {
-        if x < self.width && y < self.height {
-            self.intersections[y * self.width + x] = coord;
-        }
-    }
-
-    pub fn write_chunk(&mut self, start: usize, chunk: &[Option<Intersection>]) {
-        let dst = &mut self.intersections[start..start + chunk.len()];
-        dst.copy_from_slice(chunk);
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct VirtualGrid {
@@ -151,8 +93,8 @@ impl VirtualGrid {
         scale: usize,
         pos: Coord,
         centre_cell: VirtualCell,
-    ) -> HashMap<Coord, VirtualCell> {
-        let mut block_cells = HashMap::new();
+    ) -> DashMap<Coord, VirtualCell> {
+        let block_cells = DashMap::new();
         // Calculate the half-extent of the cube
         let half_scale = (scale as i32) / 2;
 
@@ -211,9 +153,13 @@ impl VirtualGrid {
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct CameraView {
+    /// World‐space camera position, as (X, Y, Z) with Z = up
     pub camera_pos: Vector3<f64>,
+    /// Forward direction, in the world X–Y plane (i.e. camera looks “along” +Y by default)
     pub camera_forward: Vector3<f64>,
+    /// Up direction → should now be +Z
     pub camera_up: Vector3<f64>,
+    /// Right direction → +X
     pub camera_right: Vector3<f64>,
 }
 
@@ -236,13 +182,27 @@ impl CameraView {
         Matrix4::look_at_rh(
             &Point3::from(self.camera_pos),                       // eye
             &Point3::from(self.camera_pos + self.camera_forward), // target
-            &self.camera_up,                                      // up
+            &self.camera_up,                                      // up = +Z
         )
     }
 
-    /// Calculate distance from camera to a coordinate
+    /// Calculate distance from camera to a coordinate.
+    /// We assume Coord is (x, y, z) but now treat z as the vertical axis.
     pub fn distance_to(&self, coord: Coord) -> f64 {
-        let pos = Vector3::from(coord).cast::<f64>();
+        // Swap Y↔Z so that coord.z is our “height”
+        let pos = coord.cast::<f64>();
         (pos - self.camera_pos).norm()
+    }
+}
+
+impl Default for CameraView {
+    fn default() -> Self {
+        // looking along +Y, with +Z up, +X right
+        Self {
+            camera_pos: Vector3::new(0.0, 0.0, 0.0),
+            camera_forward: Vector3::new(0.0, 1.0, 0.0),
+            camera_up: Vector3::new(0.0, 0.0, 1.0),
+            camera_right: Vector3::new(1.0, 0.0, 0.0),
+        }
     }
 }

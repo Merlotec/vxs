@@ -78,7 +78,7 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                 let v_tgt = v_tgt_nominal * urgency;
                 let a_tgt = a_tgt_nominal * urgency;
 
-                let progress = if s_updated >= s_end {
+                let progress = if s_updated < s_end {
                     ActionProgress::ProgressTo(s_updated)
                 } else {
                     ActionProgress::Complete
