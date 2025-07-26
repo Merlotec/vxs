@@ -330,24 +330,12 @@ fn synchronise_world(
 }
 
 fn draw_spline(gizmos: &mut Gizmos, spline: &Trajectory) {
-    let traj = spline.inner();
-
-    // How many segments to draw?
     let segments = 200;
-    let mut pts = Vec::with_capacity(segments + 1);
 
-    let (dom_min, dom_max) = spline.inner().knot_domain();
-    // println!("dmin: {}, dmax: {}", dom_min, dom_max);
-    // Sample t in [0,1]
-    for i in 0..=segments {
-        let t = dom_min + (i as f64 / segments as f64) * (dom_max - dom_min);
-        let p = traj.point(t);
-        // Convert from f64 to f32 for Bevy
-        pts.push(Vec3::new(p.x as f32, p.y as f32, p.z as f32));
-    }
-
-    // println!("last: {:?}", pts.last());
-
-    // Draw a connected line strip in cyan
+    let pts: Vec<Vec3> = spline
+        .waypoints(segments)
+        .into_iter()
+        .map(|(t, p)| Vec3::from_array(p.cast::<f32>().into()))
+        .collect();
     gizmos.linestrip(pts.into_iter(), Color::Srgba(Srgba::BLUE));
 }

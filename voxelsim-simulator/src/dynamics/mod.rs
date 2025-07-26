@@ -1,3 +1,4 @@
+pub mod peng;
 pub mod standard;
 
 use nalgebra::Vector3;
@@ -10,10 +11,19 @@ pub struct EnvState {
     pub wind: Vector3<f64>,
 }
 
+impl Default for EnvState {
+    fn default() -> Self {
+        Self {
+            g: Vector3::new(0.0, -9.8, 0.0),
+            wind: Vector3::zeros(),
+        }
+    }
+}
+
 // Completely controls how the agent's position is updated in the world through time.
 pub trait AgentDynamics {
     // Responsible for updating agent physics and action state (i.e. removing actions when they have been completed).
-    fn update_agent(&self, agent: &mut Agent, env: &EnvState, delta: f64);
+    fn update_agent(&mut self, agent: &mut Agent, env: &EnvState, delta: f64);
     fn bounding_box(&self) -> Vector3<f64>;
 }
 

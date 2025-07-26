@@ -188,7 +188,7 @@ pub fn generate_spline(start: Vector3<f64>, cells: &[Coord]) -> BSpline<Vector3<
                 .max_iters(300)
                 .target_cost(1e-8)
         })
-        .timeout(Duration::from_millis(5))
+        .timeout(Duration::from_millis(10))
         .run()
         .unwrap();
 
@@ -206,30 +206,50 @@ pub fn generate_spline(start: Vector3<f64>, cells: &[Coord]) -> BSpline<Vector3<
 
 /// Lightweight wrapper for runtime evaluation
 #[derive(Debug, Clone)]
-pub struct Trajectory(BSpline<Vector3<f64>, f64>);
+pub struct Trajectory {
+    spline: BSpline<Vector3<f64>, f64>,
+    urgencies: Vec<f64>,
+    progress: f64,
+}
+
+impl Default for Trajectory {
+    fn default() -> Self {
+        Self {
+            spline: BSpline::new(0, Vec::new(), Vec::new()),
+            urgencies: Vec::new(),
+            progress: 0.0,
+        }
+    }
+}
 
 impl Trajectory {
-    pub fn generate(start: Vector3<f64>, cells: &[Coord]) -> Self {
-        Self(generate_spline(start, cells))
+    /// Generates a spline through the grid path for target times specified in the tuple (coord, time).
+    pub fn generate(start: Vector3<f64>, cells: &[(Coord, f64)]) -> Self {
+        let (cells, times): (Vec<Coord>, Vec<f64>) = cells.to_vec().into_iter().unzip();
+        Self {
+            spline: generate_spline(start, &cells),
+            urgencies: times,
+            progress: 0.0,
+        }
     }
 
     pub fn inner(&self) -> &BSpline<Vector3<f64>, f64> {
-        &self.0
+        &self.spline
     }
 
     pub fn inner_mut(&mut self) -> &mut BSpline<Vector3<f64>, f64> {
-        &mut self.0
+        &mut self.spline
     }
 
     #[inline(always)]
     pub fn position(&self, t: f64) -> Vector3<f64> {
-        self.0.point(t)
+        self.inner().point(t)
     }
 
     #[inline(always)]
     pub fn velocity(&self, t: f64) -> Vector3<f64> {
         let h = 1e-3;
-        let (t0, t1) = self.0.knot_domain();
+        let (t0, t1) = self.inner().knot_domain();
         let t_lo = (t - h).max(t0);
         let t_hi = (t + h).min(t1);
         (self.position(t_hi) - self.position(t_lo)) * (1.0 / (t_hi - t_lo))
@@ -238,10 +258,59 @@ impl Trajectory {
     #[inline(always)]
     pub fn acceleration(&self, t: f64) -> Vector3<f64> {
         let h = 1e-3;
-        let (t0, t1) = self.0.knot_domain();
+        let (t0, t1) = self.inner().knot_domain();
         let t_lo = (t - h).max(t0);
         let t_hi = (t + h).min(t1);
         (self.position(t_hi) - 2.0 * self.position(t) + self.position(t_lo)) * (1.0 / (h * h))
+    }
+
+    /// Returns (position, t) of the waypoint.
+    #[inline(always)]
+    pub fn waypoints(&self, splits: usize) -> Vec<(f64, Vector3<f64>)> {
+        let (min, max) = self.inner().knot_domain();
+        let dsplit = (max - min) / splits as f64;
+
+        (0..splits)
+            .map(|i| {
+                let t = min + dsplit * i as f64;
+                (t, self.inner().point(min + dsplit * i as f64))
+            })
+            .collect()
+    }
+
+    pub fn urgencies(&self) -> &[f64] {
+        &self.urgencies
+    }
+
+    pub fn domain_t(&self, t: f64) -> Option<f64> {
+        let (min, max) = self.spline.knot_domain();
+        let dom_t = min + (max - min) * t;
+
+        if dom_t <= max { Some(dom_t) } else { None }
+    }
+
+    pub fn sample_urgencies(&self, t: f64) -> Option<f64> {
+        if let Some(floor) = self.urgencies.get(t.floor() as usize) {
+            if let Some(ceil) = self.urgencies.get(t.ceil() as usize) {
+                let w = t - floor;
+                let weighted_urgency = floor * w + ceil * (1.0 - w);
+                Some(weighted_urgency)
+            } else {
+                Some(*floor)
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn sample_spline(&self, t: f64) -> Option<Vector3<f64>> {
+        let dom_t = self.domain_t(t)?;
+        Some(self.spline.point(dom_t))
+    }
+    pub fn sample(&self, t: f64) -> Option<(Vector3<f64>, f64)> {
+        let p = self.inner().point(t);
+        let u = self.sample_urgencies(t)?;
+        Some((p, u))
     }
 }
 
@@ -253,6 +322,10 @@ struct SplineData {
     degree: usize,
     knots: Vec<f64>,
     ctrl_pts: Vec<[f64; 3]>,
+    // In knot domain.
+    urgencies: Vec<f64>,
+    // In knot domain.
+    progress: f64,
 }
 
 impl Serialize for Trajectory {
@@ -260,7 +333,7 @@ impl Serialize for Trajectory {
     where
         S: Serializer,
     {
-        let spline = &self.0;
+        let spline = &self.inner();
 
         // Extract all data
         let ctrl_pts: Vec<[f64; 3]> = spline.control_points().map(|p| [p.x, p.y, p.z]).collect();
@@ -277,6 +350,8 @@ impl Serialize for Trajectory {
             degree,
             knots,
             ctrl_pts,
+            urgencies: self.urgencies.clone(),
+            progress: self.progress,
         };
         data.serialize(serializer)
     }
@@ -300,6 +375,10 @@ impl<'de> Deserialize<'de> for Trajectory {
                 "Invalid knot/control‐point lengths",
             ));
         }
-        Ok(Trajectory(BSpline::new(data.degree, cps, data.knots)))
+        Ok(Trajectory {
+            spline: BSpline::new(data.degree, cps, data.knots),
+            urgencies: data.urgencies,
+            progress: data.progress,
+        })
     }
 }
