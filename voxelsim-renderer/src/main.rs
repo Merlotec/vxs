@@ -11,6 +11,7 @@ use voxelsim::{Agent, VoxelGrid};
 
 pub mod pov;
 
+pub mod convert;
 pub mod network;
 pub mod render;
 pub mod world;

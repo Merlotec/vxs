@@ -1,7 +1,7 @@
-use std::{collections::HashSet, error::Error, fmt::Display};
+use std::{error::Error, fmt::Display};
 
 use dashmap::DashSet;
-use nalgebra::{Unit, Vector3};
+use nalgebra::{Unit, UnitQuaternion, Vector3};
 use serde::{Deserialize, Serialize};
 use tinyvec::ArrayVec;
 
@@ -16,11 +16,9 @@ pub mod viewport;
 pub struct Agent {
     pub pos: Vector3<f64>,
     pub vel: Vector3<f64>,
-
-    // Thrust is specified in units of ACCELERATION!
-    // It is also assumed that if there is no change from previous action then the thrust will
-    // remain the same.
     pub thrust: Vector3<f64>,
+
+    pub attitude: UnitQuaternion<f64>,
 
     // Given in units of radians around the thrust axis.
     pub yaw: f64,
@@ -133,6 +131,7 @@ impl Agent {
             thrust: Vector3::zeros(),
             yaw: 0.0,
             action: None,
+            attitude: UnitQuaternion::identity(),
         }
     }
 

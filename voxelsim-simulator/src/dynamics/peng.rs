@@ -147,6 +147,7 @@ impl AgentDynamics for PengQuadDynamics {
         // 12) Write back into Agent
         agent.pos = self.quad.position.cast::<f64>();
         agent.vel = self.quad.velocity.cast::<f64>();
+        agent.attitude = self.quad.orientation.cast::<f64>();
     }
     fn bounding_box(&self) -> Vector3<f64> {
         self.bounding_box

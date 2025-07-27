@@ -97,7 +97,7 @@ while listener.running:
     commands = []
     if action:
         commands = action.get_commands()
-    command_cl = list(commands)
+    commands_cl = list(commands)
     if 'w' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Forward, 0.8, 0.0))
     if 's' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Back, 0.8, 0.0))
     if 'a' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Left, 0.8, 0.0))

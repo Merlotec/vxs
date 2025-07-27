@@ -64,14 +64,7 @@ impl Cell {
 impl Agent {
     #[new]
     pub fn new_py(id: usize) -> Self {
-        Self {
-            id,
-            pos: Vector3::zeros(),
-            vel: Vector3::zeros(),
-            thrust: Vector3::zeros(),
-            action: None,
-            yaw: 0.0,
-        }
+        Self::new(id)
     }
 
     /// Python-friendly method to perform a sequence of move commands

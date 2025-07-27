@@ -332,11 +332,12 @@ impl Trajectory {
         let mut best_dist2 = f64::MAX;
         for i in 0..=samples {
             let t = start + (end - start) * (i as f64) / (samples as f64);
-            let p = self.position(t)?;
-            let d2 = (p - point).norm_squared();
-            if d2 < best_dist2 {
-                best_dist2 = d2;
-                best_t = t;
+            if let Some(p) = self.position(t) {
+                let d2 = (p - point).norm_squared();
+                if d2 < best_dist2 {
+                    best_dist2 = d2;
+                    best_t = t;
+                }
             }
         }
 
@@ -347,13 +348,14 @@ impl Trajectory {
         for _ in 0..10 {
             let t1 = left + (right - left) / 3.0;
             let t2 = right - (right - left) / 3.0;
-
-            let d1 = (self.position(t1)? - point).norm_squared();
-            let d2 = (self.position(t2)? - point).norm_squared();
-            if d1 < d2 {
-                right = t2;
-            } else {
-                left = t1;
+            if let (Some(p1), Some(p2)) = (self.position(t1), self.position(t2)) {
+                let d1 = (p1 - point).norm_squared();
+                let d2 = (p2 - point).norm_squared();
+                if d1 < d2 {
+                    right = t2;
+                } else {
+                    left = t1;
+                }
             }
         }
 
