@@ -1,3 +1,6 @@
+use std::{collections::HashSet, error::Error, fmt::Display};
+
+use dashmap::DashSet;
 use nalgebra::{Unit, Vector3};
 use serde::{Deserialize, Serialize};
 use tinyvec::ArrayVec;
@@ -95,18 +98,27 @@ impl Action {
         }
     }
 
-    pub fn centroids(cmd_sequence: &[MoveCommand], origin: Vector3<i32>) -> Vec<(Coord, f64, f64)> {
+    pub fn centroids(
+        cmd_sequence: &[MoveCommand],
+        origin: Vector3<i32>,
+    ) -> Result<Vec<(Coord, f64, f64)>, ActionError> {
         let mut total: Coord = origin;
         let mut centroids = Vec::new();
+        let set: DashSet<Coord> = DashSet::new();
+        // Make sure we dont duplicate origin either.
+        set.insert(origin);
         for seq in cmd_sequence.iter() {
             if let Some(dir_vector) = seq.dir.dir_vector() {
                 let centroid = total + dir_vector;
                 centroids.push((centroid, seq.urgency, seq.yaw_delta));
                 total = centroid;
+                if !set.insert(centroid) {
+                    return Err(ActionError::DuplicateCentroid);
+                }
             }
         }
 
-        centroids
+        Ok(centroids)
     }
 }
 
@@ -159,25 +171,43 @@ impl Agent {
         self.vel = Vector3::new(x, y, z);
     }
 
-    pub fn perform_sequence(&mut self, commands: Vec<MoveCommand>) {
+    pub fn perform_sequence(&mut self, commands: Vec<MoveCommand>) -> Result<(), ActionError> {
         let mut cmd_sequence = ArrayVec::new();
         for cmd in commands.into_iter().take(MAX_ACTIONS) {
             cmd_sequence.push(cmd);
         }
-        self.perform(cmd_sequence);
+        self.perform(cmd_sequence)
     }
 
-    pub fn perform(&mut self, cmd_sequence: CmdSequence) {
+    pub fn perform(&mut self, cmd_sequence: CmdSequence) -> Result<(), ActionError> {
         if cmd_sequence.is_empty() {
-            return;
+            return Err(ActionError::NoCommands);
         }
         let origin = self.pos.map(|e| e.round() as i32);
-        let cells = Action::centroids(&cmd_sequence, origin);
+        let cells = Action::centroids(&cmd_sequence, origin)?;
         let action = Action {
             cmd_sequence,
             origin,
             trajectory: Trajectory::generate(origin, &cells),
         };
         self.action = Some(action);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum ActionError {
+    DuplicateCentroid,
+    NoCommands,
+}
+
+impl Error for ActionError {}
+
+impl Display for ActionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuplicateCentroid => f.write_str("Duplicate centroid"),
+            Self::NoCommands => f.write_str("No commands"),
+        }
     }
 }

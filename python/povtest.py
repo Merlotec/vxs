@@ -80,7 +80,6 @@ while listener.running:
     t0 = time.time()
     view_delta = t0 - last_view_time
     # Rendering
-    print("render")
     if fw.is_updating_py(last_view_time):
         if view_delta >= FRAME_DELTA_MAX:
             # Do not update the simulation because we want to await the view.
@@ -90,12 +89,10 @@ while listener.running:
         # used for inference.
         # Here we just send the new world over to the renderer.
         if view_delta >= FRAME_DELTA_MAX:
-            print("send pov")
             fw.send_pov_py(client, 0, 0, proj)
             renderer.update_filter_world_py(agent.camera_view_py(), proj, fw, t0)
             last_view_time = t0
 
-    print("action")
     action = agent.get_action()
     commands = []
     if action:
@@ -107,15 +104,12 @@ while listener.running:
     if 'space' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Up, 0.8, 0.0))
     if 'shift' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Down, 0.8, 0.0))
     if not action or commands != action.get_commands():
-        print("add seq")
-        agent.perform_dyn_sequence(commands)
+        if len(commands) > 0:
+            agent.perform_sequence_py(commands)
 
-    print("dyn")
     # The point in space that the drone should be chasing.
     chase_target = chaser.step_chase_py(agent, delta)
-    print("target")
     dynamics.update_agent_dynamics_py(agent, env, chase_target, delta)
-    print("dynamics")
     just_pressed.clear()
     # collisions = env.update_py(dynamics, delta)
     # if len(collisions) > 0:
