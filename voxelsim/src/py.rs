@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 
+use dashmap::DashMap;
 use nalgebra::Vector3;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use tinyvec::ArrayVec;
+use rayon::iter::{IntoParallelRefIterator, ParallelDrainFull, ParallelIterator};
 
 use crate::{
+    Cell, Coord,
     agent::{
         Action, Agent, MoveCommand, MoveDir,
         viewport::{CameraProjection, CameraView},
@@ -30,6 +32,33 @@ pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 pub type PyCoord = [i32; 3];
+
+#[pymethods]
+impl VoxelGrid {
+    #[staticmethod]
+    pub fn from_dict_py(dict: HashMap<PyCoord, Cell>) -> Self {
+        let cells: DashMap<Coord, Cell> = DashMap::with_capacity(dict.len());
+
+        dict.par_iter().for_each(|(coord, value)| {
+            cells.insert((*coord).into(), *value);
+        });
+
+        Self::from_cells(cells)
+    }
+}
+
+#[pymethods]
+impl Cell {
+    #[staticmethod]
+    pub fn filled() -> Self {
+        Self::FILLED
+    }
+
+    #[staticmethod]
+    pub fn sparse() -> Self {
+        Self::SPARSE
+    }
+}
 
 #[pymethods]
 impl Agent {
