@@ -1,7 +1,20 @@
+pub async fn clear_gpu_buffer(device: &wgpu::Device, queue: &wgpu::Queue, buffer: &wgpu::Buffer) {
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("Clear Buffer Encoder"),
+    });
+
+    encoder.clear_buffer(buffer, 0, None);
+
+    queue.submit(Some(encoder.finish()));
+
+    device.poll(wgpu::wgt::PollType::Wait).unwrap();
+}
+
 pub async fn read_gpu_buffer(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     source_buffer: &wgpu::Buffer,
+    clear: bool,
 ) -> Vec<u8> {
     let buffer_size = source_buffer.size();
 
@@ -26,6 +39,11 @@ pub async fn read_gpu_buffer(
         0, // destination offset
         buffer_size,
     );
+
+    // Clear the buffer if required.
+    if clear {
+        encoder.clear_buffer(&source_buffer, 0, None);
+    }
 
     // Submit the command to the GPU
     queue.submit(Some(encoder.finish()));

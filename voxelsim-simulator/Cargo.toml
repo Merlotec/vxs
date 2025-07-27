@@ -1,13 +1,14 @@
 [package]
-name = "voxelsim"
+name = "voxelsim-simulator"
 version = "0.1.0"
 edition = "2024"
 
 [features]
 default = []
-python = ["pyo3"]
+python = ["pyo3", "voxelsim/python"]
 
 [dependencies]
+voxelsim = {path = "../voxelsim"}
 bitflags = { version = "2.9.1", features = ["serde"] }
 nalgebra = { version = "0.33.2", features = ["serde-serialize", "serde"] }
 noise = "0.9.0"
@@ -19,7 +20,4 @@ rayon = "1.8"
 pyo3 = { version = "0.25.1", features = ["extension-module"], optional = true }
 bytemuck = "1.23.1"
 dashmap = { version = "6.1.0", features = ["serde", "rayon"] }
-argmin = "0.10.0"
-argmin-math = { version = "0.4.0", features = ["nalgebra_latest"] }
-bspline = { version = "1.1.0" } 
-finitediff = "0.1.4"
+peng_quad = "0.5.5"

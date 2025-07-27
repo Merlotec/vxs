@@ -1,14 +1,20 @@
 from pynput import keyboard, mouse
 import voxelsim, time
 
-world = voxelsim.VoxelGrid()
-world.generate_default_terrain(100)
-dynamics = voxelsim.AgentDynamics.default_drone()
+# dynamics = voxelsim.AgentDynamics.default_drone()
 agent = voxelsim.Agent(0)
-fw = voxelsim.FilterWorld()
-env = voxelsim.GlobalEnv(world, {0: agent})
-proj = voxelsim.CameraProjection.default_py()
+agent.set_pos([50.0, 50.0, 20.0])
 
+fw = voxelsim.FilterWorld()
+dynamics = voxelsim.PengQuadDynamics.default_py()
+
+chaser = voxelsim.FixedLookaheadChaser.default_py()
+
+generator = voxelsim.TerrainGenerator()
+generator.generate_terrain_py(voxelsim.TerrainConfig.default_py())
+world = generator.generate_world_py()
+proj = voxelsim.CameraProjection.default_py()
+env = voxelsim.EnvState.default_py()
 
 # Renderer
 renderer = voxelsim.AgentVisionRenderer(world, [400, 300])
@@ -20,32 +26,45 @@ client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
 client.connect_py(1)
 print("Controls: WASD=move, Space=up, Shift=down, ESC=quit")
 
-env.send_world(client)
-
-env.set_agent_pos(0, [50.0, 20.0, 50.0])
+client.send_world_py(world)
+client.send_agents_py({0: agent})
 
 pressed = set()
+just_pressed = set()
 
 def on_press(key):
+    # normalize all keys to a string
     try:
-        pressed.add(key.char.lower())
+        key_str = key.char.lower()
     except AttributeError:
         if key == keyboard.Key.space:
-            pressed.add('space')
+            key_str = 'space'
         elif key == keyboard.Key.shift:
-            pressed.add('shift')
+            key_str = 'shift'
         elif key == keyboard.Key.esc:
             # stop listener
             return False
+        else:
+            # ignore other non-char keys
+            return
+
+    # if this is the first time we've seen it down, mark as just_pressed
+    if key_str not in pressed:
+        just_pressed.add(key_str)
+    # always record that it's down
+    pressed.add(key_str)
 
 def on_release(key):
     try:
-        pressed.discard(key.char.lower())
+        key_str = key.char.lower()
     except AttributeError:
         if key == keyboard.Key.space:
-            pressed.discard('space')
+            key_str = 'space'
         elif key == keyboard.Key.shift:
-            pressed.discard('shift')
+            key_str = 'shift'
+        else:
+            return
+    pressed.discard(key_str)
 
 from threading import Thread
 listener = keyboard.Listener(on_press=on_press, on_release=on_release)
@@ -71,26 +90,33 @@ while listener.running:
         # Here we just send the new world over to the renderer.
         if view_delta >= FRAME_DELTA_MAX:
             fw.send_pov_py(client, 0, 0, proj)
-            renderer.update_filter_world_py(env.get_agent(0).camera_view_py(), proj, fw, t0)
+            renderer.update_filter_world_py(agent.camera_view_py(), proj, fw, t0)
             last_view_time = t0
 
+    action = agent.get_action()
     commands = []
-    if 'w' in pressed: commands.append(voxelsim.MoveCommand.forward(0.8))
-    if 's' in pressed: commands.append(voxelsim.MoveCommand.back(0.8))
-    if 'a' in pressed: commands.append(voxelsim.MoveCommand.left(0.8))
-    if 'd' in pressed: commands.append(voxelsim.MoveCommand.right(0.8))
-    if 'space' in pressed: commands.append(voxelsim.MoveCommand.up(0.8))
-    if 'shift' in pressed: commands.append(voxelsim.MoveCommand.down(0.5))
+    if action:
+        commands = action.get_commands()
+    if 'w' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Forward, 0.8, 0.0))
+    if 's' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Back, 0.8, 0.0))
+    if 'a' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Left, 0.8, 0.0))
+    if 'd' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Right, 0.8, 0.0))
+    if 'space' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Up, 0.8, 0.0))
+    if 'shift' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Down, 0.8, 0.0))
+    if not action or commands != action.get_commands():
+        agent.perform_dyn_sequence(commands)
 
-    if commands:
-        env.perform_sequence_on_agent(0, commands)
+    # The point in space that the drone should be chasing.
+    chase_target = chaser.step_chase_py(agent, delta)
+    dynamics.update_agent_dynamics_py(agent, env, chase_target, delta)
 
-    collisions = env.update_py(dynamics, delta)
+    just_pressed.clear()
+    # collisions = env.update_py(dynamics, delta)
     # if len(collisions) > 0:
     #     print("Collision!")
     # im = env.update_pov_py()
     
-    env.send_agents(client)
+    client.send_agents_py({0: agent})
     # env.send_pov(client, 0, 0)
     d = time.time() - t0
     if d < delta:

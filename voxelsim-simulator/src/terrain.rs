@@ -1,10 +1,17 @@
-use crate::env::{Cell, VoxelGrid};
+use dashmap::DashMap;
+use nalgebra::Vector3;
 use noise::{NoiseFn, Perlin};
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
+use voxelsim::{
+    Coord,
+    env::{Cell, VoxelGrid},
+};
 
 // Created structure for holding terrain configuration parameters.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct TerrainConfig {
-    pub size: [i32; 3],
+    pub size: Vector3<i32>,
     pub height_scale: f64,
     pub flat_band: f64,
     pub max_terrain_height: i32,
@@ -17,7 +24,7 @@ pub struct TerrainConfig {
 impl Default for TerrainConfig {
     fn default() -> Self {
         Self {
-            size: [200, 64, 200],
+            size: Vector3::new(200, 64, 200),
             height_scale: 100.0,
             flat_band: 0.1,
             max_terrain_height: 32,
@@ -111,9 +118,38 @@ impl TreeParams {
     }
 }
 
-// --------------- RUST-ONLY IMPL ----------------------------------
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
+pub struct TerrainGenerator {
+    cells: DashMap<Coord, Cell>,
+}
 
-impl VoxelGrid {
+impl TerrainGenerator {
+    pub fn new() -> Self {
+        Self {
+            cells: DashMap::new(),
+        }
+    }
+    pub fn cells_mut(&mut self) -> &mut DashMap<Coord, Cell> {
+        &mut self.cells
+    }
+
+    pub fn cells(&mut self) -> &DashMap<Coord, Cell> {
+        &self.cells
+    }
+
+    // Performs a coordinate switch to make z vertical which is very important!
+    pub fn generate_world(self) -> VoxelGrid {
+        VoxelGrid::from_cells(
+            self.cells
+                .into_iter()
+                .map(|(k, v)| (Vector3::new(k.x, k.z, k.y), v))
+                .collect(),
+        )
+    }
+}
+
+impl TerrainGenerator {
     // ---------------------------------------------------------------------
     // 1. BUILD GROUND ------------------------------------------------------
     // ---------------------------------------------------------------------
@@ -127,7 +163,7 @@ impl VoxelGrid {
         height_fn: &mut dyn FnMut(i32, i32) -> f64,
     ) -> Vec<Vec<i32>> {
         // Return height map
-        let [max_x, _max_y, max_z] = cfg.size;
+        let [max_x, _max_y, max_z] = cfg.size.into();
 
         // --- 1. collect surface heights ---------------------------------
         let mut height_map = vec![vec![0i32; (max_z + 1) as usize]; (max_x + 1) as usize];
@@ -149,7 +185,7 @@ impl VoxelGrid {
 
                 // Fill current column up to its own height
                 for y in bottom_y..=h_here {
-                    let coord = [x, y, z];
+                    let coord = Vector3::new(x, y, z);
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
@@ -184,7 +220,7 @@ impl VoxelGrid {
 
                         // Fill the gap between the two heights
                         for y in min_height..=max_height {
-                            let coord = [x, y, z];
+                            let coord = Vector3::new(x, y, z);
                             if !within_bounds_arr(&coord, &cfg.size) {
                                 continue;
                             }
@@ -214,7 +250,7 @@ impl VoxelGrid {
         height_map: &Vec<Vec<i32>>,
         max_trees: usize,
     ) {
-        let [max_x, max_y, max_z] = cfg.size;
+        let [max_x, max_y, max_z] = cfg.size.into();
         let min_distance_sq = 64; // Minimum squared distance between trees
         let tree_density_threshold = 0.7; // Threshold for placing trees in groves
 
@@ -285,10 +321,6 @@ impl VoxelGrid {
                 // Ensure canopy doesn't intersect ground or exceed bounds
                 let canopy_bottom_y = ground_y + (params.height as f32 * 0.5) as i32;
                 if canopy_bottom_y + params.canopy_height >= max_y || canopy_bottom_y <= ground_y {
-                    // println!(
-                    //     "Skipping {} at ({}, {}, {}): invalid canopy placement (bottom_y={}, canopy_height={})",
-                    //     type_name, x, ground_y, z, canopy_bottom_y, params.canopy_height
-                    // );
                     continue;
                 }
 
@@ -313,20 +345,6 @@ impl VoxelGrid {
         for (i, &(x, z, tree_type, ref params)) in placed_trees.iter().enumerate() {
             let ground_y = height_map[x as usize][z as usize];
 
-            // Detailed debug output for each tree
-            // println!(
-            //     "Tree {}: placing {} at ({}, {}, {}) with height {}, trunk radius {}, canopy radius {}, canopy height {}",
-            //     i, format!("{:?}", tree_type), x, ground_y, z, params.height, params.trunk_radius, params.canopy_radius, params.canopy_height
-            // );
-
-            let mut rng = StdRng::seed_from_u64(cfg.seed as u64 ^ ((x as u64) << 32) ^ z as u64);
-            self.generate_tree_structure(x, ground_y, z, params, cfg, &mut rng, forbidden);
-        }
-
-        // println!(
-        //     "Tree placement complete. Total cells: {}",
-        //     self.cells_mut().len()
-        // );
     }
 
     fn generate_tree_structure(
@@ -357,7 +375,7 @@ impl VoxelGrid {
                         continue;
                     }
 
-                    let coord = [x + dx + curve_offset, ground_y + y, z + dz];
+                    let coord = Vector3::new(x + dx + curve_offset, ground_y + y, z + dz);
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
@@ -435,7 +453,7 @@ impl VoxelGrid {
                     let bx = x + (angle.cos() * r as f32) as i32;
                     let bz = z + (angle.sin() * r as f32) as i32;
 
-                    let coord = [bx, y, bz];
+                    let coord = Vector3::new(bx, y, bz);
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
@@ -458,7 +476,7 @@ impl VoxelGrid {
                             let dy = rng.random_range(-1..=0);
                             let dz = rng.random_range(-1..=1);
 
-                            let needle_coord = [bx + dx, y + dy, bz + dz];
+                            let needle_coord = Vector3::new(bx + dx, y + dy, bz + dz);
                             if !within_bounds_arr(&needle_coord, &cfg.size) {
                                 continue;
                             }
@@ -517,7 +535,7 @@ impl VoxelGrid {
                                 continue;
                             }
 
-                            let coord = [bx + dx, by + dy, bz + dz];
+                            let coord = Vector3::new(bx + dx, by + dy, bz + dz);
                             if !within_bounds_arr(&coord, &cfg.size) {
                                 continue;
                             }
@@ -544,7 +562,7 @@ impl VoxelGrid {
                         let sby = by + rng.random_range(-1..=1);
                         let sbz = bz + (sub_angle.sin() * s as f32) as i32;
 
-                        let coord = [sbx, sby, sbz];
+                        let coord = Vector3::new(sbx, sby, sbz);
                         if !within_bounds_arr(&coord, &cfg.size) {
                             continue;
                         }
@@ -579,7 +597,7 @@ impl VoxelGrid {
                         continue;
                     }
 
-                    let coord = [x + dx, canopy_center_y + dy, z + dz];
+                    let coord = Vector3::new(x + dx, canopy_center_y + dy, z + dz);
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
@@ -626,7 +644,7 @@ impl VoxelGrid {
                     let by = y + (r as f32 * 0.3) as i32; // Gentler upward curve
                     let bz = z + (angle.sin() * r as f32) as i32;
 
-                    let coord = [bx, by, bz];
+                    let coord = Vector3::new(bx, by, bz);
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
@@ -644,11 +662,11 @@ impl VoxelGrid {
                     if r > length / 2 || y < ground_y + trunk_height {
                         for _ in 0..3 {
                             // Reduced for narrower canopy
-                            let leaf_coord = [
+                            let leaf_coord = Vector3::new(
                                 bx + rng.random_range(-1..=1),
                                 by + rng.random_range(-1..=1),
                                 bz + rng.random_range(-1..=1),
-                            ];
+                            );
                             if !within_bounds_arr(&leaf_coord, &cfg.size) {
                                 continue;
                             }
@@ -683,7 +701,7 @@ impl VoxelGrid {
                         continue;
                     }
 
-                    let coord = [x + dx, canopy_top_y + dy, z + dz];
+                    let coord = Coord::new(x + dx, canopy_top_y + dy, z + dz);
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
@@ -738,7 +756,7 @@ impl VoxelGrid {
                     break;
                 } // Don't go below ground
 
-                let coord = [bx, by, bz];
+                let coord = Vector3::new(bx, by, bz);
                 if !within_bounds_arr(&coord, &cfg.size) {
                     continue;
                 }
@@ -755,7 +773,7 @@ impl VoxelGrid {
                 // Hanging leaves along the branch
                 if t > 2 {
                     for dy in -2..=0 {
-                        let leaf_coord = [bx, by + dy, bz];
+                        let leaf_coord = Vector3::new(bx, by + dy, bz);
                         if !within_bounds_arr(&leaf_coord, &cfg.size) {
                             continue;
                         }
@@ -785,7 +803,7 @@ impl VoxelGrid {
                         continue;
                     }
 
-                    let coord = [x + dx, canopy_y + dy, z + dz];
+                    let coord = Vector3::new(x + dx, canopy_y + dy, z + dz);
                     if !within_bounds_arr(&coord, &cfg.size) {
                         continue;
                     }
@@ -818,14 +836,14 @@ impl VoxelGrid {
         //                     ▼ trait-object, no generics
         passage_fn: &mut dyn FnMut(i32, i32, i32) -> bool,
     ) {
-        let [max_x, max_y, max_z] = cfg.size;
+        let [max_x, max_y, max_z] = cfg.size.into();
         for x in 0..=max_x {
             for y in 0..=max_y {
                 for z in 0..=max_z {
                     if !passage_fn(x, y, z) {
                         continue;
                     }
-                    let coord = [x, y, z];
+                    let coord = Vector3::new(x, y, z);
                     let mut to_remove = None;
                     if let Some(mut cell) = self.cells_mut().get_mut(&coord) {
                         if cell.contains(Cell::SPARSE | Cell::GROUND) {
@@ -887,11 +905,13 @@ impl VoxelGrid {
             ]);
             (n + 1.0) * 0.5 > threshold
         };
+
+        // Flip coordinates.
         // self.carve_passages(&cfg, &mut passage_fn);
     }
 }
 
-fn within_bounds_arr(v: &[i32; 3], max: &[i32; 3]) -> bool {
+fn within_bounds_arr(v: &Coord, max: &Vector3<i32>) -> bool {
     v.iter()
         .zip(max.iter())
         .all(|(vi, bi)| *vi >= 0 && *vi <= *bi)

@@ -37,7 +37,7 @@ impl State {
         // The queue is used to submit command buffers to the GPU.
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                required_features: wgpu::Features::PUSH_CONSTANTS, // Add features you need here
+                required_features: wgpu::Features::PUSH_CONSTANTS | wgpu::Features::CLEAR_TEXTURE, // Add features you need here
                 // WebGL doesn't support all of wgpu's features, so if
                 // we're building for the web we'll have to disable some.
                 required_limits: wgpu::Limits {
@@ -119,6 +119,11 @@ impl State {
             .rasterizer_state
             .filter
             .get_filter_list(&self.device, &self.queue)
+            .await;
+
+        self.rasterizer_state
+            .filter
+            .clear_buffers(&self.device, &self.queue)
             .await;
 
         Ok(WorldChangeset {

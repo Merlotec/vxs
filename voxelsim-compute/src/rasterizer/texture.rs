@@ -1,4 +1,3 @@
-
 pub struct TextureSet {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -10,6 +9,7 @@ impl TextureSet {
         device: &wgpu::Device,
         size: [u32; 2],
         format: wgpu::TextureFormat,
+        usage: wgpu::TextureUsages,
         label: &str,
     ) -> Self {
         let size3d = wgpu::Extent3d {
@@ -26,9 +26,7 @@ impl TextureSet {
             format,
             // Usage needs to include RENDER_ATTACHMENT to be a render target
             // and TEXTURE_BINDING to be readable by a shader.
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
+            usage,
             view_formats: &[],
         };
         let texture = device.create_texture(&desc);
@@ -100,6 +98,7 @@ pub struct CellTexel {
 }
 
 use voxelsim::Coord;
+use wgpu::ImageSubresourceRange;
 
 pub async fn extract_texture_data<T>(
     device: &wgpu::Device,
@@ -146,6 +145,8 @@ where
         },
         texture.size(),
     );
+
+    encoder.clear_texture(&texture, &ImageSubresourceRange::default());
 
     // 3. Submit and map the buffer
     queue.submit(Some(encoder.finish()));
