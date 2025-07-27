@@ -16,17 +16,7 @@ use voxelsim::{Agent, PovData, VoxelGrid};
 use bevy::app::AppExit;
 use bevy::prelude::*;
 
-// ─── Z-UP → Y-UP HELPERS ─────────────────────────────────────────────────────────
-
-/// Convert a client-space Vec3<i32> (X, Y horizontal; Z-up) → Bevy Vec3 (X, Z horizontal; Y-up).
-fn client_to_bevy_i32(v: Vector3<i32>) -> Vec3 {
-    Vec3::new(v.x as f32, v.z as f32, v.y as f32)
-}
-
-/// Convert a client-space Vec3<f32> (X, Y horizontal; Z-up) → Bevy Vec3 (X, Z horizontal; Y-up).
-fn client_to_bevy_f32(v: Vector3<f32>) -> Vec3 {
-    Vec3::new(v.x, v.z, v.y)
-}
+use crate::convert::*;
 
 #[derive(Resource)]
 pub struct CameraMode {
@@ -354,6 +344,7 @@ fn synchronise_world(
                 if agent_comp.agent.id == net_a.id {
                     let pos_f = net_a.pos.cast::<f32>();
                     transform.translation = client_to_bevy_f32(pos_f);
+                    transform.rotation = client_to_bevy_quat(net_a.attitude);
                     agent_comp.agent = net_a.clone();
                     found = true;
                     false

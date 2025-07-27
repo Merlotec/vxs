@@ -1,5 +1,5 @@
 use dashmap::DashMap;
-use nalgebra::{Matrix4, Perspective3, Point3, Vector2, Vector3};
+use nalgebra::{Matrix4, Perspective3, Point3, Vector3};
 
 use crate::{Cell, Coord};
 
