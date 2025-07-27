@@ -1,0 +1,9 @@
+[workspace]
+resolver = "3"
+members = [
+  "voxelsim",
+  "voxelsim-simulator",
+  "voxelsim-compute",
+  "voxelsim-renderer",
+  "voxelsim-py",
+]
