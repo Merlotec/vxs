@@ -16,7 +16,7 @@ use crate::{
 };
 
 #[pymodule]
-pub fn voxelsim(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<VoxelGrid>()?;
     m.add_class::<GlobalEnv>()?;
     m.add_class::<Agent>()?;
