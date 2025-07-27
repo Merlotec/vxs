@@ -176,7 +176,7 @@ impl Agent {
         let action = Action {
             cmd_sequence,
             origin,
-            trajectory: Trajectory::generate(self.pos, &cells),
+            trajectory: Trajectory::generate(origin, &cells),
         };
         self.action = Some(action);
     }
