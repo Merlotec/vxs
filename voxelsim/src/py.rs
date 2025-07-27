@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use dashmap::DashMap;
-use nalgebra::Vector3;
+use nalgebra::{Quaternion, Unit, UnitQuaternion, Vector3};
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use rayon::iter::{IntoParallelRefIterator, ParallelDrainFull, ParallelIterator};
@@ -15,6 +15,7 @@ use crate::{
     chase::{ChaseTarget, FixedLookaheadChaser, TrajectoryChaser},
     env::VoxelGrid,
     network::RendererClient,
+    viewport::CameraOrientation,
 };
 
 #[pymodule]
@@ -28,6 +29,7 @@ pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CameraProjection>()?;
     m.add_class::<FixedLookaheadChaser>()?;
     m.add_class::<ChaseTarget>()?;
+    m.add_class::<CameraOrientation>()?;
     Ok(())
 }
 
@@ -73,8 +75,8 @@ impl Agent {
             .map_err(|e| PyException::new_err(format!("Could not perform sequence: {}", e)))
     }
 
-    pub fn camera_view_py(&self) -> CameraView {
-        self.camera_view()
+    pub fn camera_view_py(&self, orientation: &CameraOrientation) -> CameraView {
+        self.camera_view(orientation)
     }
 
     pub fn get_action(&self) -> Option<Action> {
@@ -314,5 +316,13 @@ impl FixedLookaheadChaser {
 
     pub fn step_chase_py(&self, agent: &Agent, delta: f64) -> ChaseTarget {
         self.step_chase(agent, delta)
+    }
+}
+
+#[pymethods]
+impl CameraOrientation {
+    #[staticmethod]
+    pub fn vertical_tilt_py(tilt: f64) -> Self {
+        Self::vertical_tilt(tilt)
     }
 }

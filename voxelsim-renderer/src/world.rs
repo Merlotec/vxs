@@ -7,6 +7,7 @@ use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::{Normed, UnitQuaternion, Vector3};
 use voxelsim::trajectory::Trajectory;
+use voxelsim::viewport::CameraOrientation;
 
 use crate::network::NetworkSubscriber;
 use crate::render::{
@@ -275,8 +276,8 @@ fn synchronise_world(
                     agent_comp.agent = net_agent.clone();
 
                     // forward‐vector gizmo
-                    let fwd_client = agent_comp.agent.camera_view().camera_forward.cast::<f32>();
-                    let fwd_bevy = client_to_bevy_f32(fwd_client);
+                    let fwd_client = agent_comp.agent.attitude * Vector3::y_axis();
+                    let fwd_bevy = client_to_bevy_f32(fwd_client.cast::<f32>().into_inner());
                     gizmos.line(
                         bevy_pos,
                         bevy_pos + fwd_bevy * 5.0,
@@ -311,8 +312,8 @@ fn synchronise_world(
                 MeshMaterial3d(assets.drone_body_mat.clone()),
                 Transform::from_translation(bevy_start),
             ));
-            let fwd_client = net_agent.camera_view().camera_forward.cast::<f32>();
-            let fwd_bevy = client_to_bevy_f32(fwd_client);
+            let fwd_client = net_agent.attitude * Vector3::y_axis();
+            let fwd_bevy = client_to_bevy_f32(fwd_client.cast::<f32>().into_inner());
             gizmos.line(
                 bevy_start,
                 bevy_start + fwd_bevy * 5.0,
