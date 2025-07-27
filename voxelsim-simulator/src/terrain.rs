@@ -110,10 +110,10 @@ impl TreeParams {
                 leaf_density: 0.5,
             },
         };
-        println!(
-            "Generated TreeParams for {:?}: height={}, branch_length={}",
-            tree_type, params.height, params.branch_length
-        );
+        // println!(
+        //     "Generated TreeParams for {:?}: height={}, branch_length={}",
+        //     tree_type, params.height, params.branch_length
+        // );
         params
     }
 }
@@ -254,11 +254,11 @@ impl TerrainGenerator {
         let min_distance_sq = 64; // Minimum squared distance between trees
         let tree_density_threshold = 0.7; // Threshold for placing trees in groves
 
-        println!("=== STEP 1: RANDOM TREE PLACEMENT IN GROVES ===");
-        println!(
-            "Terrain bounds: [{}, {}, {}], max trees: {}",
-            max_x, max_y, max_z, max_trees
-        );
+        // println!("=== STEP 1: RANDOM TREE PLACEMENT IN GROVES ===");
+        // println!(
+        //     "Terrain bounds: [{}, {}, {}], max trees: {}",
+        //     max_x, max_y, max_z, max_trees
+        // );
 
         // Initialize Perlin noise for tree density
         let tree_noise = Perlin::new(cfg.seed.wrapping_add(2));
@@ -336,37 +336,15 @@ impl TerrainGenerator {
             | Cell::DRONE_HISTORIC
             | Cell::DRONE_TRAJECTORY
             | Cell::TARGET;
-        println!(
-            "Forbidden mask: {:?} (bits: {:08b})",
-            forbidden,
-            forbidden.bits()
-        );
+        // println!(
+        //     "Forbidden mask: {:?} (bits: {:08b})",
+        //     forbidden,
+        //     forbidden.bits()
+        // );
 
         for (i, &(x, z, tree_type, ref params)) in placed_trees.iter().enumerate() {
             let ground_y = height_map[x as usize][z as usize];
 
-            // Detailed debug output for each tree
-            println!(
-                "Tree {}: placing {} at ({}, {}, {}) with height {}, trunk radius {}, canopy radius {}, canopy height {}",
-                i,
-                format!("{:?}", tree_type),
-                x,
-                ground_y,
-                z,
-                params.height,
-                params.trunk_radius,
-                params.canopy_radius,
-                params.canopy_height
-            );
-
-            let mut rng = StdRng::seed_from_u64(cfg.seed as u64 ^ ((x as u64) << 32) ^ z as u64);
-            self.generate_tree_structure(x, ground_y, z, params, cfg, &mut rng, forbidden);
-        }
-
-        println!(
-            "Tree placement complete. Total cells: {}",
-            self.cells_mut().len()
-        );
     }
 
     fn generate_tree_structure(
