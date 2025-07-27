@@ -146,6 +146,7 @@ pub fn generate_centroid_fit_spline(
 
 /// Generate an optimised B-spline through the integer grid cells
 pub fn generate_spline(start: Vector3<f64>, cells: &[Coord]) -> BSpline<Vector3<f64>, f64> {
+    assert!(!cells.is_empty());
     // Build full initial control points: [start] + cell centroids
     let full_pts: Vec<_> = std::iter::once(start)
         .chain(cells.iter().map(|c| c.cast::<f64>()))
@@ -157,9 +158,12 @@ pub fn generate_spline(start: Vector3<f64>, cells: &[Coord]) -> BSpline<Vector3<
 
     // Special-case 2-point = straight line
     if full_pts.len() == 2 {
-        let knots = uniform_knots(full_pts.len(), 0);
-        return BSpline::new(0, full_pts, knots);
+        println!("full_pts");
+        let knots = uniform_knots(full_pts.len(), 1);
+        return BSpline::new(1, full_pts, knots);
     }
+
+    println!("solve... {:?}", &full_pts);
 
     // Extract fixed endpoints and interior initial guesses
     let start_pt = full_pts.first().cloned().unwrap();
@@ -179,16 +183,16 @@ pub fn generate_spline(start: Vector3<f64>, cells: &[Coord]) -> BSpline<Vector3<
         smooth: 0.01,
         samples_per_seg: 4,
     };
-    let linesearch = BacktrackingLineSearch::new(ArmijoCondition::new(1e-8).unwrap())
+    let linesearch = BacktrackingLineSearch::new(ArmijoCondition::new(1e-5).unwrap())
         .rho(0.5)
         .unwrap();
-    let solver = LBFGS::new(linesearch, 100);
+    let solver = LBFGS::new(linesearch, 7);
     let result = Executor::new(cost, solver)
         .configure(|state| {
             state
                 .param(init_param.clone())
                 .max_iters(300)
-                .target_cost(1e-8)
+                .target_cost(1e-5)
         })
         .timeout(Duration::from_millis(10))
         .run()
@@ -229,7 +233,7 @@ impl Default for Trajectory {
 impl Trajectory {
     /// Generates a spline through the grid path for target times specified in the tuple (coord, time).
     pub fn generate(start: Vector3<f64>, cells: &[(Coord, f64, f64)]) -> Self {
-        let (mut xs, mut ys, mut zs) = (Vec::new(), Vec::new(), Vec::new());
+        let (xs, ys, zs) = (Vec::new(), Vec::new(), Vec::new());
         let (cells, times, yaw_seq): (Vec<Coord>, Vec<f64>, Vec<f64>) =
             cells
                 .into_iter()
@@ -302,13 +306,13 @@ impl Trajectory {
         &self.yaw_seq
     }
 
-    pub fn len(&self) -> f64 {
+    pub fn length(&self) -> f64 {
         self.urgencies.len() as f64
     }
 
     pub fn domain_t(&self, t: f64) -> Option<f64> {
         let (min, max) = self.spline.knot_domain();
-        let dom_t = min + (max - min) * t;
+        let dom_t = min + (max - min) * (t / self.length());
 
         if dom_t <= max { Some(dom_t) } else { None }
     }
@@ -376,6 +380,7 @@ impl Trajectory {
         for _ in 0..10 {
             let t1 = left + (right - left) / 3.0;
             let t2 = right - (right - left) / 3.0;
+
             let d1 = (self.position(t1)? - point).norm_squared();
             let d2 = (self.position(t2)? - point).norm_squared();
             if d1 < d2 {

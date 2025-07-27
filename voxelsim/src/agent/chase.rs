@@ -53,7 +53,7 @@ impl TrajectoryChaser for FixedLookaheadChaser {
             let x_act = agent.pos;
 
             let s_cur = action.trajectory.progress;
-            let s_end = action.trajectory.len();
+            let s_end = action.trajectory.length();
             if let (Some(urgency), Some(yaw)) = (
                 action.trajectory.sample_urgencies(s_cur),
                 action.trajectory.sample_yaw(s_cur),
@@ -65,32 +65,39 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                 let s_star = action
                     .trajectory
                     .find_nearest_param_in_range(s_cur, s_end, &x_act)
-                    .unwrap();
+                    .expect(&format!("No nearest param in range: {}, {}", s_cur, s_end));
 
                 let s_updated = s_star.clamp(s_cur, s_cur + ds_max);
 
                 let s_tgt = (s_updated + s_lookahead).min(s_end);
-                let p_tgt = action.trajectory.position(s_tgt).unwrap();
-                let v_tgt_nominal = action.trajectory.velocity(s_tgt).unwrap();
-                let a_tgt_nominal = action.trajectory.acceleration(s_tgt).unwrap();
+                if let (Some(p_tgt), Some(v_tgt_nominal), Some(a_tgt_nominal)) = (
+                    action.trajectory.position(s_tgt),
+                    action.trajectory.velocity(s_tgt),
+                    action.trajectory.acceleration(s_tgt),
+                ) {
+                    // 6) Scale velocity and accel targets by urgency
+                    let v_tgt = v_tgt_nominal * urgency;
+                    let a_tgt = a_tgt_nominal * urgency;
 
-                // 6) Scale velocity and accel targets by urgency
-                let v_tgt = v_tgt_nominal * urgency;
-                let a_tgt = a_tgt_nominal * urgency;
+                    let progress = if s_updated < s_end {
+                        ActionProgress::ProgressTo(s_updated)
+                    } else {
+                        ActionProgress::Complete
+                    };
 
-                let progress = if s_updated < s_end {
-                    ActionProgress::ProgressTo(s_updated)
+                    return ChaseTarget {
+                        pos: p_tgt,
+                        vel: v_tgt,
+                        acc: a_tgt,
+                        yaw,
+                        progress,
+                    };
                 } else {
-                    ActionProgress::Complete
-                };
-
-                return ChaseTarget {
-                    pos: p_tgt,
-                    vel: v_tgt,
-                    acc: a_tgt,
-                    yaw,
-                    progress,
-                };
+                    return ChaseTarget {
+                        progress: ActionProgress::Complete,
+                        ..Default::default()
+                    };
+                }
             }
         }
         ChaseTarget::default()

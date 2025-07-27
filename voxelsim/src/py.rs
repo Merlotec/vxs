@@ -59,7 +59,6 @@ impl Agent {
             }
             cmd_sequence.push(cmd);
         }
-
         self.perform(cmd_sequence);
     }
 
