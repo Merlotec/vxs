@@ -1,4 +1,4 @@
-use crate::viewport::{CameraProjection, VirtualGrid};
+use crate::viewport::{CameraOrientation, CameraProjection, VirtualGrid};
 use crate::{Agent, VoxelGrid};
 use serde::{Deserialize, Serialize};
 
@@ -158,6 +158,7 @@ pub struct PovData {
     pub virtual_world: VirtualGrid,
     pub agent_id: usize,
     pub proj: CameraProjection,
+    pub orientation: CameraOrientation,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -165,4 +166,5 @@ pub struct PovDataRef<'a> {
     pub virtual_world: &'a VirtualGrid,
     pub agent_id: usize,
     pub proj: CameraProjection,
+    pub orientation: CameraOrientation,
 }

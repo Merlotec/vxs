@@ -5,7 +5,11 @@ use nalgebra::{Unit, UnitQuaternion, Vector3};
 use serde::{Deserialize, Serialize};
 use tinyvec::ArrayVec;
 
-use crate::{Coord, trajectory::Trajectory, viewport::CameraView};
+use crate::{
+    Coord,
+    trajectory::Trajectory,
+    viewport::{CameraOrientation, CameraView},
+};
 
 pub mod chase;
 pub mod trajectory;
@@ -19,9 +23,6 @@ pub struct Agent {
     pub thrust: Vector3<f64>,
 
     pub attitude: UnitQuaternion<f64>,
-
-    // Given in units of radians around the thrust axis.
-    pub yaw: f64,
 
     pub id: usize,
 
@@ -129,33 +130,13 @@ impl Agent {
             pos: Vector3::zeros(),
             vel: Vector3::zeros(),
             thrust: Vector3::zeros(),
-            yaw: 0.0,
             action: None,
             attitude: UnitQuaternion::identity(),
         }
     }
 
-    // TODO: fix to use yaw.
-    pub fn camera_view(&self) -> CameraView {
-        let forward_h = self.vel.normalize();
-        let orthogonal = (forward_h + Vector3::new(0.0, 0.0, -0.4)).normalize();
-
-        // // Axis to pitch about = camera-right (world-up × forward).
-        let world_up = Vector3::z_axis(); // Y is up
-        let right = Unit::new_normalize(world_up.cross(&forward_h));
-
-        // Rotate the horizontal-only forward vector downward by `pitch`.
-        let forward = orthogonal;
-        // Re-derive an exact orthonormal basis.
-        let camera_right = right.into_inner(); // already unit
-        let camera_up = camera_right.cross(&forward).normalize();
-
-        CameraView {
-            camera_pos: self.pos,    // assumed Point3<f64>
-            camera_forward: forward, // Vector3<f64>
-            camera_up,               // Vector3<f64>
-            camera_right,            // Vector3<f64>
-        }
+    pub fn camera_view(&self, orientation: &CameraOrientation) -> CameraView {
+        CameraView::from_pos_quat(self.pos, orientation.quat * self.attitude)
     }
 
     pub fn set_position(&mut self, x: f64, y: f64, z: f64) {

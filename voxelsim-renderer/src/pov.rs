@@ -4,7 +4,7 @@ use bevy::platform::collections::HashMap;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Vector3;
-use voxelsim::viewport::{CameraProjection, VirtualGrid};
+use voxelsim::viewport::{CameraOrientation, CameraProjection, VirtualGrid};
 
 use crate::network::NetworkSubscriber;
 use crate::render::{
@@ -99,36 +99,15 @@ pub fn begin_render(
         .add_systems(Startup, render::setup)
         .add_systems(
             Update,
-            (
-                synchronise_world,
-                input_system,
-                centre_camera_system,
-                quit_system,
-            ),
+            (synchronise_world, centre_camera_system, quit_system),
         )
         .insert_resource(PovReceiver(pov_receiver))
         .insert_resource(AgentReceiver(agent_receiver))
-        .insert_resource(GuiChannel(gui_sender))
         .insert_resource(FocusedAgent(0))
         .insert_resource(CameraMode { is_pov: false })
         .insert_resource(QuitReceiver(quit_receiver))
+        .insert_resource(OrientationRes(CameraOrientation::default()))
         .run();
-}
-
-#[derive(Resource)]
-struct GuiChannel(Sender<GuiCommand>);
-
-fn input_system(gui_channel: Res<GuiChannel>, keyboard: Res<ButtonInput<KeyCode>>) {
-    for k in keyboard.get_just_pressed() {
-        let _ = match k {
-            KeyCode::KeyA => gui_channel.0.send(GuiCommand::MoveAgentA),
-            KeyCode::KeyB => gui_channel.0.send(GuiCommand::MoveAgentB),
-            KeyCode::KeyC => gui_channel.0.send(GuiCommand::MoveAgentC),
-            KeyCode::KeyD => gui_channel.0.send(GuiCommand::MoveAgentD),
-            KeyCode::KeyR => gui_channel.0.send(GuiCommand::RegenerateWorld),
-            _ => Ok(()),
-        };
-    }
 }
 
 fn quit_system(quit_rx: Res<QuitReceiver>, mut exit_ev: ResMut<Events<AppExit>>) {
@@ -137,8 +116,12 @@ fn quit_system(quit_rx: Res<QuitReceiver>, mut exit_ev: ResMut<Events<AppExit>>)
     }
 }
 
+#[derive(Debug, Resource, Default)]
+pub struct OrientationRes(CameraOrientation);
+
 fn centre_camera_system(
     agent_query: Query<(&Transform, &AgentComponent), Without<Camera3d>>,
+    mut agent_vis_query: Query<&mut Visibility, With<AgentComponent>>,
     mut pan_orbit_camera_query: Query<
         (&mut PanOrbitCamera, &mut Transform, &mut Camera),
         (With<Camera3d>, Without<PovCamera>, Without<AgentComponent>),
@@ -150,6 +133,7 @@ fn centre_camera_system(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut focused: ResMut<FocusedAgent>,
     mut camera_mode: ResMut<CameraMode>,
+    camera_orientation: Res<OrientationRes>,
 ) {
     if keyboard_input.just_pressed(KeyCode::Tab) {
         camera_mode.is_pov = !camera_mode.is_pov;
@@ -159,40 +143,53 @@ fn centre_camera_system(
         for (_, mut camera) in pov_camera_query.iter_mut() {
             camera.is_active = camera_mode.is_pov;
         }
+
+        if camera_mode.is_pov {
+            for mut vis in agent_vis_query.iter_mut() {
+                *vis = Visibility::Hidden;
+            }
+        } else {
+            for mut vis in agent_vis_query.iter_mut() {
+                *vis = Visibility::Visible;
+            }
+        }
     }
 
-    if keyboard_input.just_pressed(KeyCode::KeyZ) {
-        let mut positions = Vec::new();
-        for (t, a) in agent_query.iter() {
-            positions.push((a.agent.id, t.translation, a.agent.clone()));
+    let mut positions = Vec::new();
+    for (t, a) in agent_query.iter() {
+        positions.push((a.agent.id, t.translation, a.agent.clone()));
+    }
+    positions.sort_by_key(|(k, _, _)| *k);
+    let next_i = if let Some(i) = positions.iter().position(|(k, _, _)| *k == focused.0) {
+        if (i + 1) < positions.len() { i + 1 } else { 0 }
+    } else if !positions.is_empty() {
+        0
+    } else {
+        return;
+    };
+    let (agent_id, pos, agent) = &positions[next_i];
+    focused.0 = *agent_id;
+    if camera_mode.is_pov {
+        if let Ok((mut pov_transform, _)) = pov_camera_query.single_mut() {
+            update_pov_camera_transform(&mut pov_transform, pos, agent, &camera_orientation.0);
         }
-        positions.sort_by_key(|(k, _, _)| *k);
-        let next_i = if let Some(i) = positions.iter().position(|(k, _, _)| *k == focused.0) {
-            if (i + 1) < positions.len() { i + 1 } else { 0 }
-        } else if !positions.is_empty() {
-            0
-        } else {
-            return;
-        };
-        let (agent_id, pos, agent) = &positions[next_i];
-        focused.0 = *agent_id;
-        if camera_mode.is_pov {
-            if let Ok((mut pov_transform, _)) = pov_camera_query.single_mut() {
-                update_pov_camera_transform(&mut pov_transform, pos, agent);
-            }
-        } else {
-            for (mut pan_orbit, _, _) in pan_orbit_camera_query.iter_mut() {
-                pan_orbit.target_focus = *pos;
-            }
+    } else if keyboard_input.just_pressed(KeyCode::KeyZ) {
+        for (mut pan_orbit, _, _) in pan_orbit_camera_query.iter_mut() {
+            pan_orbit.target_focus = *pos;
         }
     }
 
     // continuous POV update omitted for brevity
 }
 
-fn update_pov_camera_transform(camera_transform: &mut Transform, agent_pos: &Vec3, agent: &Agent) {
+fn update_pov_camera_transform(
+    camera_transform: &mut Transform,
+    agent_pos: &Vec3,
+    agent: &Agent,
+    orientation: &CameraOrientation,
+) {
     camera_transform.translation = *agent_pos;
-    let camera_view = agent.camera_view();
+    let camera_view = agent.camera_view(orientation);
     let forward_client = Vector3::new(
         camera_view.camera_forward.x,
         camera_view.camera_forward.y,
@@ -232,8 +229,10 @@ fn synchronise_world(
         (&mut Projection),
         (With<Camera3d>, With<PovCamera>, Without<AgentComponent>),
     >,
+    mut camera_orientation: ResMut<OrientationRes>,
 ) {
     if let Some(mut pov) = pov.0.try_iter().last() {
+        camera_orientation.0 = pov.orientation;
         for (entity, mut cell, mut material) in cell_query.iter_mut() {
             if let Some(v) = pov
                 .virtual_world
@@ -366,6 +365,7 @@ fn synchronise_world(
                 Mesh3d(assets.drone_mesh.clone()),
                 MeshMaterial3d(assets.drone_body_mat.clone()),
                 Transform::from_translation(client_to_bevy_f32(start_f)),
+                Visibility::Visible,
             ));
         }
     }
