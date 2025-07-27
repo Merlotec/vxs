@@ -46,20 +46,9 @@ impl Agent {
     }
 
     /// Python-friendly method to perform a sequence of move commands
-    pub fn perform_dyn_sequence(&mut self, commands: Vec<MoveCommand>) {
-        if commands.is_empty() {
-            return;
-        }
-        let mut cmd_sequence = ArrayVec::new();
-
-        // Convert Vec to ArrayVec, respecting the MAX_ACTIONS limit
-        for (i, cmd) in commands.into_iter().enumerate() {
-            if i >= crate::agent::MAX_ACTIONS {
-                break;
-            }
-            cmd_sequence.push(cmd);
-        }
-        self.perform(cmd_sequence);
+    pub fn perform_sequence_py(&mut self, commands: Vec<MoveCommand>) -> PyResult<()> {
+        self.perform_sequence(commands)
+            .map_err(|e| PyException::new_err(format!("Could not perform sequence: {}", e)))
     }
 
     pub fn camera_view_py(&self) -> CameraView {
