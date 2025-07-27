@@ -87,12 +87,6 @@ impl AgentDynamics for PengQuadDynamics {
         self.quad.velocity = agent.vel.cast::<f32>();
 
         // 3) Compute desired acceleration to chase the target
-        println!("chaser: {:?}", chaser);
-        println!(
-            "targetting_delta: {:?}",
-            t_pos - self.quad.position.cast::<f64>()
-        );
-
         let a_cmd = drone::compute_accel_cmd(
             self.quad.position.cast::<f64>(),
             self.quad.velocity.cast::<f64>(),
@@ -103,11 +97,9 @@ impl AgentDynamics for PengQuadDynamics {
             &mut self.pos_state,
             delta,
         );
-        println!("a_cmd = {:?}", a_cmd);
 
         // 4) Add gravity, compute thrust magnitude
         let a_total = a_cmd + Vector3::new(0.0, 0.0, self.quad.gravity as f64);
-        println!("a_total = {:?}", a_total);
         let thrust = self.quad.mass as f64 * a_total.norm();
 
         // 5) Compute desired body-z axis (with zero‐vector guard)
@@ -131,7 +123,6 @@ impl AgentDynamics for PengQuadDynamics {
         let rate_error = rate_sp - self.quad.angular_velocity.cast::<f64>();
         let raw_torque =
             drone::control_torque(rate_error, &mut self.rate_state, &self.rate_params, delta);
-        println!("raw torque = {:?}", raw_torque);
 
         // 8) Anti‐windup: clamp the integral state
         let mi = self.rate_params.max_integral;
@@ -146,8 +137,6 @@ impl AgentDynamics for PengQuadDynamics {
             raw_torque.y.clamp(-mt.y, mt.y),
             raw_torque.z.clamp(-mt.z, mt.z),
         );
-        println!("clamped torque = {:?}", torque);
-        println!("thrust: {}", thrust);
         // 10) Optionally cap the integration timestep
         self.quad.time_step = delta as f32;
 
@@ -158,7 +147,6 @@ impl AgentDynamics for PengQuadDynamics {
         // 12) Write back into Agent
         agent.pos = self.quad.position.cast::<f64>();
         agent.vel = self.quad.velocity.cast::<f64>();
-        println!("outpos: {}", agent.pos);
     }
     fn bounding_box(&self) -> Vector3<f64> {
         self.bounding_box
