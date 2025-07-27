@@ -1,16 +1,119 @@
-use std::time::Duration;
-
-use argmin::core::{CostFunction, Error, Executor, Gradient};
-use argmin::solver::linesearch::BacktrackingLineSearch;
-use argmin::solver::linesearch::condition::ArmijoCondition;
-use argmin::solver::quasinewton::LBFGS;
 use bspline::BSpline;
-use finitediff::FiniteDiff;
 use nalgebra::Vector3;
 
 use crate::Coord;
 
-//// Signed distance to the unit cube centered at `coord`
+// WOW! only 3 imports
+
+fn project_point_onto_segment(
+    p: &Vector3<f64>,
+    a: &Vector3<f64>,
+    b: &Vector3<f64>,
+) -> Vector3<f64> {
+    let ab = b - a;
+    let ap = p - a;
+
+    let ab_dot_ab = ab.dot(&ab);
+    let ab_dot_ap = ab.dot(&ap);
+
+    // Compute the projection scalar t
+    let t = (ab_dot_ap / ab_dot_ab).clamp(0.0, 1.0);
+
+    // Interpolate between a and b
+    a + ab * t
+}
+
+fn first_surface_intersection(
+    p0: Vector3<f64>,
+    p1: Vector3<f64>,
+    bmin: Vector3<f64>,
+    bmax: Vector3<f64>,
+) -> Option<Vector3<f64>> {
+    let d = p1 - p0;
+    let mut t_enter = 0.0f64;
+    let mut t_exit = 1.0f64;
+
+    for i in 0..3 {
+        let p0i = p0[i];
+        let di = d[i];
+        let bi_min = bmin[i];
+        let bi_max = bmax[i];
+
+        if di.abs() < std::f64::EPSILON {
+            // if outside slab then no hit
+            if p0i < bi_min || p0i > bi_max {
+                return None;
+            }
+        } else {
+            let (mut t0, mut t1) = ((bi_min - p0i) / di, (bi_max - p0i) / di);
+            if t0 > t1 {
+                std::mem::swap(&mut t0, &mut t1);
+            }
+            t_enter = t_enter.max(t0);
+            t_exit = t_exit.min(t1);
+            if t_enter > t_exit {
+                return None;
+            }
+        }
+    }
+
+    // Compute both points
+    let entry_pt = p0 + d * t_enter;
+    let exit_pt = p0 + d * t_exit;
+
+    if t_enter > 0.0 {
+        Some(entry_pt)
+    } else {
+        Some(exit_pt)
+    }
+}
+
+pub fn solve_constrained_smoothing_pass(
+    cells: &[Coord],
+    cell_size: Vector3<f64>,
+    path: &[Vector3<f64>],
+) -> Vec<Vector3<f64>> {
+    assert!(cells.len() == path.len());
+    if path.len() < 2 {
+        return path.to_vec();
+    }
+    let mut im_pts = Vec::with_capacity(path.len() - 2);
+    for i in 1..path.len() - 1 {
+        let a = path[i - 1];
+        let b = path[i + 1];
+
+        let p = path[i];
+
+        let m = project_point_onto_segment(&p, &a, &b);
+
+        let p_cnt = cells[i + 1].cast::<f64>();
+
+        let bmin = p_cnt - cell_size * 0.5;
+        let bmax = p_cnt + cell_size * 0.5;
+
+        if let Some(x) = first_surface_intersection(m, p, bmin, bmax) {
+            // There is an intersection, so we need to pull back to the intersection.
+            im_pts.push(x);
+        } else {
+            im_pts.push(m);
+        }
+    }
+
+    let mut result = vec![path[0]];
+    result.append(&mut im_pts);
+    result.push(*path.last().unwrap());
+    result
+}
+
+pub fn solve_constrained_smoothing(cells: &[Coord], passes: usize) -> Vec<Vector3<f64>> {
+    let mut points: Vec<Vector3<f64>> = cells.iter().map(|c| c.cast::<f64>().into()).collect();
+    for _ in 0..passes {
+        points = solve_constrained_smoothing_pass(cells, Vector3::new(1.0, 1.0, 1.0), &points);
+    }
+    points
+}
+
+/// Signed distance to the unit cube centered at `coord`
 /// Uses SDF for axis-aligned box of side length 1.
 #[inline(always)]
 pub fn sdf(coord: &Coord, p: &Vector3<f64>) -> f64 {
@@ -57,83 +160,8 @@ fn uniform_knots(num_ctrl: usize, degree: usize) -> Vec<f64> {
     knots
 }
 
-struct SplineCost {
-    degree: usize,
-    knots: Vec<f64>,
-    start: Vector3<f64>,
-    end: Vector3<f64>,
-    cells: Vec<Coord>,
-    lambda_inside: f64,
-    lambda_out: f64,
-    smooth: f64,
-    samples_per_seg: usize,
-}
-
-impl CostFunction for SplineCost {
-    type Param = Vec<f64>;
-    type Output = f64;
-
-    fn cost(&self, x: &Self::Param) -> Result<Self::Output, Error> {
-        // Rebuild full control-point list: [start] + interiors + [end]
-        let mut cps = Vec::with_capacity(x.len() / 3 + 2);
-        cps.push(self.start);
-        for v in x.chunks(3) {
-            cps.push(Vector3::new(v[0], v[1], v[2]));
-        }
-        cps.push(self.end);
-
-        let spline = BSpline::new(self.degree, cps.clone(), self.knots.clone());
-        let (t0, t1) = spline.knot_domain();
-
-        let mut cost = 0.0;
-        // 1) Attraction & penalty (interior sampling)
-        let m = self.cells.len() as f64;
-        for (j, cell) in self.cells.iter().enumerate() {
-            let t = t0 + ((j as f64 + 1.0) / (m + 1.0)) * (t1 - t0);
-            let p = spline.point(t);
-            let err = (p - cell.cast::<f64>()).norm_squared();
-            let sd = sdf(&cell, &p);
-            cost += self.lambda_inside * err + self.lambda_out * sd.powi(2);
-        }
-
-        // 2) Smoothness via second finite difference
-        let h = 1e-3;
-        let total_samples = self.samples_per_seg * (cps.len().saturating_sub(self.degree));
-        let dt = (t1 - t0) / (total_samples as f64);
-        for k in 0..=total_samples {
-            let t = t0 + k as f64 * dt;
-            let t_lo = (t - h).max(t0);
-            let t_hi = (t + h).min(t1);
-            let p_lo = spline.point(t_lo);
-            let p = spline.point(t);
-            let p_hi = spline.point(t_hi);
-            let d2 = (p_hi - 2.0 * p + p_lo) * (1.0 / (h * h));
-            cost += self.smooth * d2.norm_squared();
-        }
-
-        Ok(cost)
-    }
-}
-
-impl Gradient for SplineCost {
-    type Param = Vec<f64>;
-    type Gradient = Vec<f64>;
-
-    fn gradient(&self, x: &Self::Param) -> Result<Self::Gradient, Error> {
-        let f = |v: &Vec<f64>| self.cost(v).unwrap();
-        Ok(x.central_diff(&f))
-    }
-}
-
-pub fn generate_centroid_fit_spline(
-    start: Vector3<f64>,
-    cells: &[Coord],
-) -> BSpline<Vector3<f64>, f64> {
+pub fn generate_path_fit_spline(control_points: Vec<Vector3<f64>>) -> BSpline<Vector3<f64>, f64> {
     // build the list of control points: the start + each cell’s centroid
-    let control_points: Vec<_> = std::iter::once(start)
-        .chain(cells.iter().map(|c| c.cast::<f64>()))
-        .collect();
-
     // pick degree = 3, but no higher than n-1, and at least 1
     let degree = std::cmp::min(3, control_points.len().saturating_sub(1)).max(1);
 
@@ -142,72 +170,6 @@ pub fn generate_centroid_fit_spline(
 
     // build and return the spline
     BSpline::new(degree, control_points, knots)
-}
-
-/// Generate an optimised B-spline through the integer grid cells
-pub fn generate_spline(start: Vector3<f64>, cells: &[Coord]) -> BSpline<Vector3<f64>, f64> {
-    assert!(!cells.is_empty());
-    // Build full initial control points: [start] + cell centroids
-    let full_pts: Vec<_> = std::iter::once(start)
-        .chain(cells.iter().map(|c| c.cast::<f64>()))
-        .collect();
-
-    // Degree = min(3, n-1) but >= 1
-    let degree = (3).min(full_pts.len().saturating_sub(1)).max(1);
-    let knots = uniform_knots(full_pts.len(), degree);
-
-    // Special-case 2-point = straight line
-    if full_pts.len() == 2 {
-        println!("full_pts");
-        let knots = uniform_knots(full_pts.len(), 1);
-        return BSpline::new(1, full_pts, knots);
-    }
-
-    println!("solve... {:?}", &full_pts);
-
-    // Extract fixed endpoints and interior initial guesses
-    let start_pt = full_pts.first().cloned().unwrap();
-    let end_pt = full_pts.last().cloned().unwrap();
-    let interior = &full_pts[1..full_pts.len() - 1];
-    let init_param: Vec<f64> = interior.iter().flat_map(|p| vec![p.x, p.y, p.z]).collect();
-
-    // Set up cost and solver
-    let cost = SplineCost {
-        degree,
-        knots: knots.clone(),
-        start: start_pt,
-        end: end_pt,
-        cells: cells.to_vec(),
-        lambda_inside: 1.0,
-        lambda_out: 10.0,
-        smooth: 0.01,
-        samples_per_seg: 4,
-    };
-    let linesearch = BacktrackingLineSearch::new(ArmijoCondition::new(1e-5).unwrap())
-        .rho(0.5)
-        .unwrap();
-    let solver = LBFGS::new(linesearch, 7);
-    let result = Executor::new(cost, solver)
-        .configure(|state| {
-            state
-                .param(init_param.clone())
-                .max_iters(300)
-                .target_cost(1e-5)
-        })
-        .timeout(Duration::from_millis(10))
-        .run()
-        .unwrap();
-
-    // Reconstruct final control-points
-    let opt_vec = result.state.param.unwrap();
-    let mut final_cps = Vec::with_capacity(opt_vec.len() / 3 + 2);
-    final_cps.push(start_pt);
-    for v in opt_vec.chunks(3) {
-        final_cps.push(Vector3::new(v[0], v[1], v[2]));
-    }
-    final_cps.push(end_pt);
-
-    BSpline::new(degree, final_cps, knots)
 }
 
 /// Lightweight wrapper for runtime evaluation
@@ -232,9 +194,9 @@ impl Default for Trajectory {
 
 impl Trajectory {
     /// Generates a spline through the grid path for target times specified in the tuple (coord, time).
-    pub fn generate(start: Vector3<f64>, cells: &[(Coord, f64, f64)]) -> Self {
+    pub fn generate(origin: Vector3<i32>, cells: &[(Coord, f64, f64)]) -> Self {
         let (xs, ys, zs) = (Vec::new(), Vec::new(), Vec::new());
-        let (cells, times, yaw_seq): (Vec<Coord>, Vec<f64>, Vec<f64>) =
+        let (mut cells, times, yaw_seq): (Vec<Coord>, Vec<f64>, Vec<f64>) =
             cells
                 .into_iter()
                 .fold((xs, ys, zs), |(mut xs, mut ys, mut zs), (x, y, z)| {
@@ -243,9 +205,14 @@ impl Trajectory {
                     zs.push(*z);
                     (xs, ys, zs)
                 });
+        cells.insert(0, origin);
+
+        let path = solve_constrained_smoothing(&cells, 20);
+
+        let spline = generate_path_fit_spline(path);
 
         Self {
-            spline: generate_spline(start, &cells),
+            spline,
             urgencies: times,
             yaw_seq,
             progress: 0.0,
