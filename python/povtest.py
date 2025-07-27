@@ -16,6 +16,8 @@ world = generator.generate_world_py()
 proj = voxelsim.CameraProjection.default_py()
 env = voxelsim.EnvState.default_py()
 
+AGENT_CAMERA_TILT = -0.5
+camera_orientation = voxelsim.CameraOrientation.vertical_tilt_py(-0.5)
 # Renderer
 renderer = voxelsim.AgentVisionRenderer(world, [400, 300])
 
@@ -89,8 +91,8 @@ while listener.running:
         # used for inference.
         # Here we just send the new world over to the renderer.
         if view_delta >= FRAME_DELTA_MAX:
-            fw.send_pov_py(client, 0, 0, proj)
-            renderer.update_filter_world_py(agent.camera_view_py(), proj, fw, t0)
+            fw.send_pov_py(client, 0, 0, proj, camera_orientation)
+            renderer.update_filter_world_py(agent.camera_view_py(camera_orientation), proj, fw, t0)
             last_view_time = t0
 
     action = agent.get_action()
