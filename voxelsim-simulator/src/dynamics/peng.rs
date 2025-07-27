@@ -68,31 +68,37 @@ impl AgentDynamics for PengQuadDynamics {
         delta: f64,
     ) {
         // 1) Advance trajectory progress
-        match chaser.progress {
+
+        let (t_pos, t_vel, t_acc) = match chaser.progress {
             ActionProgress::ProgressTo(p) => {
                 if let Some(action) = &mut agent.action {
                     action.trajectory.progress = p;
                 }
+                (chaser.pos, chaser.vel, Vector3::zeros())
             }
             ActionProgress::Complete => {
                 agent.action = None;
-                return;
+                (agent.pos, Vector3::zeros(), Vector3::zeros())
             }
-            ActionProgress::Hold => return,
-        }
-
+            ActionProgress::Hold => (agent.pos, Vector3::zeros(), Vector3::zeros()),
+        };
         // 2) Sync quad state to our Agent
         self.quad.position = agent.pos.cast::<f32>();
         self.quad.velocity = agent.vel.cast::<f32>();
 
         // 3) Compute desired acceleration to chase the target
         println!("chaser: {:?}", chaser);
+        println!(
+            "targetting_delta: {:?}",
+            t_pos - self.quad.position.cast::<f64>()
+        );
+
         let a_cmd = drone::compute_accel_cmd(
             self.quad.position.cast::<f64>(),
             self.quad.velocity.cast::<f64>(),
-            chaser.pos,
-            chaser.vel,
-            chaser.acc,
+            t_pos,
+            t_vel,
+            t_acc,
             &self.pos_params,
             &mut self.pos_state,
             delta,
@@ -107,7 +113,7 @@ impl AgentDynamics for PengQuadDynamics {
         // 5) Compute desired body-z axis (with zero‐vector guard)
         let norm = a_total.norm();
         let z_b_cmd = if norm > 1e-6 {
-            -a_total / norm
+            a_total / norm
         } else {
             Vector3::new(0.0, 0.0, 1.0)
         };
@@ -141,10 +147,9 @@ impl AgentDynamics for PengQuadDynamics {
             raw_torque.z.clamp(-mt.z, mt.z),
         );
         println!("clamped torque = {:?}", torque);
-
+        println!("thrust: {}", thrust);
         // 10) Optionally cap the integration timestep
-        let dt = delta.min(0.02);
-        self.quad.time_step = dt as f32;
+        self.quad.time_step = delta as f32;
 
         // 11) Integrate dynamics via RK4
         self.quad

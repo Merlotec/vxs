@@ -79,8 +79,8 @@ impl Default for RatePIDState {
 /// Compute desired acceleration from position/velocity targets
 /// a_cmd = Kp_pos * pos_error + Ki_pos * ∫pos_error dt + Kd_pos * vel_error + a_tgt (feedforward)
 pub fn compute_accel_cmd(
-    a_pos: Vector3<f64>,
-    a_vel: Vector3<f64>,
+    p_act: Vector3<f64>,
+    v_act: Vector3<f64>,
     p_tgt: Vector3<f64>,
     v_tgt: Vector3<f64>,
     a_tgt: Vector3<f64>,
@@ -89,11 +89,11 @@ pub fn compute_accel_cmd(
     dt: f64,
 ) -> Vector3<f64> {
     // Position error
-    let pos_error = p_tgt - a_pos;
+    let pos_error = p_tgt - p_act;
     // Integrate position error
     pid_state.pos_integral += pos_error * dt;
     // Velocity error (desired minus actual)
-    let vel_error = v_tgt - a_vel;
+    let vel_error = v_tgt - v_act;
     // PID terms
     let p_term = pid_params.kp.component_mul(&pos_error);
     let i_term = pid_params.ki.component_mul(&pid_state.pos_integral);
