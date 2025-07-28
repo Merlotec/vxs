@@ -80,20 +80,21 @@ class SimpleCNNEncoder(EmbeddingEncoder, nn.Module):
         self.flat_size = 128 * (voxel_size // 8) ** 3
         self.fc = nn.Linear(self.flat_size, embedding_dim)
         
-    def encode(self, voxel_data: VoxelData) -> torch.Tensor:
-        # Convert sparse voxel data to dense grid
-        grid = self._sparse_to_dense(voxel_data)
-        
-        x = F.relu(self.conv1(grid))
+    def encode(self, voxel_batch: List[VoxelData]) -> torch.Tensor:
+        # Build one dense grid per sample, then stack
+        grids = [self._sparse_to_dense(vd) for vd in voxel_batch]  # each [1,1,D,D,D]
+        x = torch.cat(grids, dim=0)                                # [B,1,D,D,D]
+
+        x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
-        x = x.view(x.size(0), -1)
-        return self.fc(x)
+        x = x.flatten(1)                                           # [B, F]
+        return self.fc(x) 
     
     def _sparse_to_dense(self, voxel_data: VoxelData) -> torch.Tensor:
         """Convert sparse voxel coordinates to dense grid"""
-        batch_size = 1  # For now, single sample
-        grid = torch.zeros((batch_size, 1, self.voxel_size, self.voxel_size, self.voxel_size),
+
+        grid = torch.zeros((1, 1, self.voxel_size, self.voxel_size, self.voxel_size),
                           device=voxel_data.occupied_coords.device, dtype=torch.float32)
         
         if voxel_data.occupied_coords.shape[0] > 0:
@@ -106,7 +107,7 @@ class SimpleCNNEncoder(EmbeddingEncoder, nn.Module):
             grid[0, 0, coords[:, 0], coords[:, 1], coords[:, 2]] = voxel_data.values
      
 
-        return grid.to(next(self.parameters()).device)
+        return grid
     
     def get_embedding_dim(self) -> int:
         return self.embedding_dim
@@ -218,14 +219,14 @@ class EmbeddingTrainer:
         # Create optimizer
         self.optimizer = torch.optim.Adam(all_params, lr=lr)
     
-    def train_step(self, voxel_data: VoxelData, targets: Dict[str, torch.Tensor], 
+    def train_step(self, voxel_batch: List[VoxelData], target_batch: List[Dict[str, torch.Tensor]],
                    loss_weights: Dict[str, float]) -> Dict[str, float]:
         """Single training step"""
         # Zeros stored gradients
         self.optimizer.zero_grad()
         
         # Encode
-        embedding = self.encoder.encode(voxel_data)
+        embedding = self.encoder.encode(voxel_batch)
         
         # Decode for reconstruction loss
         reconstruction = self.decoder.decode(embedding)
@@ -235,7 +236,9 @@ class EmbeddingTrainer:
         
         # Reconstruction loss
         if "reconstruction" in loss_weights:
-            recon_target = self._create_reconstruction_target(voxel_data)
+            recon_targets = torch.cat(
+            [self._create_reconstruction_target(vd) for vd in voxel_batch], dim=0
+        )   
             logits = reconstruction["logits"]                              # [1,3,D,H,W]
             # TODO: Check adaptive histogram weighting
             
@@ -245,13 +248,14 @@ class EmbeddingTrainer:
 
             weights = torch.tensor([0.2, 0.7, 1.5], device=logits.device)
 
-            losses["reconstruction"] = F.cross_entropy(logits, recon_target, weight=weights)
+            losses["reconstruction"] = F.cross_entropy(logits, recon_targets, weight=weights)
         
         # Auxiliary head losses
         for name, head in self.loss_heads.items():
-            if name in targets and name in loss_weights:
-                prediction = head.forward(embedding)
-                losses[name] = head.compute_loss(prediction, targets[name])
+            if name in loss_weights and all(name in tb for tb in target_batch):
+                preds   = head(embedding)
+                t_stack = torch.stack([tb[name] for tb in target_batch])
+                losses[name] = head.compute_loss(preds, t_stack)
         
         # Total loss
         total_loss = sum(loss_weights.get(name, 0) * loss for name, loss in losses.items())
@@ -266,8 +270,10 @@ class EmbeddingTrainer:
     def _create_reconstruction_target(self, voxel_data: VoxelData) -> torch.Tensor:
         voxel_size = self.encoder.voxel_size if hasattr(self.encoder, 'voxel_size') else 64
         # default empty = 0
-        target = torch.zeros((1, voxel_size, voxel_size, voxel_size),
-                            device=self.device, dtype=torch.long)
+        target = torch.zeros(
+        (1, self.encoder.voxel_size, self.encoder.voxel_size, self.encoder.voxel_size),
+        device=self.device, dtype=torch.long
+        )
 
         if voxel_data.occupied_coords.shape[0] > 0:
             coords = voxel_data.occupied_coords.float()
@@ -412,9 +418,8 @@ class TerrainBatch(IterableDataset):
 # ============== Main Test Runner ==============
 def collate_fn(batch):
     """Custom collate function for batching"""
-    # For now, just return single samples as-is
-    # In future, implement proper batching
-    return batch[0]
+    voxel_list, target_list = zip(*batch)       
+    return list(voxel_list), list(target_list)
 
 
 def run_experiment(encoder_class, decoder_class, num_epochs=100, batch_size=1, visualize_every=10):
@@ -450,7 +455,7 @@ def run_experiment(encoder_class, decoder_class, num_epochs=100, batch_size=1, v
 
     # Create dataloader
     dataset = TerrainBatch(world_size=100, sub_volume_size=48)
-    dataloader = DataLoader(dataset, batch_size=1, collate_fn=collate_fn)  # batch_size=1 for now
+    dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn)  # batch_size=1 for now
     
     # Training loop
     loss_history = defaultdict(list)
@@ -463,16 +468,17 @@ def run_experiment(encoder_class, decoder_class, num_epochs=100, batch_size=1, v
     for epoch in range(num_epochs):
         epoch_losses = defaultdict(float)
         
-        for step, (voxel_data, targets) in enumerate(dataloader):
+        for step, (voxel_batch, target_batch) in enumerate(dataloader):
             if step >= steps_per_epoch:
                 break
 
             if viz_sample is None:
-                viz_sample = (voxel_data, targets)
+                viz_sample = (voxel_batch[0], target_batch[0])
                 
             # Move to device
-            voxel_data = voxel_data.to_device(trainer.device)
-            targets = {k: v.to(trainer.device) for k, v in targets.items()}
+            voxel_batch  = [vd.to_device(trainer.device) for vd in voxel_batch]
+            target_batch = [{k: v.to(trainer.device) for k, v in t.items()} 
+                            for t in target_batch]
             
             # Train step
             loss_weights = {
@@ -481,7 +487,7 @@ def run_experiment(encoder_class, decoder_class, num_epochs=100, batch_size=1, v
                 "relative_offset": 0.3,
             }
             
-            losses = trainer.train_step(voxel_data, targets, loss_weights)
+            losses = trainer.train_step(voxel_batch, target_batch, loss_weights)
             
             # Accumulate losses
             for name, value in losses.items():
@@ -501,7 +507,7 @@ def run_experiment(encoder_class, decoder_class, num_epochs=100, batch_size=1, v
                 
                 # Generate reconstruction (after)
                 with torch.no_grad():
-                    viz_data = viz_sample[0].to_device(trainer.device)
+                    viz_data = [viz_sample[0].to_device(trainer.device)]
                     embedding = encoder.encode(viz_data)
                     out = decoder.decode(embedding)
                     logits = out["logits"]                  # [1,3,D,H,W]
@@ -599,7 +605,9 @@ def show_voxels(sample, client):
 if __name__ == "__main__":
     # Test simple CNN autoencoder
     print("Testing CNN Autoencoder...")
-    results = run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, num_epochs=1000, visualize_every=10)
+    print("CUDA available:", torch.cuda.is_available())
+    print("CUDA device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
+    results = run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, num_epochs=1000, batch_size=5, visualize_every=10)
 
 
 

@@ -25,7 +25,7 @@ renderer = voxelsim.AgentVisionRenderer(world, [400, 300])
 
 client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
 # Specify the number of agent renderers we want to connect to.
-client.connect_py(0)
+client.connect_py(1)
 print("Controls: WASD=move, Space=up, Shift=down, ESC=quit")
 
 client.send_world_py(world)
