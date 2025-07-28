@@ -35,13 +35,15 @@ pub enum ActionProgress {
 pub struct FixedLookaheadChaser {
     pub v_max_base: f64,
     pub s_lookahead_base: f64,
+    pub min_step: f64,
 }
 
 impl Default for FixedLookaheadChaser {
     fn default() -> Self {
         Self {
             v_max_base: 3.0,
-            s_lookahead_base: 0.3,
+            s_lookahead_base: 0.12,
+            min_step: 1.0,
         }
     }
 }
@@ -60,6 +62,7 @@ impl TrajectoryChaser for FixedLookaheadChaser {
             ) {
                 let v_max_cur = self.v_max_base * urgency;
                 let ds_max = v_max_cur * delta;
+                let ds_min = self.min_step * delta;
                 let s_lookahead = self.s_lookahead_base * urgency;
 
                 let s_star = action
@@ -78,9 +81,9 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                     // 6) Scale velocity and accel targets by urgency
                     let v_tgt = v_tgt_nominal * urgency;
                     let a_tgt = a_tgt_nominal * urgency;
-
-                    let progress = if s_updated < s_end {
-                        ActionProgress::ProgressTo(s_updated)
+                    let s_next = s_updated.max(s_cur + ds_min);
+                    let progress = if s_next < s_end {
+                        ActionProgress::ProgressTo(s_next)
                     } else {
                         ActionProgress::Complete
                     };

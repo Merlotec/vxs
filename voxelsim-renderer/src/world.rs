@@ -1,10 +1,13 @@
-use std::ops::Deref;
+// use std::ops::Deref;
+
+use std::f64::consts::FRAC_PI_2;
 
 use bevy::platform::collections::HashMap;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
-use nalgebra::Vector3;
+use nalgebra::{Normed, UnitQuaternion, Vector3};
 use voxelsim::trajectory::Trajectory;
+use voxelsim::viewport::CameraOrientation;
 
 use crate::network::NetworkSubscriber;
 use crate::render::{
@@ -13,17 +16,10 @@ use crate::render::{
 };
 use voxelsim::{Agent, Cell, VoxelGrid};
 
+use crate::convert::*;
+
 use bevy::app::AppExit;
 use bevy::prelude::*;
-
-fn client_to_bevy_i32(v: Vector3<i32>) -> Vec3 {
-    Vec3::new(v.x as f32, v.z as f32, v.y as f32)
-}
-
-fn client_to_bevy_f32(v: Vector3<f32>) -> Vec3 {
-    Vec3::new(v.x, v.z, v.y)
-}
-
 pub fn run_world_server() {
     let (mut world_sub, world_receiver) = NetworkSubscriber::<VoxelGrid>::new(
         std::env::var("VXS_WORLD_PORT").unwrap_or("172.0.0.1".to_string()),
@@ -276,11 +272,12 @@ fn synchronise_world(
                     let client_pos = net_agent.pos.cast::<f32>();
                     let bevy_pos = client_to_bevy_f32(client_pos);
                     transform.translation = bevy_pos;
+                    transform.rotation = client_to_bevy_quat(net_agent.attitude);
                     agent_comp.agent = net_agent.clone();
 
                     // forward‐vector gizmo
-                    let fwd_client = agent_comp.agent.camera_view().camera_forward.cast::<f32>();
-                    let fwd_bevy = client_to_bevy_f32(fwd_client);
+                    let fwd_client = agent_comp.agent.attitude * Vector3::y_axis();
+                    let fwd_bevy = client_to_bevy_f32(fwd_client.cast::<f32>().into_inner());
                     gizmos.line(
                         bevy_pos,
                         bevy_pos + fwd_bevy * 5.0,
@@ -315,8 +312,8 @@ fn synchronise_world(
                 MeshMaterial3d(assets.drone_body_mat.clone()),
                 Transform::from_translation(bevy_start),
             ));
-            let fwd_client = net_agent.camera_view().camera_forward.cast::<f32>();
-            let fwd_bevy = client_to_bevy_f32(fwd_client);
+            let fwd_client = net_agent.attitude * Vector3::y_axis();
+            let fwd_bevy = client_to_bevy_f32(fwd_client.cast::<f32>().into_inner());
             gizmos.line(
                 bevy_start,
                 bevy_start + fwd_bevy * 5.0,

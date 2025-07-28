@@ -5,6 +5,7 @@ use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use voxelsim::RendererClient;
 use voxelsim::env::VoxelGrid;
+use voxelsim::viewport::CameraOrientation;
 use voxelsim::viewport::{CameraProjection, CameraView};
 
 #[pymodule]
@@ -32,8 +33,9 @@ impl FilterWorld {
         stream_idx: usize,
         agent_id: usize,
         proj: CameraProjection,
+        orientation: CameraOrientation,
     ) -> PyResult<()> {
-        self.send_pov(client, stream_idx, agent_id, proj)
+        self.send_pov(client, stream_idx, agent_id, proj, orientation)
             .map_err(|e| PyException::new_err(format!("Could not send pov: {}", e)))
     }
 }
