@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional, Callable
+from typing import Dict, List, Tuple, Optional, Callable, Union
 from abc import ABC, abstractmethod
 import voxelsim
 from collections import defaultdict
@@ -283,8 +283,9 @@ class TerrainBatch(IterableDataset):
     def generate_terrain_sample(self) -> Tuple[VoxelData, Dict[str, torch.Tensor]]:
         """Generate a terrain sample with ground truth targets"""
         # Create world
-        world = voxelsim.VoxelGrid()
-        world.generate_default_terrain(np.random.randint(1000))
+        generator = voxelsim.TerrainGenerator()
+        generator.generate_terrain_py(voxelsim.TerrainConfig.default_py())
+        world = generator.generate_world_py()
         
         # Extract random sub-volume
         center = np.random.randint(20, self.world_size - 20, size=3)
@@ -377,7 +378,7 @@ def collate_fn(batch):
     return batch[0]
 
 
-def run_experiment(encoder_class, decoder_class, num_epochs=10, batch_size=1):
+def run_experiment(encoder_class, decoder_class, num_epochs=10, batch_size=1, visualize_every=10):
     """Run a complete experiment with given encoder/decoder"""
     # Initialize components
     encoder = encoder_class()
@@ -391,6 +392,23 @@ def run_experiment(encoder_class, decoder_class, num_epochs=10, batch_size=1):
     
     trainer = EmbeddingTrainer(encoder, decoder, loss_heads)
     
+    # Initialize renderer clients for before/after visualization
+    client_input = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
+    client_output = voxelsim.RendererClient("127.0.0.1", 8082, 8083, 8090, 9090)  
+    client_input.connect_py(0)
+    client_output.connect_py(0)
+    
+    # Set up agents for camera positions
+    agent_input = voxelsim.Agent(0)
+    agent_output = voxelsim.Agent(0)
+    # Position cameras above the voxel volume
+    agent_input.set_pos([24.0, 40.0, 24.0])  # Adjust based on sub_volume_size
+    agent_output.set_pos([24.0, 40.0, 24.0])
+    client_input.send_agents_py({0: agent_input})
+    client_output.send_agents_py({0: agent_output})
+
+
+
     # Create dataloader
     dataset = TerrainBatch(world_size=100, sub_volume_size=48)
     dataloader = DataLoader(dataset, batch_size=1, collate_fn=collate_fn)  # batch_size=1 for now
@@ -399,6 +417,9 @@ def run_experiment(encoder_class, decoder_class, num_epochs=10, batch_size=1):
     loss_history = defaultdict(list)
     
     steps_per_epoch = 10  # Since we have an infinite dataset
+
+    # Store a sample for visualization
+    viz_sample = None
     
     for epoch in range(num_epochs):
         epoch_losses = defaultdict(float)
@@ -406,6 +427,9 @@ def run_experiment(encoder_class, decoder_class, num_epochs=10, batch_size=1):
         for step, (voxel_data, targets) in enumerate(dataloader):
             if step >= steps_per_epoch:
                 break
+
+            if viz_sample is None:
+                viz_sample = (voxel_data, targets)
                 
             # Move to device
             voxel_data = voxel_data.to_device(trainer.device)
@@ -429,16 +453,56 @@ def run_experiment(encoder_class, decoder_class, num_epochs=10, batch_size=1):
             epoch_losses[name] /= steps_per_epoch
             loss_history[name].append(epoch_losses[name])
         
-        if epoch % 10 == 0:
+        if epoch % visualize_every == 0:
             print(f"Epoch {epoch}: {dict(epoch_losses)}")
+            
+            if viz_sample is not None:
+                # Show input (before)
+                dataset.show_voxels(viz_sample[0], client_input)
+                
+                # Generate reconstruction (after)
+                with torch.no_grad():
+                    viz_data = viz_sample[0].to_device(trainer.device)
+                    embedding = encoder.encode(viz_data)
+                    reconstruction = decoder.decode(embedding)["reconstruction"]
+                    
+                # Show output (after)
+                dataset.show_voxels(reconstruction[0], client_output)
+                
+                print(f"Visualization updated - Input on port 8090, Output on port 8091")
     
     return loss_history
 
+
+def show_voxels(voxel_data: Union[VoxelData, torch.Tensor], 
+                client: voxelsim.RendererClient) -> None:
+    """Send voxel data to the renderer"""
+    # Create empty world
+    world = voxelsim.VoxelGrid.new()  # This should work based on the Rust code
+    
+    if hasattr(voxel_data, 'occupied_coords'):
+        coords = voxel_data.occupied_coords.long().cpu().numpy()
+        for i in range(coords.shape[0]):
+            world.set_cell(int(coords[i, 0]), int(coords[i, 1]), int(coords[i, 2]), 
+                          voxelsim.CellType.FilledDirt)
+    else:
+        dense = voxel_data
+        if dense.dim() == 4:
+            dense = dense[0]
+        
+        voxel_array = dense.cpu().numpy()
+        occupied = np.where(voxel_array > 0.5)
+        
+        for i in range(len(occupied[0])):
+            world.set_cell(int(occupied[0][i]), int(occupied[1][i]), int(occupied[2][i]), 
+                          voxelsim.CellType.FilledDirt)
+    
+    client.send_world_py(world)
 
 # ============== Usage Example ==============
 if __name__ == "__main__":
     # Test simple CNN autoencoder
     print("Testing CNN Autoencoder...")
-    results = run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, num_epochs=50)
+    results = run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, num_epochs=50, visualize_every=10)
     
     # Future: Add transformer, GNN, and other architectures
