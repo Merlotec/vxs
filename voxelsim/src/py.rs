@@ -21,6 +21,7 @@ use crate::{
 #[pymodule]
 pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<VoxelGrid>()?;
+    m.add_class::<Cell>()?;
     m.add_class::<Agent>()?;
     m.add_class::<MoveDir>()?;
     m.add_class::<Action>()?;
@@ -47,6 +48,22 @@ impl VoxelGrid {
 
         Self::from_cells(cells)
     }
+
+     pub fn to_dict_py(&self) -> Vec<((i32, i32, i32), Cell)> {
+        let mut items = Vec::new();
+        
+        for entry in self.cells().iter() {
+            let coord = entry.key();
+            let cell = entry.value();
+            
+            // Return tuple of coordinates and Cell object
+            items.push(((coord.x, coord.y, coord.z), *cell));
+        }
+        
+        items
+    }
+    
+
 }
 
 #[pymethods]
@@ -55,10 +72,18 @@ impl Cell {
     pub fn filled() -> Self {
         Self::FILLED
     }
-
     #[staticmethod]
     pub fn sparse() -> Self {
         Self::SPARSE
+    }
+    pub fn is_filled_py(&self) -> bool {
+        self.contains(Cell::FILLED)
+    }
+    pub fn is_sparse_py(&self) -> bool {
+        self.contains(Cell::SPARSE)
+    }
+    pub fn bits_py(&self) -> u32 {
+        self.bits()
     }
 }
 
