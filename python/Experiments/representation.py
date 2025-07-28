@@ -289,7 +289,11 @@ class TerrainBatch(IterableDataset):
         
         # Extract random sub-volume
         center = np.random.randint(20, self.world_size - 20, size=3)
+        half = self.sub_volume_size // 2
+        center[2] = half
         voxel_data, targets = self._extract_subvolume(world, center)
+
+         
         
         return voxel_data, targets
     
