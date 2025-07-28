@@ -295,24 +295,45 @@ class TerrainBatch(IterableDataset):
     
     def _extract_subvolume(self, world: voxelsim.VoxelGrid, center: np.ndarray) -> Tuple[VoxelData, Dict[str, torch.Tensor]]:
         """Extract sub-volume around center point"""
-        # Get voxels in sub-volume, later on we should switch to using Minkowski dense tensor for much better performance
+        # Get all cells from the world as a dictionary
+        world_items = world.to_dict_py()
+        world_cells = dict(world_items)
+        
+        # Extract cells in sub-volume
         occupied_coords = []
         values = []
         
         half_size = self.sub_volume_size // 2
-        for x in range(center[0] - half_size, center[0] + half_size):
-            for y in range(center[1] - half_size, center[1] + half_size):
-                for z in range(center[2] - half_size, center[2] + half_size):
-                    cell = world.get_cell(x, y, z) 
-                    if cell is not None:
-                        occupied_coords.append([x - center[0] + half_size, 
-                                              y - center[1] + half_size, 
-                                              z - center[2] + half_size])
-                        values.append(1.0)  # Simplified for now
-        if len(occupied_coords) == 0:
-            values.append(0.0)
-            return self.generate_terrain_sample()
+        
+        # Iterate through world cells and extract those in our sub-volume
+        for coord_tuple, cell in world_cells.items():
+            x, y, z = coord_tuple  # Unpack the tuple
             
+            # Check if this cell is within our sub-volume
+            if (center[0] - half_size <= x < center[0] + half_size and
+                center[1] - half_size <= y < center[1] + half_size and
+                center[2] - half_size <= z < center[2] + half_size):
+                
+                # Convert to sub-volume relative coordinates
+                rel_x = x - center[0] + half_size
+                rel_y = y - center[1] + half_size
+                rel_z = z - center[2] + half_size
+                
+                occupied_coords.append([rel_x, rel_y, rel_z])
+                
+                # Determine value based on cell type
+                # Cell is a bitflag, so we need to check if it contains certain flags
+                if cell.is_filled_py():
+                    values.append(1.0)
+                elif cell.is_sparse_py():
+                    values.append(0.5)
+                else:
+                    values.append(1.0)
+            
+        if len(occupied_coords) == 0:
+            # No voxels in this sub-volume, try again
+            return self.generate_terrain_sample()
+        
         voxel_data = VoxelData(
             occupied_coords=torch.tensor(occupied_coords, dtype=torch.float32),
             values=torch.tensor(values, dtype=torch.float32),
@@ -323,8 +344,8 @@ class TerrainBatch(IterableDataset):
         # Generate targets
         targets = self._generate_targets(voxel_data)
         
-        
         return voxel_data, targets
+
     
     def _generate_targets(self, voxel_data: VoxelData) -> Dict[str, torch.Tensor]:
         """Generate ground truth targets for loss heads"""
@@ -477,32 +498,75 @@ def run_experiment(encoder_class, decoder_class, num_epochs=10, batch_size=1, vi
 def show_voxels(voxel_data: Union[VoxelData, torch.Tensor], 
                 client: voxelsim.RendererClient) -> None:
     """Send voxel data to the renderer"""
-    # Create empty world
-    world = voxelsim.VoxelGrid.new()  # This should work based on the Rust code
+    
+    cell_dict = {}
     
     if hasattr(voxel_data, 'occupied_coords'):
         coords = voxel_data.occupied_coords.long().cpu().numpy()
+        values = voxel_data.values.cpu().numpy()
+        
         for i in range(coords.shape[0]):
-            world.set_cell(int(coords[i, 0]), int(coords[i, 1]), int(coords[i, 2]), 
-                          voxelsim.CellType.FilledDirt)
+            coord_tuple = (int(coords[i, 0]), int(coords[i, 1]), int(coords[i, 2]))
+            # Use values to determine cell type
+            if values[i] > 0.8:
+                cell_dict[coord_tuple] = voxelsim.Cell.filled()
+            else:
+                cell_dict[coord_tuple] = voxelsim.Cell.sparse()
     else:
+        # Handle dense tensor
         dense = voxel_data
-        if dense.dim() == 4:
+        if dense.dim() == 5:  # [B, C, D, H, W]
+            dense = dense[0, 0]
+        elif dense.dim() == 4:  # [C, D, H, W]
             dense = dense[0]
         
         voxel_array = dense.cpu().numpy()
         occupied = np.where(voxel_array > 0.5)
         
         for i in range(len(occupied[0])):
-            world.set_cell(int(occupied[0][i]), int(occupied[1][i]), int(occupied[2][i]), 
-                          voxelsim.CellType.FilledDirt)
+            coord_tuple = (int(occupied[0][i]), int(occupied[1][i]), int(occupied[2][i]))
+            value = voxel_array[occupied[0][i], occupied[1][i], occupied[2][i]]
+            
+            if value > 0.8:
+                cell_dict[coord_tuple] = voxelsim.Cell.filled()
+            else:
+                cell_dict[coord_tuple] = voxelsim.Cell.sparse()
     
+    # Create world from dictionary
+    world = voxelsim.VoxelGrid.from_dict_py(cell_dict)
     client.send_world_py(world)
+    
 
 # ============== Usage Example ==============
 if __name__ == "__main__":
     # Test simple CNN autoencoder
-    print("Testing CNN Autoencoder...")
-    results = run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, num_epochs=50, visualize_every=10)
+    #print("Testing CNN Autoencoder...")
+    #results = run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, num_epochs=50, visualize_every=10)
+    # Simple test: Generate terrain, extract subvolume, and visualize
+    print("Testing terrain generation and visualization...")
     
-    # Future: Add transformer, GNN, and other architectures
+    # Initialize renderer client
+    client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
+    client.connect_py(0)
+    
+    # Set up camera
+    agent = voxelsim.Agent(0)
+    agent.set_pos([50, 40.0, 50])  # Position above center of 48x48x48 volume
+    client.send_agents_py({0: agent})
+    
+    # Generate terrain sample
+    dataset = TerrainBatch(world_size=100, sub_volume_size=100)
+    voxel_data, targets = dataset.generate_terrain_sample()
+    
+    print(f"Generated voxel data with {len(voxel_data.occupied_coords)} voxels")
+    print(f"Bounds: {voxel_data.bounds}")
+    print(f"Drone position: {voxel_data.drone_pos}")
+    
+    # Visualize the extracted subvolume
+    show_voxels(voxel_data, client)
+    print("Visualization sent to renderer on port 8090")
+    
+    # Keep the program running to view the visualization
+    input("Press Enter to exit...")
+    
+    
