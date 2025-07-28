@@ -284,7 +284,11 @@ class TerrainBatch(IterableDataset):
         """Generate a terrain sample with ground truth targets"""
         # Create world
         generator = voxelsim.TerrainGenerator()
-        generator.generate_terrain_py(voxelsim.TerrainConfig.default_py())
+        cfg = voxelsim.TerrainConfig.default_py()
+        cfg.set_seed_py(np.random.randint(0, 2**31 - 1))
+
+        generator = voxelsim.TerrainGenerator()
+        generator.generate_terrain_py(cfg)
         world = generator.generate_world_py()
         
         # Extract random sub-volume
