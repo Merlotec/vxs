@@ -125,7 +125,7 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
         self.fc = nn.Linear(embedding_dim, self.flat_size)
         self.deconv1 = nn.ConvTranspose3d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1)
         self.deconv2 = nn.ConvTranspose3d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1)
-        self.deconv3 = nn.ConvTranspose3d(32, 1, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.deconv3 = nn.ConvTranspose3d(32, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
         
     def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
         x = self.fc(embedding)
@@ -133,9 +133,9 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
         
         x = F.relu(self.deconv1(x))
         x = F.relu(self.deconv2(x))
-        x = torch.sigmoid(self.deconv3(x))
+        logits = self.deconv3(x)
         
-        return {"reconstruction": x}
+        return {"logits": logits}
 
 
 # ============== Loss Heads ==============
@@ -236,7 +236,16 @@ class EmbeddingTrainer:
         # Reconstruction loss
         if "reconstruction" in loss_weights:
             recon_target = self._create_reconstruction_target(voxel_data)
-            losses["reconstruction"] = F.mse_loss(reconstruction["reconstruction"], recon_target)
+            logits = reconstruction["logits"]                              # [1,3,D,H,W]
+            # TODO: Check adaptive histogram weighting
+            
+            # hist = torch.bincount(recon_target.view(-1), minlength=3).float() 
+            # inv = 1.0 / (hist + 1e-6)
+            # weights = (inv / inv.sum()) * 3.0
+
+            weights = torch.tensor([0.2, 0.7, 1.5], device=logits.device)
+
+            losses["reconstruction"] = F.cross_entropy(logits, recon_target, weight=weights)
         
         # Auxiliary head losses
         for name, head in self.loss_heads.items():
@@ -255,23 +264,24 @@ class EmbeddingTrainer:
         return {k: v.item() for k, v in losses.items()}
     
     def _create_reconstruction_target(self, voxel_data: VoxelData) -> torch.Tensor:
-        """Create dense reconstruction target from sparse voxel data"""
         voxel_size = self.encoder.voxel_size if hasattr(self.encoder, 'voxel_size') else 64
-        batch_size = 1
-        
-        grid = torch.zeros((batch_size, 1, voxel_size, voxel_size, voxel_size),
-                  device=self.device, requires_grad=False)
-        
+        # default empty = 0
+        target = torch.zeros((1, voxel_size, voxel_size, voxel_size),
+                            device=self.device, dtype=torch.long)
+
         if voxel_data.occupied_coords.shape[0] > 0:
-            # Normalize coordinates to grid size
             coords = voxel_data.occupied_coords.float()
             coords = coords / voxel_data.bounds.float() * (voxel_size - 1)
             coords = coords.long().clamp(0, voxel_size - 1)
-            
-            # Fill grid
-            grid[0, 0, coords[:, 0], coords[:, 1], coords[:, 2]] = voxel_data.values
-        
-        return grid
+
+            # map your current values (1.0 filled, 0.5 sparse) to labels 2 / 1
+            filled_mask = voxel_data.values >= 0.8
+            sparse_mask = (~filled_mask) & (voxel_data.values >= 0.5)
+
+            target[0, coords[filled_mask, 0], coords[filled_mask, 1], coords[filled_mask, 2]] = 2
+            target[0, coords[sparse_mask, 0], coords[sparse_mask, 1], coords[sparse_mask, 2]] = 1
+
+        return target
 
 
 # ============== Data Generation ==============
@@ -407,7 +417,7 @@ def collate_fn(batch):
     return batch[0]
 
 
-def run_experiment(encoder_class, decoder_class, num_epochs=10, batch_size=1, visualize_every=10):
+def run_experiment(encoder_class, decoder_class, num_epochs=100, batch_size=1, visualize_every=10):
     """Run a complete experiment with given encoder/decoder"""
     # Initialize components
     encoder = encoder_class()
@@ -487,94 +497,141 @@ def run_experiment(encoder_class, decoder_class, num_epochs=10, batch_size=1, vi
             
             if viz_sample is not None:
                 # Show input (before)
-                dataset.show_voxels(viz_sample[0], client_input)
+                show_voxels(viz_sample[0], client_input)
                 
                 # Generate reconstruction (after)
                 with torch.no_grad():
                     viz_data = viz_sample[0].to_device(trainer.device)
                     embedding = encoder.encode(viz_data)
-                    reconstruction = decoder.decode(embedding)["reconstruction"]
+                    out = decoder.decode(embedding)
+                    logits = out["logits"]                  # [1,3,D,H,W]
+                    
                     
                 # Show output (after)
-                dataset.show_voxels(reconstruction[0], client_output)
+                show_voxels(logits, client_output)
                 
                 print(f"Visualization updated - Input on port 8090, Output on port 8091")
     
     return loss_history
 
 
-def show_voxels(voxel_data: Union[VoxelData, torch.Tensor], 
-                client: voxelsim.RendererClient) -> None:
-    """Send voxel data to the renderer"""
+# def show_voxels(voxel_data: Union[VoxelData, torch.Tensor], 
+#                 client: voxelsim.RendererClient) -> None:
+#     """Send voxel data to the renderer"""
     
-    cell_dict = {}
+#     cell_dict = {}
     
-    if hasattr(voxel_data, 'occupied_coords'):
-        coords = voxel_data.occupied_coords.long().cpu().numpy()
-        values = voxel_data.values.cpu().numpy()
+#     if hasattr(voxel_data, 'occupied_coords'):
+#         coords = voxel_data.occupied_coords.long().cpu().numpy()
+#         values = voxel_data.values.cpu().numpy()
         
-        for i in range(coords.shape[0]):
-            coord_tuple = (int(coords[i, 0]), int(coords[i, 1]), int(coords[i, 2]))
-            # Use values to determine cell type
-            if values[i] > 0.8:
-                cell_dict[coord_tuple] = voxelsim.Cell.filled()
-            else:
-                cell_dict[coord_tuple] = voxelsim.Cell.sparse()
-    else:
-        # Handle dense tensor
-        dense = voxel_data
-        if dense.dim() == 5:  # [B, C, D, H, W]
-            dense = dense[0, 0]
-        elif dense.dim() == 4:  # [C, D, H, W]
-            dense = dense[0]
+#         for i in range(coords.shape[0]):
+#             coord_tuple = (int(coords[i, 0]), int(coords[i, 1]), int(coords[i, 2]))
+#             # Use values to determine cell type
+#             if values[i] > 0.8:
+#                 cell_dict[coord_tuple] = voxelsim.Cell.filled()
+#             else:
+#                 cell_dict[coord_tuple] = voxelsim.Cell.sparse()
+#     else:
+#         # Handle dense tensor
+#         dense = voxel_data
+#         if dense.dim() == 5:  # [B, C, D, H, W]
+#             dense = dense[0, 0]
+#         elif dense.dim() == 4:  # [C, D, H, W]
+#             dense = dense[0]
         
-        voxel_array = dense.cpu().numpy()
-        occupied = np.where(voxel_array > 0.5)
+#         voxel_array = dense.cpu().numpy()
+#         occupied = np.where(voxel_array > 0.5)
         
-        for i in range(len(occupied[0])):
-            coord_tuple = (int(occupied[0][i]), int(occupied[1][i]), int(occupied[2][i]))
-            value = voxel_array[occupied[0][i], occupied[1][i], occupied[2][i]]
+#         for i in range(len(occupied[0])):
+#             coord_tuple = (int(occupied[0][i]), int(occupied[1][i]), int(occupied[2][i]))
+#             value = voxel_array[occupied[0][i], occupied[1][i], occupied[2][i]]
             
-            if value > 0.8:
-                cell_dict[coord_tuple] = voxelsim.Cell.filled()
-            else:
-                cell_dict[coord_tuple] = voxelsim.Cell.sparse()
+#             if value > 0.8:
+#                 cell_dict[coord_tuple] = voxelsim.Cell.filled()
+#             else:
+#                 cell_dict[coord_tuple] = voxelsim.Cell.sparse()
     
-    # Create world from dictionary
+#     # Create world from dictionary
+#     world = voxelsim.VoxelGrid.from_dict_py(cell_dict)
+#     client.send_world_py(world)
+
+
+def show_voxels(sample, client):
+    """
+    sample: either
+      - VoxelData (GT sparse coords), or
+      - torch.Tensor logits with shape [B, 3, D, H, W] or [3, D, H, W]
+    """
+    cell_dict = {}
+
+    # ---------- Ground truth case ----------
+    if isinstance(sample, VoxelData):
+        coords = sample.occupied_coords.long().cpu().numpy()
+        vals   = sample.values.cpu().numpy()  # 0.5 sparse, 1.0 filled
+        for (x,y,z), v in zip(coords, vals):
+            cell_dict[(int(x), int(y), int(z))] = (
+                voxelsim.Cell.filled() if v > 0.9 else voxelsim.Cell.sparse()
+            )
+
+    # ---------- Prediction case ----------
+    else:
+        logits = sample
+        if logits.dim() == 5:   # [B,3,D,H,W]
+            logits = logits[0]
+        # logits now [3,D,H,W]
+        pred_class = logits.argmax(0).cpu().numpy()  # 0 empty, 1 sparse, 2 filled
+
+        filled = np.argwhere(pred_class == 2)
+        sparse = np.argwhere(pred_class == 1)
+
+        for x,y,z in filled:
+            cell_dict[(int(x),int(y),int(z))] = voxelsim.Cell.filled()
+        for x,y,z in sparse:
+            cell_dict[(int(x),int(y),int(z))] = voxelsim.Cell.sparse()
+
     world = voxelsim.VoxelGrid.from_dict_py(cell_dict)
     client.send_world_py(world)
-    
+
+
 
 # ============== Usage Example ==============
 if __name__ == "__main__":
     # Test simple CNN autoencoder
-    #print("Testing CNN Autoencoder...")
-    #results = run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, num_epochs=50, visualize_every=10)
+    print("Testing CNN Autoencoder...")
+    results = run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, num_epochs=1000, visualize_every=10)
+
+
+
+
     # Simple test: Generate terrain, extract subvolume, and visualize
-    print("Testing terrain generation and visualization...")
+
+
+
+    # print("Testing terrain generation and visualization...")
     
-    # Initialize renderer client
-    client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
-    client.connect_py(0)
+    # # Initialize renderer client
+    # client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
+    # client.connect_py(0)
     
-    # Set up camera
-    agent = voxelsim.Agent(0)
-    agent.set_pos([50, 40.0, 50])  # Position above center of 48x48x48 volume
-    client.send_agents_py({0: agent})
+    # # Set up camera
+    # agent = voxelsim.Agent(0)
+    # agent.set_pos([50, 40.0, 50])  # Position above center of 48x48x48 volume
+    # client.send_agents_py({0: agent})
     
-    # Generate terrain sample
-    dataset = TerrainBatch(world_size=100, sub_volume_size=100)
-    voxel_data, targets = dataset.generate_terrain_sample()
+    # # Generate terrain sample
+    # dataset = TerrainBatch(world_size=100, sub_volume_size=100)
+    # voxel_data, targets = dataset.generate_terrain_sample()
     
-    print(f"Generated voxel data with {len(voxel_data.occupied_coords)} voxels")
-    print(f"Bounds: {voxel_data.bounds}")
-    print(f"Drone position: {voxel_data.drone_pos}")
+    # print(f"Generated voxel data with {len(voxel_data.occupied_coords)} voxels")
+    # print(f"Bounds: {voxel_data.bounds}")
+    # print(f"Drone position: {voxel_data.drone_pos}")
     
-    # Visualize the extracted subvolume
-    show_voxels(voxel_data, client)
-    print("Visualization sent to renderer on port 8090")
+    # # Visualize the extracted subvolume
+    # show_voxels(voxel_data, client)
+    # print("Visualization sent to renderer on port 8090")
     
-    # Keep the program running to view the visualization
-    input("Press Enter to exit...")
+    # # Keep the program running to view the visualization
+    # input("Press Enter to exit...")
     
     
