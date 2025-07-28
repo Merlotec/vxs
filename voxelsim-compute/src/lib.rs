@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use voxelsim::viewport::{CameraProjection, VirtualGrid};
+use voxelsim::viewport::{CameraOrientation, CameraProjection, VirtualGrid};
 use voxelsim::{PovData, PovDataRef, RendererClient, VoxelGrid};
 
 use crate::{pipeline::WorldChangeset, rasterizer::camera::CameraMatrix};
@@ -135,6 +135,7 @@ impl FilterWorld {
         stream_idx: usize,
         agent_id: usize,
         proj: CameraProjection,
+        orientation: CameraOrientation,
     ) -> Result<(), Box<dyn std::error::Error>> {
         client.send_pov_ref(
             stream_idx,
@@ -142,6 +143,7 @@ impl FilterWorld {
                 virtual_world: self.world.lock().unwrap().deref(),
                 agent_id,
                 proj,
+                orientation,
             },
         )
     }

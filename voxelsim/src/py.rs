@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 
-use nalgebra::Vector3;
+use dashmap::DashMap;
+use nalgebra::{Quaternion, Unit, UnitQuaternion, Vector3};
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use tinyvec::ArrayVec;
+use rayon::iter::{IntoParallelRefIterator, ParallelDrainFull, ParallelIterator};
 
 use crate::{
+    Cell, Coord,
     agent::{
         Action, Agent, MoveCommand, MoveDir,
         viewport::{CameraProjection, CameraView},
@@ -13,6 +15,7 @@ use crate::{
     chase::{ChaseTarget, FixedLookaheadChaser, TrajectoryChaser},
     env::VoxelGrid,
     network::RendererClient,
+    viewport::CameraOrientation,
 };
 
 #[pymodule]
@@ -26,44 +29,54 @@ pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CameraProjection>()?;
     m.add_class::<FixedLookaheadChaser>()?;
     m.add_class::<ChaseTarget>()?;
+    m.add_class::<CameraOrientation>()?;
     Ok(())
 }
 
 pub type PyCoord = [i32; 3];
 
 #[pymethods]
+impl VoxelGrid {
+    #[staticmethod]
+    pub fn from_dict_py(dict: HashMap<PyCoord, Cell>) -> Self {
+        let cells: DashMap<Coord, Cell> = DashMap::with_capacity(dict.len());
+
+        dict.par_iter().for_each(|(coord, value)| {
+            cells.insert((*coord).into(), *value);
+        });
+
+        Self::from_cells(cells)
+    }
+}
+
+#[pymethods]
+impl Cell {
+    #[staticmethod]
+    pub fn filled() -> Self {
+        Self::FILLED
+    }
+
+    #[staticmethod]
+    pub fn sparse() -> Self {
+        Self::SPARSE
+    }
+}
+
+#[pymethods]
 impl Agent {
     #[new]
     pub fn new_py(id: usize) -> Self {
-        Self {
-            id,
-            pos: Vector3::zeros(),
-            vel: Vector3::zeros(),
-            thrust: Vector3::zeros(),
-            action: None,
-            yaw: 0.0,
-        }
+        Self::new(id)
     }
 
     /// Python-friendly method to perform a sequence of move commands
-    pub fn perform_dyn_sequence(&mut self, commands: Vec<MoveCommand>) {
-        if commands.is_empty() {
-            return;
-        }
-        let mut cmd_sequence = ArrayVec::new();
-
-        // Convert Vec to ArrayVec, respecting the MAX_ACTIONS limit
-        for (i, cmd) in commands.into_iter().enumerate() {
-            if i >= crate::agent::MAX_ACTIONS {
-                break;
-            }
-            cmd_sequence.push(cmd);
-        }
-        self.perform(cmd_sequence);
+    pub fn perform_sequence_py(&mut self, commands: Vec<MoveCommand>) -> PyResult<()> {
+        self.perform_sequence(commands)
+            .map_err(|e| PyException::new_err(format!("Could not perform sequence: {}", e)))
     }
 
-    pub fn camera_view_py(&self) -> CameraView {
-        self.camera_view()
+    pub fn camera_view_py(&self, orientation: &CameraOrientation) -> CameraView {
+        self.camera_view(orientation)
     }
 
     pub fn get_action(&self) -> Option<Action> {
@@ -303,5 +316,13 @@ impl FixedLookaheadChaser {
 
     pub fn step_chase_py(&self, agent: &Agent, delta: f64) -> ChaseTarget {
         self.step_chase(agent, delta)
+    }
+}
+
+#[pymethods]
+impl CameraOrientation {
+    #[staticmethod]
+    pub fn vertical_tilt_py(tilt: f64) -> Self {
+        Self::vertical_tilt(tilt)
     }
 }

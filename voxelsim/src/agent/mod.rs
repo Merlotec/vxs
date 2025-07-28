@@ -1,8 +1,15 @@
-use nalgebra::{Unit, Vector3};
+use std::{error::Error, fmt::Display};
+
+use dashmap::DashSet;
+use nalgebra::{Unit, UnitQuaternion, Vector3};
 use serde::{Deserialize, Serialize};
 use tinyvec::ArrayVec;
 
-use crate::{Coord, trajectory::Trajectory, viewport::CameraView};
+use crate::{
+    Coord,
+    trajectory::Trajectory,
+    viewport::{CameraOrientation, CameraView},
+};
 
 pub mod chase;
 pub mod trajectory;
@@ -13,14 +20,9 @@ pub mod viewport;
 pub struct Agent {
     pub pos: Vector3<f64>,
     pub vel: Vector3<f64>,
-
-    // Thrust is specified in units of ACCELERATION!
-    // It is also assumed that if there is no change from previous action then the thrust will
-    // remain the same.
     pub thrust: Vector3<f64>,
 
-    // Given in units of radians around the thrust axis.
-    pub yaw: f64,
+    pub attitude: UnitQuaternion<f64>,
 
     pub id: usize,
 
@@ -95,18 +97,27 @@ impl Action {
         }
     }
 
-    pub fn centroids(cmd_sequence: &[MoveCommand], origin: Vector3<i32>) -> Vec<(Coord, f64, f64)> {
+    pub fn centroids(
+        cmd_sequence: &[MoveCommand],
+        origin: Vector3<i32>,
+    ) -> Result<Vec<(Coord, f64, f64)>, ActionError> {
         let mut total: Coord = origin;
         let mut centroids = Vec::new();
+        let set: DashSet<Coord> = DashSet::new();
+        // Make sure we dont duplicate origin either.
+        set.insert(origin);
         for seq in cmd_sequence.iter() {
             if let Some(dir_vector) = seq.dir.dir_vector() {
                 let centroid = total + dir_vector;
                 centroids.push((centroid, seq.urgency, seq.yaw_delta));
                 total = centroid;
+                if !set.insert(centroid) {
+                    return Err(ActionError::DuplicateCentroid);
+                }
             }
         }
 
-        centroids
+        Ok(centroids)
     }
 }
 
@@ -119,32 +130,13 @@ impl Agent {
             pos: Vector3::zeros(),
             vel: Vector3::zeros(),
             thrust: Vector3::zeros(),
-            yaw: 0.0,
             action: None,
+            attitude: UnitQuaternion::identity(),
         }
     }
 
-    // TODO: fix to use yaw.
-    pub fn camera_view(&self) -> CameraView {
-        let forward_h = self.vel.normalize();
-        let orthogonal = (forward_h + Vector3::new(0.0, 0.0, -0.4)).normalize();
-
-        // // Axis to pitch about = camera-right (world-up × forward).
-        let world_up = Vector3::z_axis(); // Y is up
-        let right = Unit::new_normalize(world_up.cross(&forward_h));
-
-        // Rotate the horizontal-only forward vector downward by `pitch`.
-        let forward = orthogonal;
-        // Re-derive an exact orthonormal basis.
-        let camera_right = right.into_inner(); // already unit
-        let camera_up = camera_right.cross(&forward).normalize();
-
-        CameraView {
-            camera_pos: self.pos,    // assumed Point3<f64>
-            camera_forward: forward, // Vector3<f64>
-            camera_up,               // Vector3<f64>
-            camera_right,            // Vector3<f64>
-        }
+    pub fn camera_view(&self, orientation: &CameraOrientation) -> CameraView {
+        CameraView::from_pos_quat(self.pos, orientation.quat * self.attitude)
     }
 
     pub fn set_position(&mut self, x: f64, y: f64, z: f64) {
@@ -159,25 +151,43 @@ impl Agent {
         self.vel = Vector3::new(x, y, z);
     }
 
-    pub fn perform_sequence(&mut self, commands: Vec<MoveCommand>) {
+    pub fn perform_sequence(&mut self, commands: Vec<MoveCommand>) -> Result<(), ActionError> {
         let mut cmd_sequence = ArrayVec::new();
         for cmd in commands.into_iter().take(MAX_ACTIONS) {
             cmd_sequence.push(cmd);
         }
-        self.perform(cmd_sequence);
+        self.perform(cmd_sequence)
     }
 
-    pub fn perform(&mut self, cmd_sequence: CmdSequence) {
+    pub fn perform(&mut self, cmd_sequence: CmdSequence) -> Result<(), ActionError> {
         if cmd_sequence.is_empty() {
-            return;
+            return Err(ActionError::NoCommands);
         }
         let origin = self.pos.map(|e| e.round() as i32);
-        let cells = Action::centroids(&cmd_sequence, origin);
+        let cells = Action::centroids(&cmd_sequence, origin)?;
         let action = Action {
             cmd_sequence,
             origin,
-            trajectory: Trajectory::generate(self.pos, &cells),
+            trajectory: Trajectory::generate(origin, &cells),
         };
         self.action = Some(action);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum ActionError {
+    DuplicateCentroid,
+    NoCommands,
+}
+
+impl Error for ActionError {}
+
+impl Display for ActionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuplicateCentroid => f.write_str("Duplicate centroid"),
+            Self::NoCommands => f.write_str("No commands"),
+        }
     }
 }
