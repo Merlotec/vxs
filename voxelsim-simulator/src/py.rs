@@ -189,10 +189,19 @@ impl TerrainConfig {
     pub fn default_py() -> Self {
         Self::default()
     }
+      pub fn set_seed_py(&mut self, seed: u32) {
+        self.seed = seed;
+    }
+
+    pub fn get_seed_py(&self) -> u32 {
+        self.seed
+    }
+
+
 }
 
 #[pymethods]
-impl TerrainGenerator {
+impl TerrainGenerator{
     #[new]
     pub fn new_py() -> Self {
         Self::new()
