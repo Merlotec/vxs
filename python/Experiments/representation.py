@@ -14,7 +14,9 @@ import voxelsim
 from collections import defaultdict
 from scipy.spatial import KDTree
 from torch.utils.data import DataLoader, IterableDataset
+import os
 
+import time, collections
 
 # ============== Data Structures ==============
 @dataclass
@@ -320,7 +322,7 @@ class TerrainBatch(IterableDataset):
     def _extract_subvolume(self, world: voxelsim.VoxelGrid, center: np.ndarray) -> Tuple[VoxelData, Dict[str, torch.Tensor]]:
         """Extract sub-volume around center point"""
         # Get all cells from the world as a dictionary
-        world_items = world.to_dict_py()
+        world_items = world.to_dict_py_tolistpy()
         world_cells = dict(world_items)
         
         # Extract cells in sub-volume
@@ -429,8 +431,8 @@ def run_experiment(encoder_class, decoder_class, num_epochs=100, batch_size=1, v
     decoder = decoder_class()
     
     loss_heads = {
-        "contour": ContourHead(),
-        "relative_offset": RelativeOffsetHead(),
+        # "contour": ContourHead(),
+        # "relative_offset": RelativeOffsetHead(),
         # "cover_mask": CoverMaskHead()  # Disabled until we have semantic labels
     }
     
@@ -455,40 +457,57 @@ def run_experiment(encoder_class, decoder_class, num_epochs=100, batch_size=1, v
 
     # Create dataloader
     dataset = TerrainBatch(world_size=100, sub_volume_size=48)
-    dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn)  # batch_size=1 for now
+    dataloader = DataLoader(
+    dataset,
+    batch_size=batch_size,
+    collate_fn=collate_fn,
+    num_workers=os.cpu_count(),   # 🔸8–16 on a desktop; 0 ⇒ single‑thread
+    pin_memory=True,              # 🔸speeds host→GPU copies
+    persistent_workers=True,      # 🔸keeps workers alive between epochs
+    prefetch_factor=1             # 🔹how many batches each worker pre‑loads
+)
     
     # Training loop
     loss_history = defaultdict(list)
     
     steps_per_epoch = 10  # Since we have an infinite dataset
+    
 
     # Store a sample for visualization
     viz_sample = None
-    
+    stats = collections.defaultdict(list)
+    last_viz_wall_t = time.perf_counter()
+    dataloader_iter = iter(dataloader)
     for epoch in range(num_epochs):
         epoch_losses = defaultdict(float)
         
-        for step, (voxel_batch, target_batch) in enumerate(dataloader):
-            if step >= steps_per_epoch:
-                break
-
+        for step in range(steps_per_epoch):
+            with Timer() as t_fetch:
+                voxel_batch, target_batch = next(dataloader_iter)
             if viz_sample is None:
                 viz_sample = (voxel_batch[0], target_batch[0])
                 
             # Move to device
-            voxel_batch  = [vd.to_device(trainer.device) for vd in voxel_batch]
-            target_batch = [{k: v.to(trainer.device) for k, v in t.items()} 
-                            for t in target_batch]
+            with Timer() as t_move:
+                voxel_batch  = [vd.to_device(trainer.device) for vd in voxel_batch]
+                target_batch = [{k: v.to(trainer.device) for k, v in t.items()} 
+                                for t in target_batch]
             
             # Train step
-            loss_weights = {
-                "reconstruction": 1.0,
-                "contour": 0.5,
-                "relative_offset": 0.3,
-            }
+            with Timer() as t_model:
+                loss_weights = {
+                    "reconstruction": 1.0,
+                    "contour": 0.5,
+                    "relative_offset": 0.3,
+                }
+                
+                losses = trainer.train_step(voxel_batch, target_batch, loss_weights)
+
+            stats["fetch"].append(t_fetch.dt)
+            stats["move" ].append(t_move.dt)
+            stats["model"].append(t_model.dt)
             
-            losses = trainer.train_step(voxel_batch, target_batch, loss_weights)
-            
+
             # Accumulate losses
             for name, value in losses.items():
                 epoch_losses[name] += value
@@ -500,25 +519,59 @@ def run_experiment(encoder_class, decoder_class, num_epochs=100, batch_size=1, v
         
         if epoch % visualize_every == 0:
             print(f"Epoch {epoch}: {dict(epoch_losses)}")
+
             
+            # --- averaged timings for the last “epoch” (10 steps) ---
+            f = np.mean(stats["fetch"][-steps_per_epoch:])
+            m = np.mean(stats["move" ][-steps_per_epoch:])
+            g = np.mean(stats["model"][-steps_per_epoch:])
+            print(
+                f"Epoch {epoch:04d}  "
+                f"| fetch {f*1e3:6.1f} ms   "
+                f"move {m*1e3:6.1f} ms   "
+                f"model {g*1e3:6.1f} ms   "
+                f"total {(f+m+g)*1e3:6.1f} ms"
+            )
+
+            # --- wall‑clock since last visualisation ---
+            now          = time.perf_counter()
+            delta        = now - last_viz_wall_t
+            last_viz_wall_t = now
+            print(f"⏲  {delta:6.2f} s since previous visualisation\n")
+
+
             if viz_sample is not None:
                 # Show input (before)
                 show_voxels(viz_sample[0], client_input)
-                
-                # Generate reconstruction (after)
-                with torch.no_grad():
-                    viz_data = [viz_sample[0].to_device(trainer.device)]
-                    embedding = encoder.encode(viz_data)
-                    out = decoder.decode(embedding)
-                    logits = out["logits"]                  # [1,3,D,H,W]
+                with Timer() as t_disp:
+                    # Generate reconstruction (after)
+                    with torch.no_grad():
+                        viz_data = [viz_sample[0].to_device(trainer.device)]
+                        embedding = encoder.encode(viz_data)
+                        out = decoder.decode(embedding)
+                        logits = out["logits"]                  # [1,3,D,H,W]
+                        
                     
+                    # Show output (after)
+                    show_voxels(logits, client_output)
                     
-                # Show output (after)
-                show_voxels(logits, client_output)
-                
-                print(f"Visualization updated - Input on port 8090, Output on port 8091")
+                print(
+                    f"Visualization updated  –  "
+                    f"Input:8090 Output:8091   "
+                    f"(render {t_disp.dt*1e3:6.1f} ms)"
+                )
     
     return loss_history
+
+class Timer:
+    def __enter__(self):
+        self.t0 = time.perf_counter(); return self
+    def __exit__(self, *exc):
+        self.dt = time.perf_counter()-self.t0
+
+
+
+
 
 
 # def show_voxels(voxel_data: Union[VoxelData, torch.Tensor], 

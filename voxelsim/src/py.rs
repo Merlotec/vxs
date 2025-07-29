@@ -49,7 +49,7 @@ impl VoxelGrid {
         Self::from_cells(cells)
     }
 
-     pub fn to_dict_py(&self) -> Vec<((i32, i32, i32), Cell)> {
+     pub fn to_dict_py_tolistpy(&self) -> Vec<((i32, i32, i32), Cell)> {
         let mut items = Vec::new();
         
         for entry in self.cells().iter() {
@@ -62,7 +62,20 @@ impl VoxelGrid {
         
         items
     }
-    
+
+    pub fn to_dict_py(&self) -> HashMap<PyCoord, Cell> {
+        let mut cells = HashMap::with_capacity(self.cells().len());
+        
+        for entry in self.cells().iter() {
+            let coord = *entry.key();
+            let cell = entry.value();
+            
+            // Return tuple of coordinates and Cell object
+            cells.insert(coord.into(), *cell);
+        }
+        
+        cells
+    }
 
 }
 
