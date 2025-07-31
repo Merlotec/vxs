@@ -1,3 +1,0 @@
-/home/box/dev/drone/vxs/cuda_octree/build/CMakeFiles/CudaOctree.dir
-/home/box/dev/drone/vxs/cuda_octree/build/CMakeFiles/edit_cache.dir
-/home/box/dev/drone/vxs/cuda_octree/build/CMakeFiles/rebuild_cache.dir
