@@ -4,7 +4,7 @@ use crate::rasterizer::{self, CellInstance, InstanceBuffer};
 use nalgebra::Vector2;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use voxelsim::viewport::{VirtualCell, VirtualGrid};
-use voxelsim::{Cell, Coord, VoxelGrid}; // Main State struct to hold all wgpu-related objects
+use voxelsim::{Cell, Coord, VoxelGrid};
 pub struct State {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -105,6 +105,32 @@ impl State {
             self.filter_buffer.len,
         );
 
+        #[cfg(feature = "cuda-octree")]
+        let sem_fd = {
+            use ash::vk;
+
+            use wgpu::wgc::api::Vulkan; // Main State struct to hold all wgpu-related objects
+            let hal_queue_guard = unsafe { self.queue.as_hal::<Vulkan>() }
+                .expect("Must be running on the Vulkan backend to extract cuda texture!"); // 
+            let hal_queue: &wgpu_hal::vulkan::Queue = &*hal_queue_guard;
+
+            // Create an exportable (opaque-FD) VkSemaphore
+            let mut export_info = vk::ExportSemaphoreCreateInfo::default()
+                .handle_types(vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_FD);
+            let sem_info = vk::SemaphoreCreateInfo::default().push_next(&mut export_info);
+            let vk_semaphore = unsafe {
+                hal_queue
+                    .raw_device()
+                    .create_semaphore(&sem_info, None)
+                    .expect("Unable to create semaphore!")
+            }; // 
+
+            // Instruct wgpu-hal to signal that semaphore at queue submit
+            hal_queue.add_signal_semaphore(vk_semaphore, None);
+            println!("Created vulkan semaphore!");
+            vk_semaphore
+        };
+
         self.queue.submit(std::iter::once(encoder.finish()));
 
         let to_insert = rasterizer::texture::extract_texture_data(
@@ -115,6 +141,56 @@ impl State {
         .await
         .unwrap();
 
+        // Try sending the texture to cuda
+        #[cfg(feature = "cuda-octree")]
+        unsafe {
+            use ash::vk;
+            use ash::vk::Handle;
+            use std::ffi::c_int;
+
+            use wgpu::wgc::api::Vulkan; // Main State struct to hold all wgpu-related objects
+
+            use std::ops::Deref;
+
+            let tex_fd = self
+                .rasterizer_state
+                .render_target
+                .texture
+                .as_hal::<Vulkan>()
+                .expect("Must be using a vulkan backend to extract cuda texture!");
+
+            // let vk_device_memory: vk::DeviceMemory = *tex_fd.external_memory().unwrap();
+            let vk_device_memory: vk::DeviceMemory = *tex_fd.raw_block().unwrap().memory();
+
+            let dev = self.device.as_hal::<Vulkan>().unwrap();
+            let hal_device = dev.raw_device();
+            let hal_instance: &ash::Instance = dev.shared_instance().raw_instance();
+
+            let ex_mem_dev = ash::khr::external_memory_fd::Device::new(hal_instance, hal_device);
+
+            // Build your get-FD info
+            let get_fd_info = vk::MemoryGetFdInfoKHR::default()
+                .memory(vk_device_memory) // the VkDeviceMemory you obtained from your patched HAL
+                .handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
+
+            // Now call the method you saw in `crate::khr::external_memory_fd::Device`:
+            let mem_fd = unsafe {
+                ex_mem_dev
+                    .get_memory_fd(&get_fd_info)
+                    .expect("Could not get external memory.")
+            };
+            // 4 i32s per texel.
+            let bufsize = self.size.x * self.size.y * 4 * 4;
+            println!("memory handle: {}", mem_fd);
+            let res = octree_gpu::test_vk_texture(
+                mem_fd,
+                sem_fd.as_raw() as c_int,
+                bufsize as c_int,
+                self.size.x as c_int,
+                self.size.y as c_int,
+            );
+            println!("Successfully uploaded cuda texture!");
+        }
         let to_remove = self
             .rasterizer_state
             .filter

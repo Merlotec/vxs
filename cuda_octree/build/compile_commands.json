@@ -1,0 +1,8 @@
+[
+{
+  "directory": "/home/box/dev/drone/vxs/cuda_octree/build",
+  "command": "/usr/lib/ccache/nvcc -forward-unknown-to-host-compiler  --options-file CMakeFiles/CudaOctree.dir/includes_CUDA.rsp -std=c++17 \"--generate-code=arch=compute_75,code=[compute_75,sm_75]\" \"--generate-code=arch=compute_86,code=[compute_86,sm_86]\" -Xcompiler=-fPIC --expt-relaxed-constexpr -Xcompiler=-Wall -Xcompiler=-Wextra -Xcompiler=-fPIC -x cu -c /home/box/dev/drone/vxs/cuda_octree/src/cuda_test.cu -o CMakeFiles/CudaOctree.dir/src/cuda_test.cu.o",
+  "file": "/home/box/dev/drone/vxs/cuda_octree/src/cuda_test.cu",
+  "output": "CMakeFiles/CudaOctree.dir/src/cuda_test.cu.o"
+}
+]
