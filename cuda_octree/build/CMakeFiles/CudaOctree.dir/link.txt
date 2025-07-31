@@ -1,2 +1,0 @@
-/usr/bin/ar qc libCudaOctree.a CMakeFiles/CudaOctree.dir/src/cuda_test.cu.o
-/usr/bin/ranlib libCudaOctree.a
