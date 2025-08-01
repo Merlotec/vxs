@@ -657,6 +657,12 @@ impl super::Instance {
             );
 
         let mut extensions = Self::desired_extensions(&entry, instance_api_version, desc.flags)?;
+
+        extensions
+            .push(CStr::from_bytes_with_nul(b"VK_KHR_external_memory_capabilities\0").unwrap());
+        extensions
+            .push(CStr::from_bytes_with_nul(b"VK_KHR_external_semaphore_capabilities\0").unwrap());
+
         let mut create_info = vk::InstanceCreateInfo::default();
 
         if let Some(callback) = callback {

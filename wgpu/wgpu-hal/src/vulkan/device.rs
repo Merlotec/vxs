@@ -1243,57 +1243,96 @@ impl crate::Device for super::Device {
         }
     }
 
+    // In wgpu-hal/src/vulkan/device.rs, replace the body of `create_texture` with this:
     unsafe fn create_texture(
         &self,
         desc: &crate::TextureDescriptor,
     ) -> Result<super::Texture, crate::DeviceError> {
-        let image = self.create_image_without_memory(desc, None)?;
+        fn find_memory_type(
+            type_filter: u32,
+            properties: vk::MemoryPropertyFlags,
+            mem_properties: &vk::PhysicalDeviceMemoryProperties,
+        ) -> u32 {
+            for i in 0..mem_properties.memory_type_count {
+                let i = i as usize;
+                if (type_filter & (1 << i)) != 0
+                    && (mem_properties.memory_types[i].property_flags & properties) == properties
+                {
+                    return i as u32;
+                }
+            }
+            panic!("Unable to find suitable memory type");
+        }
+        let mut ext_img_ci = vk::ExternalMemoryImageCreateInfo {
+            handle_types: vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD,
+            ..Default::default()
+        };
 
+        // 1) Create the VkImage
+        let image = self.create_image_without_memory(desc, Some(&mut ext_img_ci))?;
+
+        // 2) OOM check
         self.error_if_would_oom_on_resource_allocation(false, image.requirements.size)
             .inspect_err(|_| {
                 unsafe { self.shared.raw.destroy_image(image.raw, None) };
             })?;
 
-        let block = unsafe {
-            self.mem_allocator.lock().alloc(
-                &*self.shared,
-                gpu_alloc::Request {
-                    size: image.requirements.size,
-                    align_mask: image.requirements.alignment - 1,
-                    usage: gpu_alloc::UsageFlags::FAST_DEVICE_ACCESS,
-                    memory_types: image.requirements.memory_type_bits & self.valid_ash_memory_types,
-                },
-            )
-        }
-        .inspect_err(|_| {
-            unsafe { self.shared.raw.destroy_image(image.raw, None) };
-        })?;
+        // 3) Query physical-device memory properties
+        let mem_props = unsafe {
+            self.shared
+                .instance
+                .raw_instance()
+                .get_physical_device_memory_properties(self.shared.physical_device)
+        };
 
-        self.counters.texture_memory.add(block.size() as isize);
+        // 4) Build ExportMemoryAllocateInfo
+        let mut export_info = vk::ExportMemoryAllocateInfo::default()
+            .handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
 
-        unsafe {
+        // 5) Build MemoryAllocateInfo with export pNext
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(image.requirements.size)
+            .memory_type_index(find_memory_type(
+                image.requirements.memory_type_bits,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                &mem_props,
+            ))
+            .push_next(&mut export_info);
+
+        // 6) Allocate exportable DeviceMemory
+        let memory = unsafe {
             self.shared
                 .raw
-                .bind_image_memory(image.raw, *block.memory(), block.offset())
-        }
-        .map_err(super::map_host_device_oom_err)
-        .inspect_err(|_| {
-            unsafe { self.shared.raw.destroy_image(image.raw, None) };
-        })?;
+                .allocate_memory(&alloc_info, None)
+                .map_err(|e| crate::DeviceError::Unexpected)?
+        };
 
+        // 7) Account for memory
+        self.counters
+            .texture_memory
+            .add(image.requirements.size as isize);
+
+        // 8) Bind memory to image
+        unsafe { self.shared.raw.bind_image_memory(image.raw, memory, 0) }
+            .map_err(super::map_host_device_oom_err)
+            .inspect_err(|_| {
+                unsafe { self.shared.raw.destroy_image(image.raw, None) };
+            })?;
+
+        // 9) Debug label
         if let Some(label) = desc.label {
             unsafe { self.shared.set_object_name(image.raw, label) };
         }
 
+        // 10) Finish struct
         let identity = self.shared.texture_identity_factory.next();
-
         self.counters.textures.add(1);
 
         Ok(super::Texture {
             raw: image.raw,
             drop_guard: None,
-            external_memory: None,
-            block: Some(block),
+            external_memory: Some(memory),
+            block: None,
             format: desc.format,
             copy_size: image.copy_size,
             identity,

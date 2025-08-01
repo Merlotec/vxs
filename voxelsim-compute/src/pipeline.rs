@@ -18,39 +18,117 @@ impl State {
     pub async fn create(world: &VoxelGrid, view_size: Vector2<u32>) -> Self {
         // The instance is a handle to our GPU
         // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
 
-        // The adapter is a handle to a physical graphics card.
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
-            .await
-            .unwrap();
+        #[cfg(feature = "cuda-octree")]
+        let (queue, device) = {
+            use ash::khr::{
+                external_memory, external_memory_fd, external_semaphore, external_semaphore_fd,
+            };
+            use wgpu::hal::api::Vulkan;
+            use wgpu::{
+                Backends, DeviceDescriptor, Features, Instance, InstanceFlags, Limits, MemoryHints,
+                PowerPreference, RequestAdapterOptions, Trace,
+            };
 
-        // The device is the logical connection to the GPU, used to create resources.
-        // The queue is used to submit command buffers to the GPU.
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                required_features: wgpu::Features::PUSH_CONSTANTS | wgpu::Features::CLEAR_TEXTURE, // Add features you need here
-                // WebGL doesn't support all of wgpu's features, so if
-                // we're building for the web we'll have to disable some.
-                required_limits: wgpu::Limits {
-                    max_push_constant_size: 64, // Size of mat4x4<f32>
-                    ..wgpu::Limits::default()
-                },
+            // 1) Create instance & pick adapter
+            let instance = Instance::new(&wgpu::InstanceDescriptor {
+                backends: Backends::all(),
+                flags: InstanceFlags::VALIDATION | InstanceFlags::GPU_BASED_VALIDATION,
+                ..Default::default()
+            });
+            let adapter = instance
+                .request_adapter(&RequestAdapterOptions {
+                    power_preference: PowerPreference::HighPerformance,
+                    compatible_surface: None,
+                    force_fallback_adapter: false,
+                })
+                .await
+                .unwrap();
+
+            // 2) Make sure the adapter supports push-constants & clear-texture:
+            let needed = Features::PUSH_CONSTANTS | Features::CLEAR_TEXTURE;
+            let supported = adapter.features();
+            if !supported.contains(needed) {
+                panic!(
+                    "Adapter is missing required features: {:?}",
+                    (needed - supported)
+                );
+            }
+
+            // 3) Build your DeviceDescriptor
+            let desc = DeviceDescriptor {
                 label: None,
-                trace: wgpu::Trace::Off,
-                memory_hints: wgpu::MemoryHints::Performance,
-            })
-            .await
-            .unwrap();
+                required_features: needed,
+                required_limits: Limits {
+                    max_push_constant_size: 64,
+                    ..Limits::default()
+                },
+                trace: Trace::Off,
+                memory_hints: Default::default(),
+            };
 
+            // 4) Open as Vulkan, injecting external-memory-fd
+            let hal_adapter = unsafe { adapter.as_hal::<Vulkan>() }.unwrap();
+            let open_dev = unsafe {
+                hal_adapter
+                    .open_with_callback(
+                        desc.required_features,
+                        &MemoryHints::Performance,
+                        Some(Box::new(|args| {
+                            // enable the Vulkan extension for exporting FDs
+                            args.extensions.push(external_memory::NAME);
+                            args.extensions.push(external_memory_fd::NAME);
+                            args.extensions.push(external_semaphore::NAME);
+                            args.extensions.push(external_semaphore_fd::NAME);
+                        })),
+                    )
+                    .unwrap()
+            };
+            println!("Created vulkan device with external_memory_fd extension.");
+            // 5) Turn it back into a wgpu::Device + Queue
+            let (device, queue) =
+                unsafe { adapter.create_device_from_hal(open_dev, &desc).unwrap() };
+            (queue, device)
+        };
+
+        #[cfg(not(feature = "cuda-octree"))]
+        let (queue, device) = {
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::all(),
+                ..Default::default()
+            });
+
+            // The adapter is a handle to a physical graphics card.
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: None,
+                    force_fallback_adapter: false,
+                })
+                .await
+                .unwrap();
+
+            // The device is the logical connection to the GPU, used to create resources.
+            // The queue is used to submit command buffers to the GPU.
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor {
+                    required_features: wgpu::Features::PUSH_CONSTANTS
+                        | wgpu::Features::CLEAR_TEXTURE, // Add features you need here
+                    // WebGL doesn't support all of wgpu's features, so if
+                    // we're building for the web we'll have to disable some.
+                    required_limits: wgpu::Limits {
+                        max_push_constant_size: 64, // Size of mat4x4<f32>
+                        ..wgpu::Limits::default()
+                    },
+                    label: None,
+                    trace: wgpu::Trace::Off,
+                    memory_hints: wgpu::MemoryHints::Performance,
+                })
+                .await
+                .unwrap();
+
+            (queue, device)
+        };
         let rasterizer_state = RasterizerState::create(&device, world, [view_size.x, view_size.y]);
 
         let filter_buffer =
@@ -160,7 +238,14 @@ impl State {
                 .expect("Must be using a vulkan backend to extract cuda texture!");
 
             // let vk_device_memory: vk::DeviceMemory = *tex_fd.external_memory().unwrap();
-            let vk_device_memory: vk::DeviceMemory = *tex_fd.raw_block().unwrap().memory();
+
+            let vk_device_memory: vk::DeviceMemory = if let Some(raw_block) = tex_fd.raw_block() {
+                *raw_block.memory()
+            } else if let Some(mem) = tex_fd.external_memory() {
+                mem
+            } else {
+                panic!("Texture does not have any memory bound to it!")
+            };
 
             let dev = self.device.as_hal::<Vulkan>().unwrap();
             let hal_device = dev.raw_device();
@@ -171,7 +256,7 @@ impl State {
             // Build your get-FD info
             let get_fd_info = vk::MemoryGetFdInfoKHR::default()
                 .memory(vk_device_memory) // the VkDeviceMemory you obtained from your patched HAL
-                .handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
+                .handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD_KHR);
 
             // Now call the method you saw in `crate::khr::external_memory_fd::Device`:
             let mem_fd = unsafe {
@@ -179,13 +264,21 @@ impl State {
                     .get_memory_fd(&get_fd_info)
                     .expect("Could not get external memory.")
             };
+
+            let mut props = vk::MemoryFdPropertiesKHR::default();
+            ex_mem_dev.get_memory_fd_properties_khr(
+                vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD_KHR,
+                mem_fd,
+                &mut props,
+            );
+
+            println!("memory info: {:?}", &props);
+
             // 4 i32s per texel.
-            let bufsize = self.size.x * self.size.y * 4 * 4;
             println!("memory handle: {}", mem_fd);
             let res = octree_gpu::test_vk_texture(
                 mem_fd,
                 sem_fd.as_raw() as c_int,
-                bufsize as c_int,
                 self.size.x as c_int,
                 self.size.y as c_int,
             );
