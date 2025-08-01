@@ -91,7 +91,7 @@ impl VoxelGrid {
 
         for e in self.cells().iter() {
             let (c, cell) = (*e.key(), *e.value());
-            coords.extend_from_slice(&[c.x as f32, c.z as f32, c.y as f32]);
+            coords.extend_from_slice(&[c.x as f32, c.y as f32, c.z as f32]);
             vals.push(if cell.contains(Cell::FILLED) { 1.0 }
                       else if cell.contains(Cell::SPARSE) { 0.5 } else { 0.0 });
         }
