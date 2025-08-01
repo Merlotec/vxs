@@ -196,6 +196,11 @@ impl TerrainConfig {
     pub fn get_seed_py(&self) -> u32 {
         self.seed
     }
+    pub fn set_world_size_py(&mut self, sizev: i32) {
+        let s = sizev.max(1);     // clamp to ≥1
+        self.size = Vector3::new(s, s, s);
+    }
+
 
 
 }
@@ -213,4 +218,19 @@ impl TerrainGenerator{
     pub fn generate_world_py(&self) -> VoxelGrid {
         self.clone().generate_world()
     }
+    // #[staticmethod]
+    // pub fn generate_world48_py(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    //     // Allocate on GPU – uint8 is fine for class labels 0/1/2
+    //     let mut vox = Tensor::zeros(&[48, 48, 48], (Kind::Uint8, Device::Cuda(0)));
+
+    //     // ------------------------------------------------------------------
+    //     // TODO: fill `vox` with your voxel classes as you wish.
+    //     // Example (here: completely filled just for demo):
+    //     // vox.fill_(2u8);
+    //     // ------------------------------------------------------------------
+
+    //     // Return *ownership* of the tensor to Python without any copy
+    //     Ok(vox.into_py(py))
+    // }
+    
 }
