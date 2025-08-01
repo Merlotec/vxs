@@ -24,7 +24,7 @@ class VoxelData:
     """Container for voxel octmap data"""
     occupied_coords: torch.Tensor  # [N, 3] coordinates of occupied voxels
     values: torch.Tensor           # [N] values (filled, sparse, etc)``
-    bounds: torch.Tensor           # [3] max bounds of the octmap TODO: Not sure if we can have this, it might have to infer itself
+    bounds: torch.Tensor           # [3] max bounds of the octmap TODO: Not sure if we can have this, it might have to infer itself/ be adaptive
     drone_pos: torch.Tensor        # [3] current drone position
     
     def to_device(self, device):
@@ -141,7 +141,7 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
         return {"logits": logits}
 
 
-# ============== Loss Heads ==============
+# ============== Loss Heads ,Currently not in use ==============
 class ContourHead(LossHead, nn.Module):
     """Predicts max altitude contour map from top-down view"""
     def __init__(self, embedding_dim=128, map_size=32):
@@ -206,7 +206,7 @@ class EmbeddingTrainer:
         # Collect all parameters
         all_params = []
         
-        # Move models to device and collect parameters TODO: Not too sure what this does, I think it moves# something to GPU if possible
+        # Move models to device and collect parameters TODO: Not too sure what this does, I think it moves something to GPU if possible
         if isinstance(encoder, nn.Module):
             encoder.to(self.device)
             all_params.extend(encoder.parameters())
@@ -252,7 +252,7 @@ class EmbeddingTrainer:
 
             losses["reconstruction"] = F.cross_entropy(logits, recon_targets, weight=weights)
         
-        # Auxiliary head losses
+        # Auxiliary head losses, currently not in use
         for name, head in self.loss_heads.items():
             if name in loss_weights and all(name in tb for tb in target_batch):
                 preds   = head(embedding)
@@ -415,6 +415,10 @@ class TerrainBatch(IterableDataset):
     def __iter__(self):
         while True:
             yield self.generate_terrain_sample()
+
+
+
+
 
 
 # ============== Main Test Runner ==============
