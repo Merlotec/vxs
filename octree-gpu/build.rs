@@ -4,7 +4,12 @@ use std::{env, path::PathBuf};
 fn main() {
     // Absolute path to <crate>/native/lib
     let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let lib_dir = root.join("native").join("lib");
+    let lib_dir = root.join("..").join("cuda_octree").join("build");
+
+    println!(
+        "cargo:rerun-if-changed={}/libCudaOctree.a",
+        lib_dir.display()
+    );
 
     // ① Where rustc should search for libraries
     println!("cargo:rustc-link-search=native={}", lib_dir.display());

@@ -11,8 +11,10 @@ int init_cuda_thread() {
   return 0;
 }
 
-int test_vk_texture(int memFD, int semFD, int size, int width, int height) {
+int test_vk_texture(int memFD, int semFD, int width, int height) {
   CUresult err;
+
+  int size = width * height * 4 * 4;
 
   // 1) Import the Vulkan memory FD into CUDA
   CUexternalMemory extMem = nullptr;
@@ -31,15 +33,20 @@ int test_vk_texture(int memFD, int semFD, int size, int width, int height) {
   CUmipmappedArray mip = nullptr;
   CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC arrDesc{};
   arrDesc.numLevels               = 1;
+  arrDesc.offset = 0;
   arrDesc.arrayDesc.Width         = width;
   arrDesc.arrayDesc.Height        = height;
   arrDesc.arrayDesc.Depth         = 0;                       // 2D
   arrDesc.arrayDesc.Format        = CU_AD_FORMAT_SIGNED_INT32;
   arrDesc.arrayDesc.NumChannels   = 4;                       // vec4<i32>
-  arrDesc.arrayDesc.Flags         = 0;
+  arrDesc.arrayDesc.Flags         = CUDA_ARRAY3D_COLOR_ATTACHMENT;
   err = cuExternalMemoryGetMappedMipmappedArray(&mip, extMem, &arrDesc);
   if (err != CUDA_SUCCESS) {
-    std::cerr << "cuExternalMemoryGetMappedMipmappedArray failed: " << err << "\n";
+    const char* name   = nullptr;
+    const char* desc   = nullptr;
+    cuGetErrorName(err,  &name);
+    cuGetErrorString(err, &desc);
+    std::cerr << "cuExternalMemoryGetMappedMipmappedArray failed: " << err << name << desc << "\n";
     cuDestroyExternalMemory(extMem);
     return -1;
   }
