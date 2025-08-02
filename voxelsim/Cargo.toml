@@ -23,3 +23,7 @@ argmin = "0.10.0"
 argmin-math = { version = "0.4.0", features = ["nalgebra_latest"] }
 bspline = { version = "1.1.0" } 
 finitediff = "0.1.4"
+numpy = "0.25.0"
+ndarray = "0.16.1"
+
+

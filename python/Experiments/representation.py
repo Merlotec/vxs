@@ -14,7 +14,9 @@ import voxelsim
 from collections import defaultdict
 from scipy.spatial import KDTree
 from torch.utils.data import DataLoader, IterableDataset
+import os
 
+import time, collections
 
 # ============== Data Structures ==============
 @dataclass
@@ -22,7 +24,7 @@ class VoxelData:
     """Container for voxel octmap data"""
     occupied_coords: torch.Tensor  # [N, 3] coordinates of occupied voxels
     values: torch.Tensor           # [N] values (filled, sparse, etc)``
-    bounds: torch.Tensor           # [3] max bounds of the octmap TODO: Not sure if we can have this, it might have to infer itself
+    bounds: torch.Tensor           # [3] max bounds of the octmap TODO: Not sure if we can have this, it might have to infer itself/ be adaptive
     drone_pos: torch.Tensor        # [3] current drone position
     
     def to_device(self, device):
@@ -139,7 +141,7 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
         return {"logits": logits}
 
 
-# ============== Loss Heads ==============
+# ============== Loss Heads ,Currently not in use ==============
 class ContourHead(LossHead, nn.Module):
     """Predicts max altitude contour map from top-down view"""
     def __init__(self, embedding_dim=128, map_size=32):
@@ -204,7 +206,7 @@ class EmbeddingTrainer:
         # Collect all parameters
         all_params = []
         
-        # Move models to device and collect parameters TODO: Not too sure what this does, I think it moves# something to GPU if possible
+        # Move models to device and collect parameters TODO: Not too sure what this does, I think it moves something to GPU if possible
         if isinstance(encoder, nn.Module):
             encoder.to(self.device)
             all_params.extend(encoder.parameters())
@@ -246,11 +248,11 @@ class EmbeddingTrainer:
             # inv = 1.0 / (hist + 1e-6)
             # weights = (inv / inv.sum()) * 3.0
 
-            weights = torch.tensor([0.2, 0.7, 1.5], device=logits.device)
+            weights = torch.tensor([0.2, 1.0, 1.5], device=logits.device)
 
             losses["reconstruction"] = F.cross_entropy(logits, recon_targets, weight=weights)
         
-        # Auxiliary head losses
+        # Auxiliary head losses, currently not in use
         for name, head in self.loss_heads.items():
             if name in loss_weights and all(name in tb for tb in target_batch):
                 preds   = head(embedding)
@@ -292,85 +294,39 @@ class EmbeddingTrainer:
 
 # ============== Data Generation ==============
 class TerrainBatch(IterableDataset):
-    def __init__(self, world_size=100, sub_volume_size=64):
-        self.world_size = world_size
-        self.sub_volume_size = sub_volume_size
-        
-    def generate_terrain_sample(self) -> Tuple[VoxelData, Dict[str, torch.Tensor]]:
-        """Generate a terrain sample with ground truth targets"""
-        # Create world
-        generator = voxelsim.TerrainGenerator()
-        cfg = voxelsim.TerrainConfig.default_py()
-        cfg.set_seed_py(np.random.randint(0, 2**31 - 1))
+    """Infinite generator of full cubic worlds (no sub-volume)."""
+    def __init__(self, world_size: int = 120):
+        self.world_size = int(world_size)
 
-        generator = voxelsim.TerrainGenerator()
-        generator.generate_terrain_py(cfg)
-        world = generator.generate_world_py()
-        
-        # Extract random sub-volume
-        center = np.random.randint(20, self.world_size - 20, size=3)
-        half = self.sub_volume_size // 2
-        center[2] = half
-        voxel_data, targets = self._extract_subvolume(world, center)
+    # ---------- helper: fast Rust → NumPy → Torch ------------------------
+    @staticmethod
+    def world_to_voxeldata_np(world: voxelsim.VoxelGrid, side: int) -> VoxelData:
+        coords_np, vals_np = world.as_numpy()                 # (N,3) in (x,z,y)
+        coords = torch.from_numpy(coords_np)  
+        vals   = torch.from_numpy(vals_np)
 
-         
-        
-        return voxel_data, targets
-    
-    def _extract_subvolume(self, world: voxelsim.VoxelGrid, center: np.ndarray) -> Tuple[VoxelData, Dict[str, torch.Tensor]]:
-        """Extract sub-volume around center point"""
-        # Get all cells from the world as a dictionary
-        world_items = world.to_dict_py()
-        world_cells = dict(world_items)
-        
-        # Extract cells in sub-volume
-        occupied_coords = []
-        values = []
-        
-        half_size = self.sub_volume_size // 2
-        
-        # Iterate through world cells and extract those in our sub-volume
-        for coord_tuple, cell in world_cells.items():
-            x, y, z = coord_tuple  # Unpack the tuple
-            
-            # Check if this cell is within our sub-volume
-            if (center[0] - half_size <= x < center[0] + half_size and
-                center[1] - half_size <= y < center[1] + half_size and
-                center[2] - half_size <= z < center[2] + half_size):
-                
-                # Convert to sub-volume relative coordinates
-                rel_x = x - center[0] + half_size
-                rel_y = y - center[1] + half_size
-                rel_z = z - center[2] + half_size
-                
-                occupied_coords.append([rel_x, rel_y, rel_z])
-                
-                # Determine value based on cell type
-                # Cell is a bitflag, so we need to check if it contains certain flags
-                if cell.is_filled_py():
-                    values.append(1.0)
-                elif cell.is_sparse_py():
-                    values.append(0.5)
-                else:
-                    values.append(1.0)
-            
-        if len(occupied_coords) == 0:
-            # No voxels in this sub-volume, try again
-            return self.generate_terrain_sample()
-        
-        voxel_data = VoxelData(
-            occupied_coords=torch.tensor(occupied_coords, dtype=torch.float32),
-            values=torch.tensor(values, dtype=torch.float32),
-            bounds=torch.tensor([self.sub_volume_size] * 3, dtype=torch.float32),
-            drone_pos=torch.tensor([half_size, half_size, half_size], dtype=torch.float32)
+        return VoxelData(
+            occupied_coords = coords,
+            values          = vals,
+            bounds          = torch.tensor([side]*3, dtype=torch.float32),
+            drone_pos       = torch.tensor([side//2]*3, dtype=torch.float32),
         )
-        
-        # Generate targets
-        targets = self._generate_targets(voxel_data)
-        
-        return voxel_data, targets
 
-    
+    # ---------- iterator -------------------------------------------------
+    def __iter__(self):
+        side = self.world_size
+        while True:
+            # build world in Rust
+            g   = voxelsim.TerrainGenerator()
+            cfg = voxelsim.TerrainConfig.default_py()
+            cfg.set_seed_py(int(np.random.randint(0, 2**31)))
+            cfg.set_world_size_py(side)
+            g.generate_terrain_py(cfg)
+            world = g.generate_world_py()
+
+            voxel_data = self.world_to_voxeldata_np(world, side)
+            yield voxel_data, {}          # empty target dict for now
+            
     def _generate_targets(self, voxel_data: VoxelData) -> Dict[str, torch.Tensor]:
         """Generate ground truth targets for loss heads"""
         targets = {}
@@ -410,9 +366,10 @@ class TerrainBatch(IterableDataset):
         
         return targets
     
-    def __iter__(self):
-        while True:
-            yield self.generate_terrain_sample()
+
+
+
+
 
 
 # ============== Main Test Runner ==============
@@ -422,16 +379,16 @@ def collate_fn(batch):
     return list(voxel_list), list(target_list)
 
 
-def run_experiment(encoder_class, decoder_class, num_epochs=100, batch_size=1, visualize_every=10):
+def run_experiment(encoder_class, decoder_class, num_epochs=100, batch_size=1, visualize_every=10, size = 48):
     """Run a complete experiment with given encoder/decoder"""
     # Initialize components
-    encoder = encoder_class()
-    decoder = decoder_class()
+    encoder  = SimpleCNNEncoder(voxel_size=size)
+    decoder  = SimpleCNNDecoder(voxel_size=size)
     
     loss_heads = {
         "contour": ContourHead(),
         "relative_offset": RelativeOffsetHead(),
-        # "cover_mask": CoverMaskHead()  # Disabled until we have semantic labels
+        "cover_mask": CoverMaskHead()  # Disabled until we have semantic labels
     }
     
     trainer = EmbeddingTrainer(encoder, decoder, loss_heads)
@@ -446,49 +403,66 @@ def run_experiment(encoder_class, decoder_class, num_epochs=100, batch_size=1, v
     agent_input = voxelsim.Agent(0)
     agent_output = voxelsim.Agent(0)
     # Position cameras above the voxel volume
-    agent_input.set_pos([24.0, 40.0, 24.0])  # Adjust based on sub_volume_size
-    agent_output.set_pos([24.0, 40.0, 24.0])
+    agent_input.set_pos([size/2, size/2, size/2])  # Adjust based on sub_volume_size
+    agent_output.set_pos([size/2, size/2, size/2])
     client_input.send_agents_py({0: agent_input})
     client_output.send_agents_py({0: agent_output})
 
 
 
     # Create dataloader
-    dataset = TerrainBatch(world_size=100, sub_volume_size=48)
-    dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn)  # batch_size=1 for now
+    dataset    = TerrainBatch(world_size=size)
+    dataloader = DataLoader(
+        dataset,
+        batch_size          = batch_size,
+        collate_fn          = collate_fn,
+        num_workers         = os.cpu_count(),
+        pin_memory          = True,
+        persistent_workers  = True,
+        prefetch_factor     = 1,
+    )
     
     # Training loop
     loss_history = defaultdict(list)
     
     steps_per_epoch = 10  # Since we have an infinite dataset
+    
 
     # Store a sample for visualization
     viz_sample = None
-    
+    stats = collections.defaultdict(list)
+    last_viz_wall_t = time.perf_counter()
+    dataloader_iter = iter(dataloader)
     for epoch in range(num_epochs):
         epoch_losses = defaultdict(float)
         
-        for step, (voxel_batch, target_batch) in enumerate(dataloader):
-            if step >= steps_per_epoch:
-                break
-
+        for step in range(steps_per_epoch):
+            with Timer() as t_fetch:
+                voxel_batch, target_batch = next(dataloader_iter)
             if viz_sample is None:
                 viz_sample = (voxel_batch[0], target_batch[0])
                 
             # Move to device
-            voxel_batch  = [vd.to_device(trainer.device) for vd in voxel_batch]
-            target_batch = [{k: v.to(trainer.device) for k, v in t.items()} 
-                            for t in target_batch]
+            with Timer() as t_move:
+                voxel_batch  = [vd.to_device(trainer.device) for vd in voxel_batch]
+                target_batch = [{k: v.to(trainer.device) for k, v in t.items()} 
+                                for t in target_batch]
             
             # Train step
-            loss_weights = {
-                "reconstruction": 1.0,
-                "contour": 0.5,
-                "relative_offset": 0.3,
-            }
+            with Timer() as t_model:
+                loss_weights = {
+                    "reconstruction": 1.0,
+                    "contour": 0.5,
+                    "relative_offset": 0.3,
+                }
+                
+                losses = trainer.train_step(voxel_batch, target_batch, loss_weights)
+
+            stats["fetch"].append(t_fetch.dt)
+            stats["move" ].append(t_move.dt)
+            stats["model"].append(t_model.dt)
             
-            losses = trainer.train_step(voxel_batch, target_batch, loss_weights)
-            
+
             # Accumulate losses
             for name, value in losses.items():
                 epoch_losses[name] += value
@@ -500,25 +474,60 @@ def run_experiment(encoder_class, decoder_class, num_epochs=100, batch_size=1, v
         
         if epoch % visualize_every == 0:
             print(f"Epoch {epoch}: {dict(epoch_losses)}")
+
             
+            # --- averaged timings for the last “epoch” (10 steps) ---
+            f = np.mean(stats["fetch"][-steps_per_epoch:])
+            m = np.mean(stats["move" ][-steps_per_epoch:])
+            g = np.mean(stats["model"][-steps_per_epoch:])
+            print(
+                f"Epoch {epoch:04d}  "
+                f"| fetch {f*1e3:6.1f} ms   "
+                f"move {m*1e3:6.1f} ms   "
+                f"model {g*1e3:6.1f} ms   "
+                f"total {(f+m+g)*1e3:6.1f} ms"
+            )
+
+            # --- wall‑clock since last visualisation ---
+            now          = time.perf_counter()
+            delta        = now - last_viz_wall_t
+            last_viz_wall_t = now
+            print(f"⏲  {delta:6.2f} s since previous visualisation\n")
+
+
             if viz_sample is not None:
                 # Show input (before)
                 show_voxels(viz_sample[0], client_input)
-                
-                # Generate reconstruction (after)
-                with torch.no_grad():
-                    viz_data = [viz_sample[0].to_device(trainer.device)]
-                    embedding = encoder.encode(viz_data)
-                    out = decoder.decode(embedding)
-                    logits = out["logits"]                  # [1,3,D,H,W]
+                with Timer() as t_disp:
+                    # Generate reconstruction (after)
+                    with torch.no_grad():
+                        viz_data = [viz_sample[0].to_device(trainer.device)]
+                        embedding = encoder.encode(viz_data)
+                        out = decoder.decode(embedding)
+                        logits = out["logits"]                  # [1,3,D,H,W]
+                        
                     
+                    # Show output (after)
+           
+                    show_voxels(logits, client_output)
                     
-                # Show output (after)
-                show_voxels(logits, client_output)
-                
-                print(f"Visualization updated - Input on port 8090, Output on port 8091")
+                print(
+                    f"Visualization updated  –  "
+                    f"Input:8090 Output:8091   "
+                    f"(render {t_disp.dt*1e3:6.1f} ms)"
+                )
     
     return loss_history
+
+class Timer:
+    def __enter__(self):
+        self.t0 = time.perf_counter(); return self
+    def __exit__(self, *exc):
+        self.dt = time.perf_counter()-self.t0
+
+
+
+
 
 
 # def show_voxels(voxel_data: Union[VoxelData, torch.Tensor], 
@@ -607,7 +616,7 @@ if __name__ == "__main__":
     print("Testing CNN Autoencoder...")
     print("CUDA available:", torch.cuda.is_available())
     print("CUDA device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
-    results = run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, num_epochs=1000, batch_size=5, visualize_every=10)
+    results = run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, num_epochs=1000, batch_size=5, visualize_every=20, size=48) 
 
 
 
