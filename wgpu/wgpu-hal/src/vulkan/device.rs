@@ -641,6 +641,8 @@ impl super::Device {
             format: desc.format,
             copy_size: desc.copy_extent(),
             identity,
+            external_size: None,
+            external_offset: None,
         }
     }
 
@@ -1243,101 +1245,100 @@ impl crate::Device for super::Device {
         }
     }
 
-    // In wgpu-hal/src/vulkan/device.rs, replace the body of `create_texture` with this:
-    unsafe fn create_texture(
-        &self,
-        desc: &crate::TextureDescriptor,
-    ) -> Result<super::Texture, crate::DeviceError> {
-        fn find_memory_type(
-            type_filter: u32,
-            properties: vk::MemoryPropertyFlags,
-            mem_properties: &vk::PhysicalDeviceMemoryProperties,
-        ) -> u32 {
-            for i in 0..mem_properties.memory_type_count {
-                let i = i as usize;
-                if (type_filter & (1 << i)) != 0
-                    && (mem_properties.memory_types[i].property_flags & properties) == properties
-                {
-                    return i as u32;
-                }
-            }
-            panic!("Unable to find suitable memory type");
-        }
-        let mut ext_img_ci = vk::ExternalMemoryImageCreateInfo {
-            handle_types: vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD,
-            ..Default::default()
-        };
+    // // In wgpu-hal/src/vulkan/device.rs, replace the body of `create_texture` with this:
+    // unsafe fn create_texture(
+    //     &self,
+    //     desc: &crate::TextureDescriptor,
+    // ) -> Result<super::Texture, crate::DeviceError> {
+    //     fn find_memory_type(
+    //         type_filter: u32,
+    //         properties: vk::MemoryPropertyFlags,
+    //         mem_properties: &vk::PhysicalDeviceMemoryProperties,
+    //     ) -> u32 {
+    //         for i in 0..mem_properties.memory_type_count {
+    //             let i = i as usize;
+    //             if (type_filter & (1 << i)) != 0
+    //                 && (mem_properties.memory_types[i].property_flags & properties) == properties
+    //             {
+    //                 return i as u32;
+    //             }
+    //         }
+    //         panic!("Unable to find suitable memory type");
+    //     }
+    //     let mut ext_img_ci = vk::ExternalMemoryImageCreateInfo {
+    //         handle_types: vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD,
+    //         ..Default::default()
+    //     };
 
-        // 1) Create the VkImage
-        let image = self.create_image_without_memory(desc, Some(&mut ext_img_ci))?;
+    //     // 1) Create the VkImage
+    //     let image = self.create_image_without_memory(desc, Some(&mut ext_img_ci))?;
 
-        // 2) OOM check
-        self.error_if_would_oom_on_resource_allocation(false, image.requirements.size)
-            .inspect_err(|_| {
-                unsafe { self.shared.raw.destroy_image(image.raw, None) };
-            })?;
+    //     // 2) OOM check
+    //     self.error_if_would_oom_on_resource_allocation(false, image.requirements.size)
+    //         .inspect_err(|_| {
+    //             unsafe { self.shared.raw.destroy_image(image.raw, None) };
+    //         })?;
 
-        // 3) Query physical-device memory properties
-        let mem_props = unsafe {
-            self.shared
-                .instance
-                .raw_instance()
-                .get_physical_device_memory_properties(self.shared.physical_device)
-        };
+    //     // 3) Query physical-device memory properties
+    //     let mem_props = unsafe {
+    //         self.shared
+    //             .instance
+    //             .raw_instance()
+    //             .get_physical_device_memory_properties(self.shared.physical_device)
+    //     };
 
-        // 4) Build ExportMemoryAllocateInfo
-        let mut export_info = vk::ExportMemoryAllocateInfo::default()
-            .handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
+    //     // 4) Build ExportMemoryAllocateInfo
+    //     let mut export_info = vk::ExportMemoryAllocateInfo::default()
+    //         .handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
 
-        // 5) Build MemoryAllocateInfo with export pNext
-        let alloc_info = vk::MemoryAllocateInfo::default()
-            .allocation_size(image.requirements.size)
-            .memory_type_index(find_memory_type(
-                image.requirements.memory_type_bits,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
-                &mem_props,
-            ))
-            .push_next(&mut export_info);
+    //     // 5) Build MemoryAllocateInfo with export pNext
+    //     let alloc_info = vk::MemoryAllocateInfo::default()
+    //         .allocation_size(image.requirements.size)
+    //         .memory_type_index(find_memory_type(
+    //             image.requirements.memory_type_bits,
+    //             vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    //             &mem_props,
+    //         ))
+    //         .push_next(&mut export_info);
 
-        // 6) Allocate exportable DeviceMemory
-        let memory = unsafe {
-            self.shared
-                .raw
-                .allocate_memory(&alloc_info, None)
-                .map_err(|e| crate::DeviceError::Unexpected)?
-        };
+    //     // 6) Allocate exportable DeviceMemory
+    //     let memory = unsafe {
+    //         self.shared
+    //             .raw
+    //             .allocate_memory(&alloc_info, None)
+    //             .map_err(|e| crate::DeviceError::Unexpected)?
+    //     };
 
-        // 7) Account for memory
-        self.counters
-            .texture_memory
-            .add(image.requirements.size as isize);
+    //     // 7) Account for memory
+    //     self.counters
+    //         .texture_memory
+    //         .add(image.requirements.size as isize);
 
-        // 8) Bind memory to image
-        unsafe { self.shared.raw.bind_image_memory(image.raw, memory, 0) }
-            .map_err(super::map_host_device_oom_err)
-            .inspect_err(|_| {
-                unsafe { self.shared.raw.destroy_image(image.raw, None) };
-            })?;
+    //     // 8) Bind memory to image
+    //     unsafe { self.shared.raw.bind_image_memory(image.raw, memory, 0) }
+    //         .map_err(super::map_host_device_oom_err)
+    //         .inspect_err(|_| {
+    //             unsafe { self.shared.raw.destroy_image(image.raw, None) };
+    //         })?;
 
-        // 9) Debug label
-        if let Some(label) = desc.label {
-            unsafe { self.shared.set_object_name(image.raw, label) };
-        }
+    //     // 9) Debug label
+    //     if let Some(label) = desc.label {
+    //         unsafe { self.shared.set_object_name(image.raw, label) };
+    //     }
 
-        // 10) Finish struct
-        let identity = self.shared.texture_identity_factory.next();
-        self.counters.textures.add(1);
-
-        Ok(super::Texture {
-            raw: image.raw,
-            drop_guard: None,
-            external_memory: Some(memory),
-            block: None,
-            format: desc.format,
-            copy_size: image.copy_size,
-            identity,
-        })
-    }
+    //     // 10) Finish struct
+    //     let identity = self.shared.texture_identity_factory.next();
+    //     self.counters.textures.add(1);
+    //     Ok(super::Texture {
+    //         raw: image.raw,
+    //         drop_guard: None,
+    //         external_memory: Some(memory),
+    //         block: None,
+    //         format: desc.format,
+    //         copy_size: image.copy_size,
+    //         identity,
+    //     })
+    // }
     unsafe fn destroy_texture(&self, texture: super::Texture) {
         if texture.drop_guard.is_none() {
             unsafe { self.shared.raw.destroy_image(texture.raw, None) };
@@ -1352,6 +1353,133 @@ impl crate::Device for super::Device {
         }
 
         self.counters.textures.sub(1);
+    }
+
+    // In wgpu-hal/src/vulkan/device.rs
+    unsafe fn create_texture(
+        &self,
+        desc: &crate::TextureDescriptor,
+    ) -> Result<super::Texture, crate::DeviceError> {
+        fn find_memory_type(
+            type_bits: u32,
+            props: vk::MemoryPropertyFlags,
+            mem_props: &vk::PhysicalDeviceMemoryProperties,
+        ) -> u32 {
+            for i in 0..mem_props.memory_type_count {
+                let i_usize = i as usize;
+                if (type_bits & (1 << i_usize)) != 0
+                    && (mem_props.memory_types[i_usize].property_flags & props) == props
+                {
+                    return i as u32;
+                }
+            }
+            panic!("No compatible memory type");
+        }
+
+        // (A) Create VkImage with external handle type OPAQUE_FD
+        let mut ext_img_ci = vk::ExternalMemoryImageCreateInfo {
+            handle_types: vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD,
+            ..Default::default()
+        };
+        let image = self.create_image_without_memory(desc, Some(&mut ext_img_ci))?;
+
+        // (B) Early OOM pre-check
+        self.error_if_would_oom_on_resource_allocation(false, image.requirements.size)
+            .inspect_err(|_| {
+                self.shared.raw.destroy_image(image.raw, None);
+            })?;
+
+        // (C) Query MemoryRequirements2 + DedicatedRequirements for this *image handle*
+        let mut mem_req2 = vk::MemoryRequirements2::default();
+        let mut dedicated_reqs = vk::MemoryDedicatedRequirements::default();
+
+        // Chain dedicated_reqs onto mem_req2 (works on all ash versions)
+        {
+            let base: *mut vk::BaseOutStructure = &mut mem_req2 as *mut _ as *mut _;
+            unsafe {
+                (*base).p_next = &mut dedicated_reqs as *mut _ as *mut _;
+            }
+        }
+
+        let mem_info2 = vk::ImageMemoryRequirementsInfo2::default().image(image.raw);
+        unsafe {
+            self.shared
+                .raw
+                .get_image_memory_requirements2(&mem_info2, &mut mem_req2);
+        }
+
+        let alloc_size = mem_req2.memory_requirements.size; // <-- pass this to CUDA
+        let memory_type_bits = mem_req2.memory_requirements.memory_type_bits;
+        let requires_ded = dedicated_reqs.requires_dedicated_allocation == vk::TRUE;
+
+        // (D) Pick memory type
+        let mem_props = unsafe {
+            self.shared
+                .instance
+                .raw_instance()
+                .get_physical_device_memory_properties(self.shared.physical_device)
+        };
+        let mem_type_index = find_memory_type(
+            memory_type_bits,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            &mem_props,
+        );
+
+        // (E) Build exportable alloc info (OPAQUE_FD); attach dedicated info if required
+        let mut export_info = vk::ExportMemoryAllocateInfo::default()
+            .handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
+
+        let mut dedicated_info = vk::MemoryDedicatedAllocateInfo::default().image(image.raw); // tie allocation to this image if dedicated
+
+        let mut alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(alloc_size)
+            .memory_type_index(mem_type_index)
+            .push_next(&mut export_info);
+
+        if requires_ded {
+            alloc_info = alloc_info.push_next(&mut dedicated_info);
+        }
+
+        // (F) Allocate and bind at offset 0
+        let memory = unsafe {
+            self.shared
+                .raw
+                .allocate_memory(&alloc_info, None)
+                .map_err(|_| crate::DeviceError::Unexpected)?
+        };
+
+        self.counters.texture_memory.add(alloc_size as isize);
+
+        unsafe {
+            self.shared
+                .raw
+                .bind_image_memory(image.raw, memory, 0)
+                .map_err(super::map_host_device_oom_err)
+                .inspect_err(|_| {
+                    self.shared.raw.destroy_image(image.raw, None);
+                })?;
+        }
+
+        // (G) Optional debug label
+        if let Some(label) = desc.label {
+            unsafe { self.shared.set_object_name(image.raw, label) };
+        }
+
+        // (H) Finish
+        let identity = self.shared.texture_identity_factory.next();
+        self.counters.textures.add(1);
+
+        Ok(super::Texture {
+            raw: image.raw,
+            drop_guard: None,
+            external_memory: Some(memory), // <-- exportable VkDeviceMemory lives here
+            block: None,                   // <-- keep None for CUDA export (see notes below)
+            format: desc.format,
+            copy_size: image.copy_size,
+            identity,
+            external_size: Some(alloc_size),
+            external_offset: Some(0),
+        })
     }
 
     unsafe fn add_raw_texture(&self, _texture: &super::Texture) {
