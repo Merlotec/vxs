@@ -284,6 +284,18 @@ impl State {
                 4,
             );
 
+            let bindings_info = octree_gpu::VulkanExtBindingsInfo {
+                rp_mem_fd: mem_fd,
+                rp_size: vk_size,
+                rp_width: size.width,
+                rp_height: size.height,
+                ..Default::default()
+            };
+            // Import into object.
+            let cu_obj = octree_gpu::init_bindings(&bindings_info as *const _, 1);
+            if cu_obj != std::ptr::null_mut() {
+                println!("Successfully bound!");
+            }
             // println!("memory handle: {}", mem_fd);
             // let res = octree_gpu::test_vk_texture(
             //     mem_fd,
