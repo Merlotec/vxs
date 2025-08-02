@@ -616,7 +616,7 @@ if __name__ == "__main__":
     print("Testing CNN Autoencoder...")
     print("CUDA available:", torch.cuda.is_available())
     print("CUDA device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
-    results = run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, num_epochs=1000, batch_size=5, visualize_every=20, size=120) 
+    results = run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, num_epochs=1000, batch_size=5, visualize_every=20, size=48) 
 
 
 
