@@ -1,10 +1,13 @@
 use std::collections::HashMap;
-
+use numpy::{PyArray2, PyArray1, IntoPyArray};
 use dashmap::DashMap;
-use nalgebra::{Quaternion, Unit, UnitQuaternion, Vector3};
+use nalgebra::{Vector3};
+use pyo3::prelude::*;          // PyResult, Python, #[pyfunction], …
 use pyo3::exceptions::PyException;
-use pyo3::prelude::*;
 use rayon::iter::{IntoParallelRefIterator, ParallelDrainFull, ParallelIterator};
+
+use numpy::ndarray::Array2;
+use numpy::ndarray::ShapeError;
 
 use crate::{
     Cell, Coord,
@@ -49,7 +52,7 @@ impl VoxelGrid {
         Self::from_cells(cells)
     }
 
-     pub fn to_dict_py(&self) -> Vec<((i32, i32, i32), Cell)> {
+     pub fn to_dict_py_tolistpy(&self) -> Vec<((i32, i32, i32), Cell)> {
         let mut items = Vec::new();
         
         for entry in self.cells().iter() {
@@ -62,9 +65,55 @@ impl VoxelGrid {
         
         items
     }
+
+    pub fn to_dict_py(&self) -> HashMap<PyCoord, Cell> {
+        let mut cells = HashMap::with_capacity(self.cells().len());
+        
+        for entry in self.cells().iter() {
+            let coord = *entry.key();
+            let cell = entry.value();
+            
+            // Return tuple of coordinates and Cell object
+            cells.insert(coord.into(), *cell);
+        }
+        
+        cells
+    }
+
     
+    pub fn as_numpy<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Py<PyArray2<f32>>, Py<PyArray1<f32>>)> {
+        let n = self.cells().len();
+        let mut coords = Vec::<f32>::with_capacity(n * 3);
+        let mut vals   = Vec::<f32>::with_capacity(n);
+
+        for e in self.cells().iter() {
+            let (c, cell) = (*e.key(), *e.value());
+            coords.extend_from_slice(&[c.x as f32, c.y as f32, c.z as f32]);
+            vals.push(if cell.contains(Cell::FILLED) { 1.0 }
+                      else if cell.contains(Cell::SPARSE) { 0.5 } else { 0.0 });
+        }
+
+        // -------- coords: ndarray -> PyArray, then Bound -> Py -------------
+        let coords_arr: Py<PyArray2<f32>> = Array2::from_shape_vec((n, 3), coords)
+        .map_err(|e: ShapeError| PyException::new_err(e.to_string()))?   // <-- map
+        .into_pyarray(py)
+        .into();
+        // Py<PyArray2<…>>
+
+        // -------- values: PyArray1 returned directly; just convert Bound -> Py
+        let vals_arr: Py<PyArray1<f32>> = PyArray1::from_vec(py, vals).into();
+
+        Ok((coords_arr, vals_arr))
+    }
+
 
 }
+    
+
+
 
 #[pymethods]
 impl Cell {
