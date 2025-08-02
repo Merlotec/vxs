@@ -25,3 +25,4 @@ pyo3 = { version = "0.25.1", features = ["extension-module"], optional = true }
 octree-gpu = {path = "../octree-gpu", optional = true}
 ash = {version = "0.38.0", optional = true}
 wgpu-hal = {path = "../wgpu/wgpu-hal", optional = true} 
+crossbeam-channel = "0.5.15"

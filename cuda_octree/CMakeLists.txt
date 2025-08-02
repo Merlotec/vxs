@@ -27,6 +27,7 @@ find_package(CUDAToolkit REQUIRED)
 # Define static library target
 add_library(${PROJECT_NAME} STATIC
     src/cuda_test.cu
+    src/interop.cu
 )
 
 # Include directories

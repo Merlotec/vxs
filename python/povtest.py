@@ -23,7 +23,7 @@ renderer = voxelsim.AgentVisionRenderer(world, [400, 300])
 
 # Client
 
-client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
+client = voxelsim.RendererClient("10.8.116.204", 8080, 8081, 8090, 9090)
 # Specify the number of agent renderers we want to connect to.
 client.connect_py(1)
 print("Controls: WASD=move, Space=up, Shift=down, ESC=quit")
@@ -92,7 +92,10 @@ while listener.running:
         # Here we just send the new world over to the renderer.
         if view_delta >= FRAME_DELTA_MAX:
             fw.send_pov_py(client, 0, 0, proj, camera_orientation)
+            tr = time.time()
             renderer.update_filter_world_py(agent.camera_view_py(camera_orientation), proj, fw, t0)
+            rtime = time.time() - tr
+            print(f"rtime:{rtime}")
             last_view_time = t0
 
     action = agent.get_action()

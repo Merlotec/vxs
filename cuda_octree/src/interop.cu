@@ -68,7 +68,7 @@ RenderBindings* init_bindings(VulkanExtBindingsInfo* vk_bindings, uint32_t count
   RenderBindings* bindings = (RenderBindings*) malloc(count * sizeof(RenderBindings));
   
   for (uint32_t i = 0; i < count; ++i) {
-    RenderBindings* bnd = &bnd[i];
+    RenderBindings* bnd = &bindings[i];
     int res = bind_vk(bnd, &vk_bindings[i]);
     if(!res) {
       free(bindings);

@@ -33,7 +33,6 @@ impl State {
             // 1) Create instance & pick adapter
             let instance = Instance::new(&wgpu::InstanceDescriptor {
                 backends: Backends::all(),
-                flags: InstanceFlags::VALIDATION | InstanceFlags::GPU_BASED_VALIDATION,
                 ..Default::default()
             });
             let adapter = instance
@@ -272,17 +271,17 @@ impl State {
             let fake_size = size.width * size.height * 4 * 4;
             println!("fk: {}, real: {}", fake_size, vk_size);
             // 4 i32s per texel.
-            let res = octree_gpu::probe_cuda_import(
-                mem_fd,
-                vk_size,
-                0,
-                size.width as c_uint,
-                size.height as c_uint,
-                1,
-                0,
-                0x0a,
-                4,
-            );
+            // let res = octree_gpu::probe_cuda_import(
+            //     mem_fd,
+            //     vk_size,
+            //     0,
+            //     size.width as c_uint,
+            //     size.height as c_uint,
+            //     1,
+            //     0,
+            //     0x0a,
+            //     4,
+            // );
 
             let bindings_info = octree_gpu::VulkanExtBindingsInfo {
                 rp_mem_fd: mem_fd,
