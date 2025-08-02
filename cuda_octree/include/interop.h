@@ -1,6 +1,18 @@
 #include <cuda.h>
 #include <stdint.h>
 
+#define CHECK(call) do {                                 \
+    CUresult _e = (call);                                \
+    if (_e != CUDA_SUCCESS) {                            \
+        const char *n = 0, *d = 0;                       \
+        cuGetErrorName(_e, &n);                          \
+        cuGetErrorString(_e, &d);                        \
+        fprintf(stderr, "%s failed: %d %s - %s\n",       \
+                #call, _e, n?n:"", d?d:"");              \
+        return -1;                                       \
+    }                                                    \
+} while (0)
+
 /// One set of bindings for a pipeline.
 struct RenderBindings {
 
@@ -29,8 +41,8 @@ struct VulkanExtBindingsInfo {
 };
 
 extern "C" {
-  RenderBindings bind_vk(VulkanExtBindingsInfo* vk_bnd);
+  int bind_vk(RenderBindings* out, VulkanExtBindingsInfo* vk_bnd);
   
-  RenderBindings* init_bindings(VulkanExtBindingsInfo* vk_info, uint32_t count);
+  RenderBindings* init_bindings(VulkanExtBindingsInfo* vk_bindings, uint32_t count);
 }
 
