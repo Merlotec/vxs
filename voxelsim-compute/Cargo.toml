@@ -7,6 +7,7 @@ edition = "2024"
 default = []
 clib = []
 python = ["pyo3", "voxelsim/python"]
+cuda-octree = ["octree-gpu", "ash", "wgpu-hal", ]
 
 [dependencies]
 bytemuck = "1.23.1"
@@ -19,5 +20,8 @@ nalgebra-glm = "0.19.0"
 pollster = "0.4.0"
 rayon = "1.10.0"
 voxelsim = { path = "../voxelsim" }
-wgpu = "26.0.0"
+wgpu = {path = "../wgpu/wgpu"}
 pyo3 = { version = "0.25.1", features = ["extension-module"], optional = true }
+octree-gpu = {path = "../octree-gpu", optional = true}
+ash = {version = "0.38.0", optional = true}
+wgpu-hal = {path = "../wgpu/wgpu-hal", optional = true} 

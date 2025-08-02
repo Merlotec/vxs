@@ -7,6 +7,10 @@ edition = "2024"
 name = "voxelsim"
 crate-type=["cdylib"]
 
+[features]
+default = []
+cuda-octree = ["voxelsim-compute/cuda-octree"] 
+
 [dependencies]
 voxelsim = {path = "../voxelsim", features = ["python"]}
 voxelsim-simulator = {path = "../voxelsim-simulator", features = ["python"]}

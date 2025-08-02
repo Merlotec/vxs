@@ -1,0 +1,89 @@
+[package]
+name = "wgpu-test"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "common code for wgpu tests"
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[test]]
+name = "wgpu-compile"
+harness = true
+
+[[test]]
+name = "wgpu-dependency"
+harness = true
+
+[[test]]
+name = "wgpu-gpu"
+harness = false
+
+[[test]]
+name = "wgpu-validation"
+harness = true
+
+[features]
+webgl = ["wgpu/webgl"]
+# This feature is not actually used by this package, but it being present somewhere in the workspace
+# allows us to force the build to have profiling code enabled so we can test that configuration.
+test-build-with-profiling = ["profiling/type-check"]
+
+[dependencies]
+wgpu = { workspace = true, features = ["noop"] }
+wgpu-hal = { workspace = true, features = ["validation_canary"] }
+wgpu-macros.workspace = true
+
+anyhow.workspace = true
+arrayvec.workspace = true
+approx.workspace = true
+bitflags.workspace = true
+bytemuck.workspace = true
+cfg-if.workspace = true
+ctor.workspace = true
+futures-lite.workspace = true
+glam.workspace = true
+half = { workspace = true, features = ["bytemuck", "std"] }
+itertools.workspace = true
+image.workspace = true
+libtest-mimic.workspace = true
+log.workspace = true
+nanorand.workspace = true
+parking_lot.workspace = true
+png.workspace = true
+pollster.workspace = true
+profiling.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+strum = { workspace = true, features = ["derive"] }
+trybuild.workspace = true
+
+# Non-Webassembly
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Cargo-metadata doesn't compile on wasm due to old cargo-util-schemas dependency.
+cargo_metadata.workspace = true
+env_logger.workspace = true
+nv-flip.workspace = true
+parking_lot = { workspace = true, features = ["deadlock_detection"] }
+
+# Webassembly
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_log.workspace = true
+wasm-bindgen.workspace = true
+web-sys = { workspace = true }
+
+# Webassembly Dev Dependencies
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+image.workspace = true
+js-sys.workspace = true
+wasm-bindgen-futures.workspace = true
+wasm-bindgen-test.workspace = true
+wasm-bindgen.workspace = true
+web-sys = { workspace = true, features = ["CanvasRenderingContext2d", "Blob"] }
+
+[lints.clippy]
+disallowed_types = "allow"

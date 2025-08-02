@@ -1,51 +1,63 @@
-import voxelsim
-import time
 
-world = voxelsim.VoxelGrid()
-world.generate_default_terrain(100)
+import voxelsim, time
 
-dynamics = voxelsim.AgentDynamics.default_drone()
+# dynamics = voxelsim.AgentDynamics.default_drone()
 agent = voxelsim.Agent(0)
-env = voxelsim.GlobalEnv(world, {0: agent})
+agent.set_pos([50.0, 50.0, 20.0])
+
+fw = voxelsim.FilterWorld()
+dynamics = voxelsim.PengQuadDynamics.default_py()
+
+chaser = voxelsim.FixedLookaheadChaser.default_py()
+
+generator = voxelsim.TerrainGenerator()
+generator.generate_terrain_py(voxelsim.TerrainConfig.default_py())
+world = generator.generate_world_py()
+proj = voxelsim.CameraProjection.default_py()
+env = voxelsim.EnvState.default_py()
+
+AGENT_CAMERA_TILT = -0.5
+camera_orientation = voxelsim.CameraOrientation.vertical_tilt_py(-0.5)
+# Renderer
+renderer = voxelsim.AgentVisionRenderer(world, [400, 300])
+
+# Client
 
 
-client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090)
-client.connect_py(0)
-
-print("connected!")
-
-env.send_world(client)
-print("send client data")
-
-
-def step():
-    # Send the entire agent list through the pipe
-    try:
-        env.send_agents(client)
-        print("agents sent")
-    except BrokenPipeError:
-        print("broken pipe")
-        pass  # Render process may have closed
-
-def collide(agent_id):
-    pass
 
 delta = 0.01
-realtime = True
-print("Control process started")
+
+last_view_time = time.time()
+
+FRAME_DELTA_MAX = 0.13
+
 while True:
     t0 = time.time()
+    view_delta = t0 - last_view_time
+    # Rendering
+    if fw.is_updating_py(last_view_time):
+        if view_delta >= FRAME_DELTA_MAX:
+            # Do not update the simulation because we want to await the view.
+            continue;
+    else:
+        # Our next frame is ready, so wait for the frame delta time to hit then update the world
+        # used for inference.
+        # Here we just send the new world over to the renderer.
+        if view_delta >= FRAME_DELTA_MAX:
+            renderer.update_filter_world_py(agent.camera_view_py(camera_orientation), proj, fw, t0)
+            last_view_time = t0
+
+    action = agent.get_action()
+    # The point in space that the drone should be chasing.
+    chase_target = chaser.step_chase_py(agent, delta)
+    dynamics.update_agent_dynamics_py(agent, env, chase_target, delta)
+    # collisions = env.update_py(dynamics, delta)
+    # if len(collisions) > 0:
+    #     print("Collision!")
+    # im = env.update_pov_py()
     
-    env.perform_sequence_on_agent(0, [
-        voxelsim.MoveCommand.up(0.8),
-        voxelsim.MoveCommand.up(0.8),
-        voxelsim.MoveCommand.right(0.8),
-        voxelsim.MoveCommand.forward(0.8)
-    ])
-    env.update_with_callback(dynamics, delta, step, collide)
-    env.send_agents(client)
-     
-    t1 = time.time()
-    d = t1 - t0
-    if realtime and d < delta:
-        time.sleep(delta - (t1 - t0))
+    # env.send_pov(client, 0, 0)
+    d = time.time() - t0
+    if d < delta:
+        time.sleep(delta - d)
+
