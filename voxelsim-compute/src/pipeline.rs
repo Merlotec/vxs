@@ -224,7 +224,7 @@ impl State {
         unsafe {
             use ash::vk;
             use ash::vk::Handle;
-            use std::ffi::c_int;
+            use std::ffi::{c_int, c_uint};
 
             use wgpu::wgc::api::Vulkan; // Main State struct to hold all wgpu-related objects
 
@@ -236,6 +236,10 @@ impl State {
                 .texture
                 .as_hal::<Vulkan>()
                 .expect("Must be using a vulkan backend to extract cuda texture!");
+
+            let size = tex_fd.copy_size();
+            let vk_size = tex_fd.external_size().unwrap();
+            println!("Copy size: {:?}", size);
 
             // let vk_device_memory: vk::DeviceMemory = *tex_fd.external_memory().unwrap();
 
@@ -265,25 +269,33 @@ impl State {
                     .expect("Could not get external memory.")
             };
 
-            let mut props = vk::MemoryFdPropertiesKHR::default();
-            ex_mem_dev.get_memory_fd_properties_khr(
-                vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD_KHR,
-                mem_fd,
-                &mut props,
-            );
-
-            println!("memory info: {:?}", &props);
-
+            let fake_size = size.width * size.height * 4 * 4;
+            println!("fk: {}, real: {}", fake_size, vk_size);
             // 4 i32s per texel.
-            println!("memory handle: {}", mem_fd);
-            let res = octree_gpu::test_vk_texture(
+            let res = octree_gpu::probe_cuda_import(
                 mem_fd,
-                sem_fd.as_raw() as c_int,
-                self.size.x as c_int,
-                self.size.y as c_int,
+                vk_size,
+                0,
+                size.width as c_uint,
+                size.height as c_uint,
+                1,
+                0,
+                0x0a,
+                4,
             );
-            println!("Successfully uploaded cuda texture!");
+
+            // println!("memory handle: {}", mem_fd);
+            // let res = octree_gpu::test_vk_texture(
+            //     mem_fd,
+            //     sem_fd.as_raw() as c_int,
+            //     size.width as c_int,
+            //     size.height as c_int,
+            //     vk_size,
+            //     0,
+            //     0,
+            // );
         }
+
         let to_remove = self
             .rasterizer_state
             .filter

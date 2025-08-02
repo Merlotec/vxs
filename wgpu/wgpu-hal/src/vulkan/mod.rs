@@ -947,6 +947,10 @@ pub struct Texture {
     format: wgt::TextureFormat,
     copy_size: crate::CopyExtent,
     identity: ResourceIdentity<vk::Image>,
+
+    // TWO ADDED FIELDS:
+    external_size: Option<u64>,
+    external_offset: Option<u64>,
 }
 
 impl crate::DynTexture for Texture {}
@@ -967,6 +971,18 @@ impl Texture {
 
     pub unsafe fn raw_block(&self) -> Option<&gpu_alloc::MemoryBlock<vk::DeviceMemory>> {
         self.block.as_ref()
+    }
+
+    pub fn copy_size(&self) -> crate::CopyExtent {
+        self.copy_size
+    }
+
+    pub fn external_size(&self) -> Option<u64> {
+        self.external_size
+    }
+
+    pub fn external_offset(&self) -> Option<u64> {
+        self.external_offset
     }
 }
 

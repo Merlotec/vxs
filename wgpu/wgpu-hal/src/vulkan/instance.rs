@@ -1172,6 +1172,8 @@ impl crate::Surface for super::Surface {
                     depth: 1,
                 },
                 identity,
+                external_size: None,
+                external_offset: None,
             },
             acquire_semaphores: acquire_semaphore_arc,
             present_semaphores: present_semaphore_arc,
