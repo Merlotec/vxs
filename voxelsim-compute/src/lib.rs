@@ -165,8 +165,13 @@ pub enum RenderCommand {
 }
 
 impl AgentVisionRenderer {
+    #[cfg(feature = "cuda-octree")]
+    const CUDA_INIT: AtomicBool = AtomicBool::new(false);
+
     pub fn init(world: &VoxelGrid, view_size: Vector2<u32>) -> Self {
         let (tx, rx) = mpsc::sync_channel(1000);
+
+        // initialize cuda if it is not globally initialised for this process.
 
         let state = futures::executor::block_on(State::create(world, view_size));
         std::thread::spawn(move || {
@@ -176,6 +181,21 @@ impl AgentVisionRenderer {
     }
 
     async fn start_render_thread(mut state: State, receiver: Receiver<RenderCommand>) {
+        #[cfg(feature = "cuda-octree")]
+        {
+            if Self::CUDA_INIT
+                .compare_exchange(
+                    false,
+                    true,
+                    std::sync::atomic::Ordering::Acquire,
+                    std::sync::atomic::Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                println!("Initialising cuda...");
+                unsafe { octree_gpu::init_cuda_thread() };
+            }
+        }
         while let Ok(rc) = receiver.recv() {
             match rc {
                 RenderCommand::Exit => break,
