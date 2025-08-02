@@ -1,5 +1,6 @@
 pub mod camera;
 pub mod filter;
+pub mod offload;
 pub mod texture;
 
 use crate::rasterizer::{filter::FilterBindings, texture::TextureSet};

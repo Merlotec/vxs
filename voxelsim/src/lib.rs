@@ -10,3 +10,9 @@ pub use network::*;
 // Python bindings - only compile when python feature is enabled
 #[cfg(feature = "python")]
 pub mod py;
+
+// Voxel occupancy i.e. sparse vs filled could be continuous. This could tell us radially the amount of the block that is obscured from any neighbouring blocks.
+
+// Two stage noise pass.
+
+// Increasing voxel size as the drone speeds up.
