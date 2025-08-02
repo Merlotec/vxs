@@ -70,8 +70,10 @@ RenderBindings* init_bindings(VulkanExtBindingsInfo* vk_bindings, uint32_t count
   for (uint32_t i = 0; i < count; ++i) {
     RenderBindings* bnd = &bnd[i];
     int res = bind_vk(bnd, &vk_bindings[i]);
-    if(!res)
+    if(!res) {
+      free(bindings);
       return nullptr;
+    }
   }
 
   return bindings;
