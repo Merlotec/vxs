@@ -6,7 +6,7 @@ agent = voxelsim.Agent(0)
 agent.set_pos([50.0, 50.0, 20.0])
 
 fw = voxelsim.FilterWorld()
-dynamics = voxelsim.PengQuadDynamics.default_py()
+dynamics = voxelsim.QuadDynamics.default_py()
 
 chaser = voxelsim.FixedLookaheadChaser.default_py()
 
@@ -19,11 +19,12 @@ env = voxelsim.EnvState.default_py()
 AGENT_CAMERA_TILT = -0.5
 camera_orientation = voxelsim.CameraOrientation.vertical_tilt_py(-0.5)
 # Renderer
-renderer = voxelsim.AgentVisionRenderer(world, [400, 300])
+noise = voxelsim.NoiseParams.default_with_seed_py([0.0, 0.0, 0.0])
+renderer = voxelsim.AgentVisionRenderer(world, [400, 300], noise)
 
 # Client
 
-client = voxelsim.RendererClient("10.8.116.204", 8080, 8081, 8090, 9090)
+client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
 # Specify the number of agent renderers we want to connect to.
 client.connect_py(1)
 print("Controls: WASD=move, Space=up, Shift=down, ESC=quit")
@@ -78,6 +79,11 @@ last_view_time = time.time()
 
 FRAME_DELTA_MAX = 0.13
 
+upd_start = 0.0
+def world_update(world):
+    dtime = time.time() - upd_start
+    print(f"upd_time: {dtime}")
+
 while listener.running:
     t0 = time.time()
     view_delta = t0 - last_view_time
@@ -92,10 +98,8 @@ while listener.running:
         # Here we just send the new world over to the renderer.
         if view_delta >= FRAME_DELTA_MAX:
             fw.send_pov_py(client, 0, 0, proj, camera_orientation)
-            tr = time.time()
-            renderer.update_filter_world_py(agent.camera_view_py(camera_orientation), proj, fw, t0)
-            rtime = time.time() - tr
-            print(f"rtime:{rtime}")
+            upd_start = time.time()
+            renderer.update_filter_world_py(agent.camera_view_py(camera_orientation), proj, fw, t0, world_update)
             last_view_time = t0
 
     action = agent.get_action()

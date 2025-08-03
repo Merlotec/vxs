@@ -67,6 +67,7 @@ impl FilterBindings {
             ],
         })
     }
+
     pub fn create(
         device: &wgpu::Device,
         depth_texture_view: &wgpu::TextureView,

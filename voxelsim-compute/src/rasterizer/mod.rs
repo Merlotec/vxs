@@ -1,8 +1,13 @@
 pub mod camera;
 pub mod filter;
+pub mod noise;
 pub mod texture;
 
-use crate::rasterizer::{filter::FilterBindings, texture::TextureSet};
+use crate::rasterizer::{
+    filter::FilterBindings,
+    noise::{NoiseBuffer, NoiseParams},
+    texture::TextureSet,
+};
 use camera::CameraMatrix;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use voxelsim::{Coord, VoxelGrid, viewport::VirtualGrid};
@@ -199,7 +204,7 @@ impl RasterizerPipeline {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[], // No longer need a bind group for the camera
+            bind_group_layouts: &[&NoiseBuffer::layout(device)], // No longer need a bind group for the camera
             // Add a push constant range for the camera matrix
             push_constant_ranges: &[wgpu::PushConstantRange {
                 stages: wgpu::ShaderStages::VERTEX,
@@ -321,6 +326,7 @@ pub struct RasterizerState {
     cube_buffer: BufferSet,
     instances: InstanceBuffer,
     pub filter: FilterBindings,
+    pub noise: NoiseBuffer,
     rasterizer_pipeline: RasterizerPipeline,
     filter_pipeline: RasterizerPipeline,
     depth: TextureSet,
@@ -333,7 +339,12 @@ impl RasterizerState {
     const DEPTH_TEXTURE_LABEL: &'static str = "DEPTH_TEXTURE_LABEL";
     const RENDER_TEXTURE_LABEL: &'static str = "RENDER_TEXTURE_LABEL";
 
-    pub fn create(device: &wgpu::Device, world: &VoxelGrid, texture_size: [u32; 2]) -> Self {
+    pub fn create(
+        device: &wgpu::Device,
+        world: &VoxelGrid,
+        texture_size: [u32; 2],
+        noise: NoiseParams,
+    ) -> Self {
         let cube_buffer: BufferSet = Vertex::create_cube_buffer(device);
         let instances: InstanceBuffer = CellInstance::create_instance_buffer(device, world);
         let depth =
@@ -365,6 +376,8 @@ impl RasterizerState {
             Self::RENDER_TEXTURE_LABEL,
         );
 
+        let noise_buffer = NoiseBuffer::create_buffer(device, noise);
+
         Self {
             cube_buffer,
             instances,
@@ -375,6 +388,7 @@ impl RasterizerState {
             render_target,
             depth_sampler,
             filter_render_target,
+            noise: noise_buffer,
         }
     }
 
@@ -413,7 +427,7 @@ impl RasterizerState {
         });
 
         render_pass.set_pipeline(&self.rasterizer_pipeline.pipeline);
-
+        render_pass.set_bind_group(0, &self.noise.group, &[]);
         // Set the push constant data for the vertex shader
         render_pass.set_push_constants(
             wgpu::ShaderStages::VERTEX,

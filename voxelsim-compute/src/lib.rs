@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use voxelsim::viewport::{CameraOrientation, CameraProjection, VirtualGrid};
 use voxelsim::{PovDataRef, RendererClient, VoxelGrid};
 
+use crate::rasterizer::noise::NoiseParams;
 use crate::{pipeline::WorldChangeset, rasterizer::camera::CameraMatrix};
 
 #[cfg(feature = "clib")]
@@ -155,19 +156,20 @@ pub struct AgentVisionRenderer {
 pub enum RenderCommand {
     Exit,
     Render {
-        view_proj: Matrix4<f64>,
+        view: Matrix4<f64>,
+        proj: Matrix4<f64>,
         filter_world: Arc<Mutex<VirtualGrid>>,
         sender: SyncSender<WorldChangeset>,
     },
 }
 
 impl AgentVisionRenderer {
-    pub fn init(world: &VoxelGrid, view_size: Vector2<u32>) -> Self {
+    pub fn init(world: &VoxelGrid, view_size: Vector2<u32>, noise: NoiseParams) -> Self {
         let (tx, rx) = mpsc::sync_channel(1000);
 
         // initialize cuda if it is not globally initialised for this process.
 
-        let state = futures::executor::block_on(State::create(world, view_size));
+        let state = futures::executor::block_on(State::create(world, view_size, noise));
         std::thread::spawn(move || {
             futures::executor::block_on(Self::start_render_thread(state, rx))
         });
@@ -179,11 +181,12 @@ impl AgentVisionRenderer {
             match rc {
                 RenderCommand::Exit => break,
                 RenderCommand::Render {
-                    view_proj,
+                    view,
+                    proj,
                     filter_world,
                     sender,
                 } => {
-                    let camera_matrix = CameraMatrix::from_view_proj(view_proj.cast());
+                    let camera_matrix = CameraMatrix::from_view_proj(view.cast(), proj.cast());
                     // let camera_matrix = CameraMatrix::default();
                     if let Ok(changeset) = state
                         .run(&camera_matrix, filter_world.lock().unwrap().deref())
@@ -196,14 +199,18 @@ impl AgentVisionRenderer {
         }
     }
 
-    pub fn update_filter_world(
+    pub fn update_filter_world<F>(
         &self,
-        view_proj: Matrix4<f64>,
+        view: Matrix4<f64>,
+        proj: Matrix4<f64>,
         filter_world: FilterWorld,
         timestamp: f64,
-    ) {
+        on_update: F,
+    ) where
+        F: FnOnce(&FilterWorld) + Send + 'static,
+    {
         filter_world.frames.lock().unwrap().push(timestamp);
-        let rx = self.render(view_proj, filter_world.world.clone());
+        let rx = self.render(view, proj, filter_world.world.clone());
         std::thread::spawn(move || {
             if let Ok(change) = rx.recv() {
                 let mut vgrid = filter_world.world.lock().unwrap();
@@ -213,12 +220,19 @@ impl AgentVisionRenderer {
                     .lock()
                     .unwrap()
                     .retain(|x| *x != timestamp);
+
+                on_update(&filter_world);
             }
         });
     }
 
-    pub fn update_world(&self, view_proj: Matrix4<f64>, filter_world: Arc<Mutex<VirtualGrid>>) {
-        let rx = self.render(view_proj, filter_world.clone());
+    pub fn update_world(
+        &self,
+        view: Matrix4<f64>,
+        proj: Matrix4<f64>,
+        filter_world: Arc<Mutex<VirtualGrid>>,
+    ) {
+        let rx = self.render(view, proj, filter_world.clone());
         std::thread::spawn(move || {
             if let Ok(change) = rx.recv() {
                 let mut vgrid = filter_world.lock().unwrap();
@@ -229,13 +243,15 @@ impl AgentVisionRenderer {
 
     pub fn render(
         &self,
-        view_proj: Matrix4<f64>,
+        view: Matrix4<f64>,
+        proj: Matrix4<f64>,
         filter_world: Arc<Mutex<VirtualGrid>>,
     ) -> Receiver<WorldChangeset> {
         let (tx, rx) = mpsc::sync_channel(1000);
         self.sender
             .send(RenderCommand::Render {
-                view_proj,
+                view,
+                proj,
                 filter_world,
                 sender: tx,
             })
