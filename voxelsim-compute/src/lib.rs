@@ -8,14 +8,11 @@ pub mod py;
 
 use nalgebra::{Matrix4, Vector2};
 use pipeline::State;
-use std::collections::VecDeque;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 use voxelsim::viewport::{CameraOrientation, CameraProjection, VirtualGrid};
-use voxelsim::{PovData, PovDataRef, RendererClient, VoxelGrid};
+use voxelsim::{PovDataRef, RendererClient, VoxelGrid};
 
 use crate::{pipeline::WorldChangeset, rasterizer::camera::CameraMatrix};
 
@@ -165,9 +162,6 @@ pub enum RenderCommand {
 }
 
 impl AgentVisionRenderer {
-    #[cfg(feature = "cuda-octree")]
-    const CUDA_INIT: AtomicBool = AtomicBool::new(false);
-
     pub fn init(world: &VoxelGrid, view_size: Vector2<u32>) -> Self {
         let (tx, rx) = mpsc::sync_channel(1000);
 
@@ -181,21 +175,6 @@ impl AgentVisionRenderer {
     }
 
     async fn start_render_thread(mut state: State, receiver: Receiver<RenderCommand>) {
-        #[cfg(feature = "cuda-octree")]
-        {
-            if Self::CUDA_INIT
-                .compare_exchange(
-                    false,
-                    true,
-                    std::sync::atomic::Ordering::Acquire,
-                    std::sync::atomic::Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                println!("Initialising cuda...");
-                unsafe { octree_gpu::init_cuda_thread() };
-            }
-        }
         while let Ok(rc) = receiver.recv() {
             match rc {
                 RenderCommand::Exit => break,

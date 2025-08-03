@@ -1,6 +1,5 @@
 pub mod drone;
-pub mod peng;
-pub mod standard;
+pub mod quad;
 
 use nalgebra::Vector3;
 

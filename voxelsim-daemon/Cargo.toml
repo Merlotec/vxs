@@ -1,0 +1,8 @@
+[package]
+name = "voxelsim-daemon"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mavlink = "0.15.0"
+voxelsim = { path = "../voxelsim" }
