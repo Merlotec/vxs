@@ -2617,6 +2617,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "glsl-layout"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a4206fa405b25ca1b607f4db6cfdeeebec5513458d65abe21fc246ee89ac295"
+dependencies = [
+ "glsl-layout-derive",
+]
+
+[[package]]
+name = "glsl-layout-derive"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b870f33b0cec52fd0347c09722c2f9a85e9a4e9aa5c0453e75dedc12bde7ddb8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "gltf"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8822,6 +8842,7 @@ dependencies = [
  "env_logger",
  "futures",
  "futures-intrusive",
+ "glsl-layout",
  "nalgebra 0.33.2",
  "nalgebra-glm",
  "pollster",

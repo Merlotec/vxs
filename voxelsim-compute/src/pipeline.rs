@@ -1,5 +1,6 @@
 use crate::rasterizer::RasterizerState;
 use crate::rasterizer::camera::CameraMatrix;
+use crate::rasterizer::noise::NoiseParams;
 use crate::rasterizer::{self, CellInstance, InstanceBuffer};
 use nalgebra::Vector2;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
@@ -15,7 +16,7 @@ pub struct State {
 
 impl State {
     // Creating some of the wgpu types requires async code
-    pub async fn create(world: &VoxelGrid, view_size: Vector2<u32>) -> Self {
+    pub async fn create(world: &VoxelGrid, view_size: Vector2<u32>, noise: NoiseParams) -> Self {
         // The instance is a handle to our GPU
         // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
 
@@ -44,7 +45,7 @@ impl State {
                     // WebGL doesn't support all of wgpu's features, so if
                     // we're building for the web we'll have to disable some.
                     required_limits: wgpu::Limits {
-                        max_push_constant_size: 64, // Size of mat4x4<f32>
+                        max_push_constant_size: 76, // Size of mat4x4<f32>
                         ..wgpu::Limits::default()
                     },
                     label: None,
@@ -56,7 +57,8 @@ impl State {
 
             (queue, device)
         };
-        let rasterizer_state = RasterizerState::create(&device, world, [view_size.x, view_size.y]);
+        let rasterizer_state =
+            RasterizerState::create(&device, world, [view_size.x, view_size.y], noise);
 
         let filter_buffer =
             CellInstance::create_instance_buffer_uninit(&device, world.cells().len());

@@ -1,6 +1,8 @@
 use crate::AgentVisionRenderer;
 use crate::FilterWorld;
 use crate::WorldChangeset;
+use crate::rasterizer::noise::NoiseParams;
+
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use voxelsim::RendererClient;
@@ -13,6 +15,7 @@ pub fn voxelsim_compute(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FilterWorld>()?;
     m.add_class::<WorldChangeset>()?;
     m.add_class::<AgentVisionRenderer>()?;
+    m.add_class::<NoiseParams>()?;
     Ok(())
 }
 
@@ -43,8 +46,8 @@ impl FilterWorld {
 #[pymethods]
 impl AgentVisionRenderer {
     #[new]
-    pub fn init_py(world: &VoxelGrid, view_size: [u32; 2]) -> Self {
-        Self::init(world, view_size.into())
+    pub fn init_py(world: &VoxelGrid, view_size: [u32; 2], noise: NoiseParams) -> Self {
+        Self::init(world, view_size.into(), noise)
     }
     pub fn update_filter_world_py(
         &self,
@@ -52,8 +55,26 @@ impl AgentVisionRenderer {
         proj: CameraProjection,
         filter_world: FilterWorld,
         timestamp: f64,
+        callback: PyObject,
     ) {
-        let view_proj = proj.projection_matrix() * camera.view_matrix();
-        self.update_filter_world(view_proj, filter_world, timestamp)
+        self.update_filter_world(
+            camera.view_matrix(),
+            proj.projection_matrix(),
+            filter_world,
+            timestamp,
+            move |fw| {
+                Python::with_gil(|py| {
+                    let _ = callback.call1(py, (fw.clone(),));
+                });
+            },
+        )
+    }
+}
+
+#[pymethods]
+impl NoiseParams {
+    #[staticmethod]
+    pub fn default_with_seed_py(seed: [f32; 3]) -> Self {
+        Self::default_with_seed(seed.into())
     }
 }
