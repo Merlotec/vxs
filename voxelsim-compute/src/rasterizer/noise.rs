@@ -15,7 +15,7 @@ pub struct NoiseParams {
     pub lacunarity: float, // e.g. 2.0
     pub gain: float,       // e.g. 0.5
     pub octaves: uint,     // e.g. 4
-    pub _pad0: uint,       // still need one uint of padding
+    pub enabled: uint,     // still need one uint of padding
 }
 
 impl Default for NoiseParams {
@@ -33,7 +33,14 @@ impl NoiseParams {
             lacunarity: 2.0,
             gain: 0.5,
             octaves: 4,
-            _pad0: 0,
+            enabled: 1,
+        }
+    }
+
+    pub fn none() -> Self {
+        Self {
+            enabled: 0,
+            ..Default::default()
         }
     }
 }

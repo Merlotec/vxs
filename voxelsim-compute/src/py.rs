@@ -77,4 +77,9 @@ impl NoiseParams {
     pub fn default_with_seed_py(seed: [f32; 3]) -> Self {
         Self::default_with_seed(seed.into())
     }
+
+    #[staticmethod]
+    pub fn none_py() -> Self {
+        Self::none()
+    }
 }
