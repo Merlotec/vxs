@@ -297,7 +297,7 @@ impl TerrainGenerator {
 
                 // Randomly select tree type
                 let tree_idx = rng.random_range(0..tree_types.len());
-                let (tree_type, type_name) = tree_types[tree_idx];
+                let (tree_type, _type_name) = tree_types[tree_idx];
 
                 // Scale base height based on density for variation (0.8 to 1.2)
                 let height_scale =
@@ -325,7 +325,7 @@ impl TerrainGenerator {
             | Cell::DRONE_TRAJECTORY
             | Cell::TARGET;
 
-        for (i, &(x, z, tree_type, ref params)) in placed_trees.iter().enumerate() {
+        for (_, &(x, z, _tree_type, ref params)) in placed_trees.iter().enumerate() {
             let ground_y = height_map[x as usize][z as usize];
 
             // Detailed debug output for each tree
@@ -878,21 +878,21 @@ impl TerrainGenerator {
         self.scatter_trees(&cfg, &height_map, 50);
 
         // -------------------------------------------------- caves ------------
-        let cave_noise = Perlin::new(cfg.seed.wrapping_add(1234));
-        let cave_scale = 20.0;
-        let threshold = 0.8;
+        // let cave_noise = Perlin::new(cfg.seed.wrapping_add(1234));
+        // let cave_scale = 20.0;
+        // let threshold = 0.8;
 
-        let passage_fn = move |x: i32, y: i32, z: i32| -> bool {
-            if y <= 1 {
-                return false;
-            }
-            let n = cave_noise.get([
-                x as f64 / cave_scale,
-                y as f64 / cave_scale,
-                z as f64 / cave_scale,
-            ]);
-            (n + 1.0) * 0.5 > threshold
-        };
+        // let passage_fn = move |x: i32, y: i32, z: i32| -> bool {
+        //     if y <= 1 {
+        //         return false;
+        //     }
+        //     let n = cave_noise.get([
+        //         x as f64 / cave_scale,
+        //         y as f64 / cave_scale,
+        //         z as f64 / cave_scale,
+        //     ]);
+        //     (n + 1.0) * 0.5 > threshold
+        // };
 
         // Flip coordinates.
         // self.carve_passages(&cfg, &mut passage_fn);

@@ -19,78 +19,6 @@ impl State {
         // The instance is a handle to our GPU
         // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
 
-        #[cfg(feature = "cuda-octree")]
-        let (queue, device) = {
-            use ash::khr::{
-                external_memory, external_memory_fd, external_semaphore, external_semaphore_fd,
-            };
-            use wgpu::hal::api::Vulkan;
-            use wgpu::{
-                Backends, DeviceDescriptor, Features, Instance, InstanceFlags, Limits, MemoryHints,
-                PowerPreference, RequestAdapterOptions, Trace,
-            };
-
-            // 1) Create instance & pick adapter
-            let instance = Instance::new(&wgpu::InstanceDescriptor {
-                backends: Backends::all(),
-                ..Default::default()
-            });
-            let adapter = instance
-                .request_adapter(&RequestAdapterOptions {
-                    power_preference: PowerPreference::HighPerformance,
-                    compatible_surface: None,
-                    force_fallback_adapter: false,
-                })
-                .await
-                .unwrap();
-
-            // 2) Make sure the adapter supports push-constants & clear-texture:
-            let needed = Features::PUSH_CONSTANTS | Features::CLEAR_TEXTURE;
-            let supported = adapter.features();
-            if !supported.contains(needed) {
-                panic!(
-                    "Adapter is missing required features: {:?}",
-                    (needed - supported)
-                );
-            }
-
-            // 3) Build your DeviceDescriptor
-            let desc = DeviceDescriptor {
-                label: None,
-                required_features: needed,
-                required_limits: Limits {
-                    max_push_constant_size: 64,
-                    ..Limits::default()
-                },
-                trace: Trace::Off,
-                memory_hints: Default::default(),
-            };
-
-            // 4) Open as Vulkan, injecting external-memory-fd
-            let hal_adapter = unsafe { adapter.as_hal::<Vulkan>() }.unwrap();
-            let open_dev = unsafe {
-                hal_adapter
-                    .open_with_callback(
-                        desc.required_features,
-                        &MemoryHints::Performance,
-                        Some(Box::new(|args| {
-                            // enable the Vulkan extension for exporting FDs
-                            args.extensions.push(external_memory::NAME);
-                            args.extensions.push(external_memory_fd::NAME);
-                            args.extensions.push(external_semaphore::NAME);
-                            args.extensions.push(external_semaphore_fd::NAME);
-                        })),
-                    )
-                    .unwrap()
-            };
-            println!("Created vulkan device with external_memory_fd extension.");
-            // 5) Turn it back into a wgpu::Device + Queue
-            let (device, queue) =
-                unsafe { adapter.create_device_from_hal(open_dev, &desc).unwrap() };
-            (queue, device)
-        };
-
-        #[cfg(not(feature = "cuda-octree"))]
         let (queue, device) = {
             let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::all(),
@@ -182,32 +110,6 @@ impl State {
             self.filter_buffer.len,
         );
 
-        #[cfg(feature = "cuda-octree")]
-        let sem_fd = {
-            use ash::vk;
-
-            use wgpu::wgc::api::Vulkan; // Main State struct to hold all wgpu-related objects
-            let hal_queue_guard = unsafe { self.queue.as_hal::<Vulkan>() }
-                .expect("Must be running on the Vulkan backend to extract cuda texture!"); // 
-            let hal_queue: &wgpu_hal::vulkan::Queue = &*hal_queue_guard;
-
-            // Create an exportable (opaque-FD) VkSemaphore
-            let mut export_info = vk::ExportSemaphoreCreateInfo::default()
-                .handle_types(vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_FD);
-            let sem_info = vk::SemaphoreCreateInfo::default().push_next(&mut export_info);
-            let vk_semaphore = unsafe {
-                hal_queue
-                    .raw_device()
-                    .create_semaphore(&sem_info, None)
-                    .expect("Unable to create semaphore!")
-            }; // 
-
-            // Instruct wgpu-hal to signal that semaphore at queue submit
-            hal_queue.add_signal_semaphore(vk_semaphore, None);
-            println!("Created vulkan semaphore!");
-            vk_semaphore
-        };
-
         self.queue.submit(std::iter::once(encoder.finish()));
 
         let to_insert = rasterizer::texture::extract_texture_data(
@@ -217,95 +119,6 @@ impl State {
         )
         .await
         .unwrap();
-
-        // Try sending the texture to cuda
-        #[cfg(feature = "cuda-octree")]
-        unsafe {
-            use ash::vk;
-            use ash::vk::Handle;
-            use std::ffi::{c_int, c_uint};
-
-            use wgpu::wgc::api::Vulkan; // Main State struct to hold all wgpu-related objects
-
-            use std::ops::Deref;
-
-            let tex_fd = self
-                .rasterizer_state
-                .render_target
-                .texture
-                .as_hal::<Vulkan>()
-                .expect("Must be using a vulkan backend to extract cuda texture!");
-
-            let size = tex_fd.copy_size();
-            let vk_size = tex_fd.external_size().unwrap();
-            println!("Copy size: {:?}", size);
-
-            // let vk_device_memory: vk::DeviceMemory = *tex_fd.external_memory().unwrap();
-
-            let vk_device_memory: vk::DeviceMemory = if let Some(raw_block) = tex_fd.raw_block() {
-                *raw_block.memory()
-            } else if let Some(mem) = tex_fd.external_memory() {
-                mem
-            } else {
-                panic!("Texture does not have any memory bound to it!")
-            };
-
-            let dev = self.device.as_hal::<Vulkan>().unwrap();
-            let hal_device = dev.raw_device();
-            let hal_instance: &ash::Instance = dev.shared_instance().raw_instance();
-
-            let ex_mem_dev = ash::khr::external_memory_fd::Device::new(hal_instance, hal_device);
-
-            // Build your get-FD info
-            let get_fd_info = vk::MemoryGetFdInfoKHR::default()
-                .memory(vk_device_memory) // the VkDeviceMemory you obtained from your patched HAL
-                .handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD_KHR);
-
-            // Now call the method you saw in `crate::khr::external_memory_fd::Device`:
-            let mem_fd = unsafe {
-                ex_mem_dev
-                    .get_memory_fd(&get_fd_info)
-                    .expect("Could not get external memory.")
-            };
-
-            let fake_size = size.width * size.height * 4 * 4;
-            println!("fk: {}, real: {}", fake_size, vk_size);
-            // 4 i32s per texel.
-            // let res = octree_gpu::probe_cuda_import(
-            //     mem_fd,
-            //     vk_size,
-            //     0,
-            //     size.width as c_uint,
-            //     size.height as c_uint,
-            //     1,
-            //     0,
-            //     0x0a,
-            //     4,
-            // );
-
-            let bindings_info = octree_gpu::VulkanExtBindingsInfo {
-                rp_mem_fd: mem_fd,
-                rp_size: vk_size,
-                rp_width: size.width,
-                rp_height: size.height,
-                ..Default::default()
-            };
-            // Import into object.
-            let cu_obj = octree_gpu::init_bindings(&bindings_info as *const _, 1);
-            if cu_obj != std::ptr::null_mut() {
-                println!("Successfully bound!");
-            }
-            // println!("memory handle: {}", mem_fd);
-            // let res = octree_gpu::test_vk_texture(
-            //     mem_fd,
-            //     sem_fd.as_raw() as c_int,
-            //     size.width as c_int,
-            //     size.height as c_int,
-            //     vk_size,
-            //     0,
-            //     0,
-            // );
-        }
 
         let to_remove = self
             .rasterizer_state
