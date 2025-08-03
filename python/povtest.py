@@ -20,7 +20,7 @@ AGENT_CAMERA_TILT = -0.5
 camera_orientation = voxelsim.CameraOrientation.vertical_tilt_py(-0.5)
 # Renderer
 noise = voxelsim.NoiseParams.default_with_seed_py([0.0, 0.0, 0.0])
-renderer = voxelsim.AgentVisionRenderer(world, [400, 300], noise)
+renderer = voxelsim.AgentVisionRenderer(world, [200, 150], noise)
 
 # Client
 

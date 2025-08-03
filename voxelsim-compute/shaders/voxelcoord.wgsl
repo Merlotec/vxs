@@ -35,7 +35,7 @@ struct Noise6Params {
   lacunarity   : f32,       // e.g., 2.0
   gain         : f32,       // e.g., 0.5
   octaves      : u32,       // e.g., 4
-  _pad0        : u32,       // alignment padding
+  enabled       : u32,       // alignment padding
 }
 @group(0) @binding(0) var<uniform> noise6 : Noise6Params;
 
@@ -188,9 +188,9 @@ fn simplex6_fbm01(pos: vec3<f32>, seed: vec3<f32>) -> f32 {
 // Hence, the sampling distribution should be parameterised by the camera position.
 // So we parameterise a noise function basaed on the camera position. The seed must have a continuous effect on the noise function.
 fn coord_noise(coord: vec3<f32>, view_pos: vec3<f32>) -> vec3<f32> {
-    var dis = length(view_pos - coord);
-    var err = dis * dis;
-    var err_dir = normalize(coord - view_pos);
+    let dis = length(view_pos - coord);
+    let err = dis * dis;
+    let err_dir = normalize(coord - view_pos);
     return coord + err_dir * (simplex6_fbm01(coord, view_pos) * 0.4 * dis);            
 }
 
@@ -206,11 +206,15 @@ fn vs_main(
 ) -> VertexOutput {
     var out: VertexOutput;
     let camera_pos = camera.pos;
-    let instance_pos = vec3<f32>(instance.coord);
-    let noisy_pos = coord_noise(instance_pos, camera_pos);
-    let world_position = vec4<f32>(model.position + instance_pos, 1.0);
-    out.clip_position = camera.view_proj * world_position;
-    out.coord = round_to_coord(noisy_pos);
+    if noise6.enabled != 0 {    
+        let instance_pos = vec3<f32>(instance.coord);
+        let noisy_pos = coord_noise(instance_pos, camera_pos);
+        let world_position = vec4<f32>(model.position + instance_pos, 1.0);
+        out.clip_position = camera.view_proj * world_position;
+        out.coord = round_to_coord(noisy_pos);
+    } else {
+        out.coord = instance.coord;
+    }
     out.value = instance.value;
     return out;
 }
