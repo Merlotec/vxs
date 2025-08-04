@@ -85,71 +85,83 @@ impl State {
         filter_world: &VirtualGrid,
     ) -> Result<WorldChangeset, wgpu::SurfaceError> {
         let total_start = std::time::Instant::now();
-        // Get the current texture to render to from the swap chain.
-        //let output = self.surface.get_current_texture()?;
-        //let view = output
-        //    .texture
-        //    .create_view(&wgpu::TextureViewDescriptor::default());
+        
+        // Check if culling should be disabled via environment variable
+        let culling_disabled = std::env::var("DISABLE_CULLING")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        
+        let (use_culling, visible_count, cull_submission) = if culling_disabled {
+            println!("🚫 Frustum Culling: DISABLED (DISABLE_CULLING=1)");
+            (false, None, None)
+        } else {
+            // === PHASE 1: Frustum Culling ===
+            let culling_start = std::time::Instant::now();
 
-        // === PHASE 1: Frustum Culling ===
-        let culling_start = std::time::Instant::now();
+            // Encode frustum culling compute pass
+            let mut cull_encoder =
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Frustum Culling Encoder"),
+                    });
 
-        // Encode frustum culling compute pass
-        let mut cull_encoder =
+            self.rasterizer_state
+                .encode_frustum_culling(&mut cull_encoder, &self.queue, camera_matrix);
+
+            let cull_submission = self.queue.submit(std::iter::once(cull_encoder.finish()));
+
+            let culling_time = culling_start.elapsed();
+            println!(
+                "✂️  Frustum Culling: {:.2}ms",
+                culling_time.as_secs_f64() * 1000.0
+            );
+
+            // Wait for culling to complete
             self.device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Frustum Culling Encoder"),
-                });
+                .poll(wgpu::wgt::PollType::WaitForSubmissionIndex(
+                    cull_submission.clone(),
+                ))
+                .unwrap();
 
-        self.rasterizer_state
-            .encode_frustum_culling(&mut cull_encoder, &self.queue, camera_matrix);
+            // Read back visible count
+            let visible_count = self
+                .rasterizer_state
+                .frustum_culling
+                .get_visible_count_sync(&self.device, &self.queue);
+            let total_instances = self.rasterizer_state.instance_count();
 
-        let cull_submission = self.queue.submit(std::iter::once(cull_encoder.finish()));
+            println!(
+                "    📊 Culled: {} → {} instances ({:.1}% reduction)",
+                total_instances,
+                visible_count,
+                (1.0 - visible_count as f32 / total_instances as f32) * 100.0
+            );
 
-        let culling_time = culling_start.elapsed();
-        println!(
-            "✂️  Frustum Culling: {:.2}ms",
-            culling_time.as_secs_f64() * 1000.0
-        );
-
-        // === PHASE 2: GPU Command Encoding ===
-        let encoding_start = std::time::Instant::now();
-
-        // Wait for culling to complete
-        self.device
-            .poll(wgpu::wgt::PollType::WaitForSubmissionIndex(
-                cull_submission.clone(),
-            ))
-            .unwrap();
-
-        // Read back visible count
-        let visible_count = self
-            .rasterizer_state
-            .frustum_culling
-            .get_visible_count_sync(&self.device, &self.queue);
-        let total_instances = self.rasterizer_state.instance_count();
-
-        println!(
-            "    📊 Culled: {} → {} instances ({:.1}% reduction)",
-            total_instances,
-            visible_count,
-            (1.0 - visible_count as f32 / total_instances as f32) * 100.0
-        );
-
-        // Use culling result if reasonable, otherwise fall back
-        let use_culling = visible_count > 0 && visible_count <= total_instances;
+            // Use culling result if reasonable, otherwise fall back
+            let use_culling_result = visible_count > 0 && visible_count <= total_instances;
+            (use_culling_result, Some(visible_count), Some(cull_submission))
+        };
 
         if !use_culling {
-            println!(
-                "    ⚠️  Culling result suspicious ({} visible) - using original rendering",
-                visible_count
-            );
+            if let Some(count) = visible_count {
+                println!(
+                    "    ⚠️  Culling result suspicious ({} visible) - using original rendering",
+                    count
+                );
+            } else {
+                println!(
+                    "    📋 Using original rendering (culling disabled)"
+                );
+            }
         } else {
             println!(
                 "    ✅ Using {} culled instances for rendering",
-                visible_count
+                visible_count.unwrap_or(0)
             );
         }
+
+        // === PHASE 2: GPU Command Encoding ===
+        let encoding_start = std::time::Instant::now();
 
         // A command encoder builds a command buffer that we can send to the GPU.
         let mut encoder = self
@@ -164,7 +176,7 @@ impl State {
             camera_matrix,
             use_culling,
             if use_culling {
-                Some(visible_count)
+                visible_count
             } else {
                 None
             },
@@ -225,12 +237,11 @@ impl State {
         let polling_start = std::time::Instant::now();
 
         // Wait for all specific submissions to complete
-        self.staging_pool.wait_for_submissions(&[
-            cull_submission,
-            render_submission,
-            texture_submission,
-            filter_submission,
-        ]);
+        let mut submissions = vec![render_submission, texture_submission, filter_submission];
+        if let Some(cull_sub) = cull_submission {
+            submissions.push(cull_sub);
+        }
+        self.staging_pool.wait_for_submissions(&submissions);
 
         let polling_time = polling_start.elapsed();
         println!(
