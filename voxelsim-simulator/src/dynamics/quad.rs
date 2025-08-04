@@ -15,8 +15,10 @@ pub struct QuadDynamics {
     quad: Quadrotor,
     bounding_box: Vector3<f64>,
     pos_params: PosPIDParams,
+    moving_pos_params: PosPIDParams,
     pos_state: PosPIDState,
     rate_params: RatePIDParams,
+    moving_rate_params: RatePIDParams,
     rate_state: RatePIDState,
 }
 
@@ -52,8 +54,10 @@ impl QuadDynamics {
             quad,
             bounding_box: bounding_box,
             pos_params: Default::default(),
+            moving_pos_params: PosPIDParams::default_moving(),
             pos_state: Default::default(),
             rate_params: Default::default(),
+            moving_rate_params: RatePIDParams::default_moving(),
             rate_state: Default::default(),
         }
     }
@@ -67,18 +71,36 @@ impl AgentDynamics for QuadDynamics {
         chaser: &ChaseTarget,
         delta: f64,
     ) {
-        let (t_pos, t_vel, t_acc) = match chaser.progress {
+        let (t_pos, t_vel, t_acc, pos_params, rate_params) = match chaser.progress {
             ActionProgress::ProgressTo(p) => {
                 if let Some(action) = &mut agent.action {
                     action.trajectory.progress = p;
                 }
-                (chaser.pos, chaser.vel, Vector3::zeros())
+                (
+                    chaser.pos,
+                    chaser.vel,
+                    Vector3::zeros(),
+                    self.moving_pos_params,
+                    self.moving_rate_params,
+                )
             }
             ActionProgress::Complete => {
                 agent.action = None;
-                (agent.pos, Vector3::zeros(), Vector3::zeros())
+                (
+                    agent.pos,
+                    Vector3::zeros(),
+                    Vector3::zeros(),
+                    self.pos_params,
+                    self.rate_params,
+                )
             }
-            ActionProgress::Hold => (agent.pos, Vector3::zeros(), Vector3::zeros()),
+            ActionProgress::Hold => (
+                agent.pos,
+                Vector3::zeros(),
+                Vector3::zeros(),
+                self.pos_params,
+                self.rate_params,
+            ),
         };
         self.quad.position = agent.pos.cast::<f32>();
         self.quad.velocity = agent.vel.cast::<f32>();
@@ -89,7 +111,7 @@ impl AgentDynamics for QuadDynamics {
             t_pos,
             t_vel,
             t_acc,
-            &self.pos_params,
+            &pos_params,
             &mut self.pos_state,
             delta,
         );
@@ -114,7 +136,7 @@ impl AgentDynamics for QuadDynamics {
 
         let rate_error = rate_sp - self.quad.angular_velocity.cast::<f64>();
         let raw_torque =
-            drone::control_torque(rate_error, &mut self.rate_state, &self.rate_params, delta);
+            drone::control_torque(rate_error, &mut self.rate_state, &rate_params, delta);
 
         let mi = self.rate_params.max_integral;
         self.rate_state.integral.x = self.rate_state.integral.x.clamp(-mi.x, mi.x);
