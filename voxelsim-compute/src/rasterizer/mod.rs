@@ -290,9 +290,9 @@ impl RasterizerPipeline {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba32Sint,
+                    format: wgpu::TextureFormat::R8Uint,
                     blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
+                    write_mask: wgpu::ColorWrites::empty(),
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
@@ -371,7 +371,7 @@ impl RasterizerState {
         let filter_render_target = TextureSet::create_render_target_texture(
             device,
             texture_size,
-            wgpu::TextureFormat::Rgba32Sint,
+            wgpu::TextureFormat::R8Uint,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             Self::RENDER_TEXTURE_LABEL,
         );
