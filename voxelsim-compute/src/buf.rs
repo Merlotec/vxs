@@ -111,26 +111,29 @@ impl StagingBufferPool {
 
     /// Wait for specific submissions to complete with individual timing
     pub fn wait_for_submissions(&self, submission_indices: &[wgpu::SubmissionIndex]) {
-        let submission_names = ["culling", "render", "texture", "filter"];
-        
+        // let submission_names = ["culling", "render", "texture", "filter"];
+
         for (i, index) in submission_indices.iter().enumerate() {
-            let name = submission_names.get(i).unwrap_or(&"unknown");
-            let start = std::time::Instant::now();
-            
+            // let name = submission_names.get(i).unwrap_or(&"unknown");
+            // let start = std::time::Instant::now();
+
             self.device
                 .poll(wgpu::wgt::PollType::WaitForSubmissionIndex(index.clone()))
                 .unwrap();
-                
-            let duration = start.elapsed();
-            println!("    ⏲️  {} submission: {:.2}ms", name, duration.as_secs_f64() * 1000.0);
+
+            // let duration = start.elapsed();
+            // println!("    ⏲️  {} submission: {:.2}ms", name, duration.as_secs_f64() * 1000.0);
         }
     }
 
     /// Execute multiple batched read operations in parallel
-    pub async fn execute_batched_reads_parallel(&mut self, operations: Vec<BatchedReadOperation>) -> Vec<Result<Vec<u8>, String>> {
+    pub async fn execute_batched_reads_parallel(
+        &mut self,
+        operations: Vec<BatchedReadOperation>,
+    ) -> Vec<Result<Vec<u8>, String>> {
         // Create futures for all operations
         let mut futures = Vec::new();
-        
+
         for operation in operations {
             // Create a future that doesn't hold any references to self
             let future = async move {
@@ -139,23 +142,33 @@ impl StagingBufferPool {
                     let buffer_slice = operation.staging_buffer.slice(..);
                     let data = buffer_slice.get_mapped_range();
                     let result = data.to_vec();
-                    
+
                     drop(data);
                     operation.staging_buffer.unmap();
-                    
+
                     // Return the buffer and metadata for cleanup
-                    Ok((result, operation.staging_buffer, operation.size, operation.usage))
+                    Ok((
+                        result,
+                        operation.staging_buffer,
+                        operation.size,
+                        operation.usage,
+                    ))
                 } else {
                     // Return the buffer and metadata for cleanup
-                    Err(("Failed to read buffer from GPU".to_string(), operation.staging_buffer, operation.size, operation.usage))
+                    Err((
+                        "Failed to read buffer from GPU".to_string(),
+                        operation.staging_buffer,
+                        operation.size,
+                        operation.usage,
+                    ))
                 }
             };
             futures.push(future);
         }
-        
+
         // Await all futures in parallel using futures crate
         let results = futures::future::join_all(futures).await;
-        
+
         // Process results and return buffers to pool
         let mut final_results = Vec::new();
         for result in results {
@@ -170,7 +183,7 @@ impl StagingBufferPool {
                 }
             }
         }
-        
+
         final_results
     }
 

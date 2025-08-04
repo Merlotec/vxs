@@ -85,83 +85,71 @@ impl State {
         filter_world: &VirtualGrid,
     ) -> Result<WorldChangeset, wgpu::SurfaceError> {
         let total_start = std::time::Instant::now();
-        
-        // Check if culling should be disabled via environment variable
-        let culling_disabled = std::env::var("DISABLE_CULLING")
-            .map(|v| v == "1")
-            .unwrap_or(false);
-        
-        let (use_culling, visible_count, cull_submission) = if culling_disabled {
-            println!("🚫 Frustum Culling: DISABLED (DISABLE_CULLING=1)");
-            (false, None, None)
-        } else {
-            // === PHASE 1: Frustum Culling ===
-            let culling_start = std::time::Instant::now();
+        // Get the current texture to render to from the swap chain.
+        //let output = self.surface.get_current_texture()?;
+        //let view = output
+        //    .texture
+        //    .create_view(&wgpu::TextureViewDescriptor::default());
 
-            // Encode frustum culling compute pass
-            let mut cull_encoder =
-                self.device
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("Frustum Culling Encoder"),
-                    });
+        // === PHASE 1: Frustum Culling ===
+        // let culling_start = std::time::Instant::now();
 
-            self.rasterizer_state
-                .encode_frustum_culling(&mut cull_encoder, &self.queue, camera_matrix);
-
-            let cull_submission = self.queue.submit(std::iter::once(cull_encoder.finish()));
-
-            let culling_time = culling_start.elapsed();
-            println!(
-                "✂️  Frustum Culling: {:.2}ms",
-                culling_time.as_secs_f64() * 1000.0
-            );
-
-            // Wait for culling to complete
+        // Encode frustum culling compute pass
+        let mut cull_encoder =
             self.device
-                .poll(wgpu::wgt::PollType::WaitForSubmissionIndex(
-                    cull_submission.clone(),
-                ))
-                .unwrap();
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Frustum Culling Encoder"),
+                });
 
-            // Read back visible count
-            let visible_count = self
-                .rasterizer_state
-                .frustum_culling
-                .get_visible_count_sync(&self.device, &self.queue);
-            let total_instances = self.rasterizer_state.instance_count();
+        self.rasterizer_state
+            .encode_frustum_culling(&mut cull_encoder, &self.queue, camera_matrix);
 
-            println!(
-                "    📊 Culled: {} → {} instances ({:.1}% reduction)",
-                total_instances,
-                visible_count,
-                (1.0 - visible_count as f32 / total_instances as f32) * 100.0
-            );
+        let cull_submission = self.queue.submit(std::iter::once(cull_encoder.finish()));
 
-            // Use culling result if reasonable, otherwise fall back
-            let use_culling_result = visible_count > 0 && visible_count <= total_instances;
-            (use_culling_result, Some(visible_count), Some(cull_submission))
-        };
-
-        if !use_culling {
-            if let Some(count) = visible_count {
-                println!(
-                    "    ⚠️  Culling result suspicious ({} visible) - using original rendering",
-                    count
-                );
-            } else {
-                println!(
-                    "    📋 Using original rendering (culling disabled)"
-                );
-            }
-        } else {
-            println!(
-                "    ✅ Using {} culled instances for rendering",
-                visible_count.unwrap_or(0)
-            );
-        }
+        // let culling_time = culling_start.elapsed();
+        // println!(
+        //     "✂️  Frustum Culling: {:.2}ms",
+        //     culling_time.as_secs_f64() * 1000.0
+        // );
 
         // === PHASE 2: GPU Command Encoding ===
         let encoding_start = std::time::Instant::now();
+
+        // Wait for culling to complete
+        self.device
+            .poll(wgpu::wgt::PollType::WaitForSubmissionIndex(
+                cull_submission.clone(),
+            ))
+            .unwrap();
+
+        // Read back visible count
+        let visible_count = self
+            .rasterizer_state
+            .frustum_culling
+            .get_visible_count_sync(&self.device, &self.queue);
+        let total_instances = self.rasterizer_state.instance_count();
+
+        // println!(
+        //     "    📊 Culled: {} → {} instances ({:.1}% reduction)",
+        //     total_instances,
+        //     visible_count,
+        //     (1.0 - visible_count as f32 / total_instances as f32) * 100.0
+        // );
+
+        // Use culling result if reasonable, otherwise fall back
+        let use_culling = visible_count > 0 && visible_count <= total_instances;
+
+        // if !use_culling {
+        //     println!(
+        //         "    ⚠️  Culling result suspicious ({} visible) - using original rendering",
+        //         visible_count
+        //     );
+        // } else {
+        //     println!(
+        //         "    ✅ Using {} culled instances for rendering",
+        //         visible_count
+        //     );
+        // }
 
         // A command encoder builds a command buffer that we can send to the GPU.
         let mut encoder = self
@@ -176,7 +164,7 @@ impl State {
             camera_matrix,
             use_culling,
             if use_culling {
-                visible_count
+                Some(visible_count)
             } else {
                 None
             },
@@ -203,11 +191,11 @@ impl State {
         // Submit the main rendering commands and capture the submission index
         let render_submission = self.queue.submit(std::iter::once(encoder.finish()));
 
-        let encoding_time = encoding_start.elapsed();
-        println!(
-            "📋 GPU Command Encoding: {:.2}ms",
-            encoding_time.as_secs_f64() * 1000.0
-        );
+        // let encoding_time = encoding_start.elapsed();
+        // println!(
+        //     "📋 GPU Command Encoding: {:.2}ms",
+        //     encoding_time.as_secs_f64() * 1000.0
+        // );
 
         // === PHASE 2: Prepare Read Operations ===
         let prepare_start = std::time::Instant::now();
@@ -223,34 +211,35 @@ impl State {
             true,
         );
 
-        let prepare_time = prepare_start.elapsed();
-        println!(
-            "⚙️  Read Operations Setup: {:.2}ms",
-            prepare_time.as_secs_f64() * 1000.0
-        );
+        // let prepare_time = prepare_start.elapsed();
+        // println!(
+        //     "⚙️  Read Operations Setup: {:.2}ms",
+        //     prepare_time.as_secs_f64() * 1000.0
+        // );
 
         // Collect submission indices before moving the operations
         let texture_submission = texture_op.submission_index.clone();
         let filter_submission = filter_op.submission_index.clone();
 
         // === PHASE 3: GPU Polling ===
-        let polling_start = std::time::Instant::now();
+        // let polling_start = std::time::Instant::now();
 
         // Wait for all specific submissions to complete
-        let mut submissions = vec![render_submission, texture_submission, filter_submission];
-        if let Some(cull_sub) = cull_submission {
-            submissions.push(cull_sub);
-        }
-        self.staging_pool.wait_for_submissions(&submissions);
+        self.staging_pool.wait_for_submissions(&[
+            cull_submission,
+            render_submission,
+            texture_submission,
+            filter_submission,
+        ]);
 
-        let polling_time = polling_start.elapsed();
-        println!(
-            "⏳ GPU Submission Polling: {:.2}ms",
-            polling_time.as_secs_f64() * 1000.0
-        );
+        // let polling_time = polling_start.elapsed();
+        // println!(
+        //     "⏳ GPU Submission Polling: {:.2}ms",
+        //     polling_time.as_secs_f64() * 1000.0
+        // );
 
-        // === PHASE 4: Parallel Buffer Reads ===
-        let parallel_read_start = std::time::Instant::now();
+        // // === PHASE 4: Parallel Buffer Reads ===
+        // let parallel_read_start = std::time::Instant::now();
 
         // Execute both read operations in parallel
         let results = self
@@ -258,11 +247,11 @@ impl State {
             .execute_batched_reads_parallel(vec![texture_op, filter_op])
             .await;
 
-        let parallel_read_time = parallel_read_start.elapsed();
-        println!(
-            "🚀 Parallel Buffer Reads: {:.2}ms",
-            parallel_read_time.as_secs_f64() * 1000.0
-        );
+        // let parallel_read_time = parallel_read_start.elapsed();
+        // println!(
+        //     "🚀 Parallel Buffer Reads: {:.2}ms",
+        //     parallel_read_time.as_secs_f64() * 1000.0
+        // );
 
         // === PHASE 5: Data Processing ===
         let processing_start = std::time::Instant::now();
@@ -292,37 +281,37 @@ impl State {
         let to_remove = output_data_slice[..count as usize].to_vec();
 
         let processing_time = processing_start.elapsed();
-        println!(
-            "🔄 Data Processing: {:.2}ms",
-            processing_time.as_secs_f64() * 1000.0
-        );
+        // println!(
+        //     "🔄 Data Processing: {:.2}ms",
+        //     processing_time.as_secs_f64() * 1000.0
+        // );
 
-        // === PHASE 6: Cleanup ===
-        let cleanup_start = std::time::Instant::now();
+        // // === PHASE 6: Cleanup ===
+        // let cleanup_start = std::time::Instant::now();
 
-        self.rasterizer_state
-            .filter
-            .clear_buffers(&self.device, &self.queue)
-            .await;
+        // self.rasterizer_state
+        //     .filter
+        //     .clear_buffers(&self.device, &self.queue)
+        //     .await;
 
-        let cleanup_time = cleanup_start.elapsed();
-        println!(
-            "🧹 Buffer Cleanup: {:.2}ms",
-            cleanup_time.as_secs_f64() * 1000.0
-        );
+        // let cleanup_time = cleanup_start.elapsed();
+        // println!(
+        //     "🧹 Buffer Cleanup: {:.2}ms",
+        //     cleanup_time.as_secs_f64() * 1000.0
+        // );
 
-        // === TOTAL PIPELINE TIME ===
-        let total_time = total_start.elapsed();
-        println!(
-            "🏁 TOTAL PIPELINE: {:.2}ms",
-            total_time.as_secs_f64() * 1000.0
-        );
-        println!(
-            "📊 Items: {} to_insert, {} to_remove",
-            to_insert.len(),
-            to_remove.len()
-        );
-        println!("═══════════════════════════════════════");
+        // // === TOTAL PIPELINE TIME ===
+        // let total_time = total_start.elapsed();
+        // println!(
+        //     "🏁 TOTAL PIPELINE: {:.2}ms",
+        //     total_time.as_secs_f64() * 1000.0
+        // );
+        // println!(
+        //     "📊 Items: {} to_insert, {} to_remove",
+        //     to_insert.len(),
+        //     to_remove.len()
+        // );
+        // println!("═══════════════════════════════════════");
 
         Ok(WorldChangeset {
             to_remove,
