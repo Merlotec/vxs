@@ -1,8 +1,8 @@
+use crate::buf::StagingBufferPool;
 use crate::rasterizer::RasterizerState;
 use crate::rasterizer::camera::CameraMatrix;
 use crate::rasterizer::noise::NoiseParams;
 use crate::rasterizer::{CellInstance, InstanceBuffer};
-use crate::buf::StagingBufferPool;
 use nalgebra::Vector2;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use voxelsim::viewport::{VirtualCell, VirtualGrid};
@@ -48,7 +48,7 @@ impl State {
                     // WebGL doesn't support all of wgpu's features, so if
                     // we're building for the web we'll have to disable some.
                     required_limits: wgpu::Limits {
-                        max_push_constant_size: 76, // Size of mat4x4<f32>
+                        max_push_constant_size: 80, // Size of mat4x4<f32>
                         ..wgpu::Limits::default()
                     },
                     label: None,
@@ -91,9 +91,66 @@ impl State {
         //    .texture
         //    .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // === PHASE 1: GPU Command Encoding ===
+        // === PHASE 1: Frustum Culling ===
+        let culling_start = std::time::Instant::now();
+
+        // Encode frustum culling compute pass
+        let mut cull_encoder =
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Frustum Culling Encoder"),
+                });
+
+        self.rasterizer_state
+            .encode_frustum_culling(&mut cull_encoder, &self.queue, camera_matrix);
+
+        let cull_submission = self.queue.submit(std::iter::once(cull_encoder.finish()));
+
+        let culling_time = culling_start.elapsed();
+        println!(
+            "✂️  Frustum Culling: {:.2}ms",
+            culling_time.as_secs_f64() * 1000.0
+        );
+
+        // === PHASE 2: GPU Command Encoding ===
         let encoding_start = std::time::Instant::now();
-        
+
+        // Wait for culling to complete
+        self.device
+            .poll(wgpu::wgt::PollType::WaitForSubmissionIndex(
+                cull_submission.clone(),
+            ))
+            .unwrap();
+
+        // Read back visible count
+        let visible_count = self
+            .rasterizer_state
+            .frustum_culling
+            .get_visible_count_sync(&self.device, &self.queue);
+        let total_instances = self.rasterizer_state.instance_count();
+
+        println!(
+            "    📊 Culled: {} → {} instances ({:.1}% reduction)",
+            total_instances,
+            visible_count,
+            (1.0 - visible_count as f32 / total_instances as f32) * 100.0
+        );
+
+        // Use culling result if reasonable, otherwise fall back
+        let use_culling = visible_count > 0 && visible_count <= total_instances;
+
+        if !use_culling {
+            println!(
+                "    ⚠️  Culling result suspicious ({} visible) - using original rendering",
+                visible_count
+            );
+        } else {
+            println!(
+                "    ✅ Using {} culled instances for rendering",
+                visible_count
+            );
+        }
+
         // A command encoder builds a command buffer that we can send to the GPU.
         let mut encoder = self
             .device
@@ -101,8 +158,17 @@ impl State {
                 label: Some("Rasterizer Encoder"),
             });
 
-        self.rasterizer_state
-            .encode_rasterizer(&mut encoder, camera_matrix);
+        // Render with appropriate instance buffer
+        self.rasterizer_state.encode_rasterizer(
+            &mut encoder,
+            camera_matrix,
+            use_culling,
+            if use_culling {
+                Some(visible_count)
+            } else {
+                None
+            },
+        );
 
         self.queue.submit(std::iter::once(encoder.finish()));
         //output.present();
@@ -124,27 +190,32 @@ impl State {
 
         // Submit the main rendering commands and capture the submission index
         let render_submission = self.queue.submit(std::iter::once(encoder.finish()));
-        
+
         let encoding_time = encoding_start.elapsed();
-        println!("📋 GPU Command Encoding: {:.2}ms", encoding_time.as_secs_f64() * 1000.0);
+        println!(
+            "📋 GPU Command Encoding: {:.2}ms",
+            encoding_time.as_secs_f64() * 1000.0
+        );
 
         // === PHASE 2: Prepare Read Operations ===
         let prepare_start = std::time::Instant::now();
-        
+
         // Prepare both operations without polling
-        let texture_op = self.staging_pool.prepare_texture_extraction(
-            &self.queue,
-            &self.rasterizer_state.render_target.texture,
-        );
+        let texture_op = self
+            .staging_pool
+            .prepare_texture_extraction(&self.queue, &self.rasterizer_state.render_target.texture);
 
         let filter_op = self.staging_pool.prepare_buffer_read(
             &self.queue,
             &self.rasterizer_state.filter.output_buffer,
             true,
         );
-        
+
         let prepare_time = prepare_start.elapsed();
-        println!("⚙️  Read Operations Setup: {:.2}ms", prepare_time.as_secs_f64() * 1000.0);
+        println!(
+            "⚙️  Read Operations Setup: {:.2}ms",
+            prepare_time.as_secs_f64() * 1000.0
+        );
 
         // Collect submission indices before moving the operations
         let texture_submission = texture_op.submission_index.clone();
@@ -152,34 +223,46 @@ impl State {
 
         // === PHASE 3: GPU Polling ===
         let polling_start = std::time::Instant::now();
-        
+
         // Wait for all specific submissions to complete
         self.staging_pool.wait_for_submissions(&[
+            cull_submission,
             render_submission,
             texture_submission,
             filter_submission,
         ]);
-        
+
         let polling_time = polling_start.elapsed();
-        println!("⏳ GPU Submission Polling: {:.2}ms", polling_time.as_secs_f64() * 1000.0);
+        println!(
+            "⏳ GPU Submission Polling: {:.2}ms",
+            polling_time.as_secs_f64() * 1000.0
+        );
 
         // === PHASE 4: Parallel Buffer Reads ===
         let parallel_read_start = std::time::Instant::now();
-        
+
         // Execute both read operations in parallel
-        let results = self.staging_pool.execute_batched_reads_parallel(vec![texture_op, filter_op]).await;
-        
+        let results = self
+            .staging_pool
+            .execute_batched_reads_parallel(vec![texture_op, filter_op])
+            .await;
+
         let parallel_read_time = parallel_read_start.elapsed();
-        println!("🚀 Parallel Buffer Reads: {:.2}ms", parallel_read_time.as_secs_f64() * 1000.0);
-        
+        println!(
+            "🚀 Parallel Buffer Reads: {:.2}ms",
+            parallel_read_time.as_secs_f64() * 1000.0
+        );
+
         // === PHASE 5: Data Processing ===
         let processing_start = std::time::Instant::now();
-        
+
         // Extract results
-        let to_insert_raw = results[0].as_ref()
+        let to_insert_raw = results[0]
+            .as_ref()
             .unwrap_or_else(|e| panic!("Texture extraction failed: {}", e))
             .clone();
-        let filter_data = results[1].as_ref()
+        let filter_data = results[1]
+            .as_ref()
             .unwrap_or_else(|e| panic!("Filter buffer read failed: {}", e))
             .clone();
 
@@ -196,9 +279,12 @@ impl State {
         let count = u32::from_le_bytes(filter_data[0..4].try_into().unwrap());
         let output_data_slice: &[voxelsim::Coord] = bytemuck::cast_slice(&filter_data[4..]);
         let to_remove = output_data_slice[..count as usize].to_vec();
-        
+
         let processing_time = processing_start.elapsed();
-        println!("🔄 Data Processing: {:.2}ms", processing_time.as_secs_f64() * 1000.0);
+        println!(
+            "🔄 Data Processing: {:.2}ms",
+            processing_time.as_secs_f64() * 1000.0
+        );
 
         // === PHASE 6: Cleanup ===
         let cleanup_start = std::time::Instant::now();
@@ -207,14 +293,24 @@ impl State {
             .filter
             .clear_buffers(&self.device, &self.queue)
             .await;
-            
+
         let cleanup_time = cleanup_start.elapsed();
-        println!("🧹 Buffer Cleanup: {:.2}ms", cleanup_time.as_secs_f64() * 1000.0);
+        println!(
+            "🧹 Buffer Cleanup: {:.2}ms",
+            cleanup_time.as_secs_f64() * 1000.0
+        );
 
         // === TOTAL PIPELINE TIME ===
         let total_time = total_start.elapsed();
-        println!("🏁 TOTAL PIPELINE: {:.2}ms", total_time.as_secs_f64() * 1000.0);
-        println!("📊 Items: {} to_insert, {} to_remove", to_insert.len(), to_remove.len());
+        println!(
+            "🏁 TOTAL PIPELINE: {:.2}ms",
+            total_time.as_secs_f64() * 1000.0
+        );
+        println!(
+            "📊 Items: {} to_insert, {} to_remove",
+            to_insert.len(),
+            to_remove.len()
+        );
         println!("═══════════════════════════════════════");
 
         Ok(WorldChangeset {

@@ -1,9 +1,11 @@
 pub mod camera;
+pub mod culling;
 pub mod filter;
 pub mod noise;
 pub mod texture;
 
 use crate::rasterizer::{
+    culling::FrustumCulling,
     filter::FilterBindings,
     noise::{NoiseBuffer, NoiseParams},
     texture::TextureSet,
@@ -114,7 +116,7 @@ impl CellInstance {
                 wgpu::VertexAttribute {
                     offset: 0,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Sint32x4,
+                    format: wgpu::VertexFormat::Sint32x3,  // Changed from x4 to x3 to match Vector3<i32>
                 },
                 wgpu::VertexAttribute {
                     offset: std::mem::size_of::<[i32; 3]>() as wgpu::BufferAddress,
@@ -129,7 +131,7 @@ impl CellInstance {
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Instance Buffer"),
             size: (std::mem::size_of::<Self>() * len) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
@@ -177,7 +179,7 @@ impl CellInstance {
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Instance Buffer"),
             contents: bytemuck::cast_slice(&instance_data),
-            usage: wgpu::BufferUsages::VERTEX,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         });
 
         InstanceBuffer {
@@ -327,6 +329,7 @@ pub struct RasterizerState {
     instances: InstanceBuffer,
     pub filter: FilterBindings,
     pub noise: NoiseBuffer,
+    pub frustum_culling: FrustumCulling,
     rasterizer_pipeline: RasterizerPipeline,
     filter_pipeline: RasterizerPipeline,
     depth: TextureSet,
@@ -338,6 +341,14 @@ pub struct RasterizerState {
 impl RasterizerState {
     const DEPTH_TEXTURE_LABEL: &'static str = "DEPTH_TEXTURE_LABEL";
     const RENDER_TEXTURE_LABEL: &'static str = "RENDER_TEXTURE_LABEL";
+
+    pub fn instance_count(&self) -> u32 {
+        self.instances.len
+    }
+    
+    pub fn instances_buffer(&self) -> &wgpu::Buffer {
+        &self.instances.buf
+    }
 
     pub fn create(
         device: &wgpu::Device,
@@ -378,24 +389,47 @@ impl RasterizerState {
 
         let noise_buffer = NoiseBuffer::create_buffer(device, noise);
 
+        // Create frustum culling system with a generous buffer size
+        let max_instances = (instances.len * 2).max(10000); // Allow for growth
+        let mut frustum_culling = FrustumCulling::new(device, max_instances);
+        frustum_culling.create_bind_group(device, &instances.buf);
+
         Self {
             cube_buffer,
             instances,
             filter,
+            noise: noise_buffer,
+            frustum_culling,
             rasterizer_pipeline,
             filter_pipeline,
             depth,
             render_target,
             depth_sampler,
             filter_render_target,
-            noise: noise_buffer,
         }
+    }
+
+    pub fn encode_frustum_culling(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+        camera_uniform: &CameraMatrix,
+    ) {
+        // Pass the camera matrix directly (matches voxelcoord.wgsl approach)
+        self.frustum_culling.dispatch_culling(
+            encoder,
+            queue,
+            camera_uniform,
+            self.instances.len,
+        );
     }
 
     pub fn encode_rasterizer(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         camera_uniform: &CameraMatrix, // Pass camera data directly
+        use_culled_instances: bool,
+        visible_count: Option<u32>,
     ) {
         let view = &self.render_target.view;
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -435,15 +469,22 @@ impl RasterizerState {
             bytemuck::bytes_of(camera_uniform),
         );
 
-        // The rest of the drawing logic remains the same
+        // The rest of the drawing logic - choose between original and culled instances
         render_pass.set_vertex_buffer(0, self.cube_buffer.vertex.slice(..));
-        render_pass.set_vertex_buffer(1, self.instances.buf.slice(..));
+        
+        let (instance_buffer, instance_count) = if use_culled_instances {
+            (&self.frustum_culling.culled_instance_buffer, visible_count.unwrap_or(0))
+        } else {
+            (&self.instances.buf, self.instances.len)
+        };
+        
+        render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
         render_pass.set_index_buffer(self.cube_buffer.index.slice(..), wgpu::IndexFormat::Uint16);
-
+        
         render_pass.draw_indexed(
             0..Vertex::CUBE_INDICES.len() as u32,
             0,
-            0..self.instances.len,
+            0..instance_count,
         );
     }
 
