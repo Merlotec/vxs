@@ -111,7 +111,7 @@ impl StagingBufferPool {
 
     /// Wait for specific submissions to complete with individual timing
     pub fn wait_for_submissions(&self, submission_indices: &[wgpu::SubmissionIndex]) {
-        let submission_names = ["render", "texture", "filter"];
+        let submission_names = ["culling", "render", "texture", "filter"];
         
         for (i, index) in submission_indices.iter().enumerate() {
             let name = submission_names.get(i).unwrap_or(&"unknown");
