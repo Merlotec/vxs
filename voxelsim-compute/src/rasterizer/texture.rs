@@ -99,6 +99,165 @@ pub struct CellTexel {
 
 use voxelsim::Coord;
 use wgpu::ImageSubresourceRange;
+use crate::buf::StagingBufferPool;
+use futures_intrusive::channel::shared::oneshot_channel;
+
+use crate::buf::BatchedReadOperation;
+
+impl StagingBufferPool {
+    /// Prepare a texture extraction operation without polling
+    pub fn prepare_texture_extraction(
+        &mut self,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+    ) -> BatchedReadOperation {
+        let texture_format = texture.format();
+        let (block_width, block_height) = texture_format.block_dimensions();
+        let bytes_per_block = texture_format.block_copy_size(None).unwrap();
+
+        let buffer_size = wgpu::util::align_to(
+            texture.width() / block_width * bytes_per_block,
+            wgpu::COPY_BYTES_PER_ROW_ALIGNMENT,
+        ) * (texture.height() / block_height);
+
+        let usage = wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ;
+
+        // Get or create a buffer from the pool
+        let output_buffer = self.get_or_create_buffer(buffer_size as u64, usage);
+
+        // Issue the copy command
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Batched Texture-to-Buffer Encoder"),
+        });
+
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &output_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(wgpu::util::align_to(
+                        texture.width() / block_width * bytes_per_block,
+                        wgpu::COPY_BYTES_PER_ROW_ALIGNMENT,
+                    )),
+                    rows_per_image: None,
+                },
+            },
+            texture.size(),
+        );
+
+        encoder.clear_texture(texture, &ImageSubresourceRange::default());
+
+        // Submit and capture submission index
+        let submission_index = queue.submit(Some(encoder.finish()));
+        
+        let buffer_slice = output_buffer.slice(..);
+        let (sender, receiver) = oneshot_channel();
+        
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+
+        BatchedReadOperation {
+            staging_buffer: output_buffer,
+            size: buffer_size as u64,
+            usage,
+            receiver,
+            submission_index,
+        }
+    }
+
+    pub async fn extract_texture_data<T>(
+        &mut self,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+    ) -> Result<Vec<T>, wgpu::Error>
+    where
+        T: Copy,
+    {
+        let texture_format = texture.format();
+        let (block_width, block_height) = texture_format.block_dimensions();
+        let bytes_per_block = texture_format.block_copy_size(None).unwrap();
+
+        let buffer_size = wgpu::util::align_to(
+            texture.width() / block_width * bytes_per_block,
+            wgpu::COPY_BYTES_PER_ROW_ALIGNMENT,
+        ) * (texture.height() / block_height);
+
+        let usage = wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ;
+
+        // Get or create a buffer from the pool
+        let output_buffer = self.get_or_create_buffer(buffer_size as u64, usage);
+
+        // Issue the copy command
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Texture-to-Buffer Encoder"),
+        });
+
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &output_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(wgpu::util::align_to(
+                        texture.width() / block_width * bytes_per_block,
+                        wgpu::COPY_BYTES_PER_ROW_ALIGNMENT,
+                    )),
+                    rows_per_image: None,
+                },
+            },
+            texture.size(),
+        );
+
+        encoder.clear_texture(texture, &ImageSubresourceRange::default());
+
+        // Submit and map the buffer
+        queue.submit(Some(encoder.finish()));
+        
+        let buffer_slice = output_buffer.slice(..);
+        let (sender, receiver) = oneshot_channel();
+        
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+
+        // Wait for operations to complete
+        self.device.poll(wgpu::wgt::PollType::Wait).unwrap();
+
+        // Wait for mapping completion
+        if let Some(Ok(())) = receiver.receive().await {
+            let data = buffer_slice.get_mapped_range();
+
+            let data_slice = unsafe {
+                std::slice::from_raw_parts::<T>(
+                    data.as_ptr() as *const T,
+                    data.len() / std::mem::size_of::<T>(),
+                )
+            };
+
+            let result = data_slice.to_vec();
+            
+            drop(data);
+            output_buffer.unmap();
+
+            // Return buffer to pool for reuse
+            self.return_buffer(output_buffer, buffer_size as u64, usage);
+
+            Ok(result)
+        } else {
+            // Even on failure, return the buffer to pool
+            self.return_buffer(output_buffer, buffer_size as u64, usage);
+            Err(wgpu::Error::Validation {
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Failed to map texture readback buffer",
+                )),
+                description: "Buffer mapping failed".to_string(),
+            })
+        }
+    }
+}
 
 pub async fn extract_texture_data<T>(
     device: &wgpu::Device,
@@ -146,22 +305,23 @@ where
         texture.size(),
     );
 
-    encoder.clear_texture(&texture, &ImageSubresourceRange::default());
+    encoder.clear_texture(texture, &ImageSubresourceRange::default());
 
     // 3. Submit and map the buffer
     queue.submit(Some(encoder.finish()));
-    let data = {
-        let buffer_slice = output_buffer.slice(..);
-        buffer_slice.map_async(wgpu::MapMode::Read, |result| {
-            if let Err(e) = result {
-                eprintln!("Failed to map buffer: {:?}", e);
-            }
-        });
+    
+    let buffer_slice = output_buffer.slice(..);
+    let (sender, receiver) = oneshot_channel();
+    
+    buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = sender.send(result);
+    });
 
-        // You must poll the device to drive the async map operation.
-        // In a real app, this would be part of your event loop.
-        device.poll(wgpu::PollType::Wait).unwrap();
+    // Wait for operations to complete
+    device.poll(wgpu::wgt::PollType::Wait).unwrap();
 
+    // Wait for mapping completion
+    if let Some(Ok(())) = receiver.receive().await {
         let data = buffer_slice.get_mapped_range();
 
         let data_slice = unsafe {
@@ -171,11 +331,20 @@ where
             )
         };
 
-        data_slice.to_vec()
-    };
-    output_buffer.unmap();
+        let result = data_slice.to_vec();
+        drop(data);
+        output_buffer.unmap();
 
-    Ok(data)
+        Ok(result)
+    } else {
+        Err(wgpu::Error::Validation {
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to map texture readback buffer",
+            )),
+            description: "Buffer mapping failed".to_string(),
+        })
+    }
 }
 
 pub fn create_depth_sampler(device: &wgpu::Device) -> wgpu::Sampler {

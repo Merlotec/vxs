@@ -8281,6 +8281,7 @@ dependencies = [
  "io-uring",
  "libc",
  "mio 1.0.4",
+ "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "slab",
@@ -8848,6 +8849,7 @@ dependencies = [
  "pollster",
  "pyo3",
  "rayon",
+ "tokio",
  "voxelsim",
  "wgpu 26.0.1",
 ]

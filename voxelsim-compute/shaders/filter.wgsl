@@ -69,7 +69,7 @@ fn vs_main(
 
 // FRAGMENT SHADER
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<i32> {
+fn fs_main(in: VertexOutput) -> @location(0) u32 {
     // 1. Sample the external depth texture at the fragment's screen coordinate
     let frag_coords: vec2<f32> = in.clip_position.xy;
     //let sampled_depth = textureSample(external_depth_texture, external_depth_sampler, frag_coords);
@@ -93,5 +93,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<i32> {
     }
 
     // 5. Discard the fragment. We don't want to write to any color/depth attachment.
-    return vec4<i32>(0, 0, 0, bitcast<i32>(in.value));
+    return 0;
 }
