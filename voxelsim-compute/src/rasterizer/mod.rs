@@ -331,6 +331,7 @@ pub struct RasterizerState {
     pub noise: NoiseBuffer,
     pub frustum_culling: FrustumCulling,
     pub filter_frustum_culling: FrustumCulling, // Separate culling for filter stage
+    filter_bind_group_buffer_id: Option<u64>, // Track which buffer the bind group was created for
     rasterizer_pipeline: RasterizerPipeline,
     filter_pipeline: RasterizerPipeline,
     depth: TextureSet,
@@ -408,6 +409,7 @@ impl RasterizerState {
             noise: noise_buffer,
             frustum_culling,
             filter_frustum_culling,
+            filter_bind_group_buffer_id: None,
             rasterizer_pipeline,
             filter_pipeline,
             depth,
@@ -441,8 +443,13 @@ impl RasterizerState {
         filter_instance_buffer: &wgpu::Buffer,
         filter_len: u32,
     ) {
-        // Create/update bind group for filter culling (since filter buffer can change)
-        self.filter_frustum_culling.create_bind_group(device, filter_instance_buffer);
+        // Only create bind group if buffer changed (avoid expensive per-frame bind group creation)
+        // Use buffer address as unique identifier (safe since buffer lives for entire program)
+        let buffer_id = filter_instance_buffer as *const wgpu::Buffer as usize as u64;
+        if self.filter_bind_group_buffer_id != Some(buffer_id) {
+            self.filter_frustum_culling.create_bind_group(device, filter_instance_buffer);
+            self.filter_bind_group_buffer_id = Some(buffer_id);
+        }
         
         // Dispatch filter frustum culling
         self.filter_frustum_culling.dispatch_culling(
@@ -517,56 +524,6 @@ impl RasterizerState {
         );
     }
 
-    pub fn encode_rasterizer_indirect(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        camera_uniform: &CameraMatrix,
-    ) {
-        let view = &self.render_target.view;
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Voxel Render Pass (Indirect)"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.0,
-                        g: 0.0,
-                        b: 0.0,
-                        a: 0.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.depth.view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-
-        render_pass.set_pipeline(&self.rasterizer_pipeline.pipeline);
-        render_pass.set_bind_group(0, &self.noise.group, &[]);
-        render_pass.set_push_constants(
-            wgpu::ShaderStages::VERTEX,
-            0,
-            bytemuck::bytes_of(camera_uniform),
-        );
-
-        // Set vertex buffers
-        render_pass.set_vertex_buffer(0, self.cube_buffer.vertex.slice(..));
-        render_pass.set_vertex_buffer(1, self.frustum_culling.culled_instance_buffer.slice(..));
-        render_pass.set_index_buffer(self.cube_buffer.index.slice(..), wgpu::IndexFormat::Uint16);
-        
-        // Use indirect draw with GPU-generated draw command
-        render_pass.draw_indexed_indirect(&self.frustum_culling.indirect_draw_buffer, 0);
-    }
 
     pub fn encode_filter(
         &self,
@@ -618,42 +575,72 @@ impl RasterizerState {
         render_pass.draw_indexed(0..Vertex::CUBE_INDICES.len() as u32, 0, 0..instance_count);
     }
 
-    pub fn encode_filter_indirect(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        camera_uniform: &CameraMatrix,
-    ) {
-        let view = &self.filter_render_target.view;
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Filter Render Pass (Indirect)"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
+    /// Batched readback of both main and filter culling results (more efficient than separate calls)
+    pub fn get_culling_counts_batched(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> (u32, u32) {
+        // Single command encoder for both readbacks
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Batched Culling Readback Encoder"),
         });
 
-        render_pass.set_pipeline(&self.filter_pipeline.pipeline);
-        render_pass.set_bind_group(0, &self.filter.group, &[]);
-        render_pass.set_push_constants(
-            wgpu::ShaderStages::VERTEX,
+        // Copy both cull params to their respective staging buffers
+        encoder.copy_buffer_to_buffer(
+            &self.frustum_culling.cull_params_buffer,
             0,
-            bytemuck::bytes_of(camera_uniform),
+            &self.frustum_culling.readback_staging_buffer,
+            0,
+            std::mem::size_of::<culling::CullParams>() as u64,
         );
 
-        // Set vertex buffers
-        render_pass.set_vertex_buffer(0, self.cube_buffer.vertex.slice(..));
-        render_pass.set_vertex_buffer(1, self.filter_frustum_culling.culled_instance_buffer.slice(..));
-        render_pass.set_index_buffer(self.cube_buffer.index.slice(..), wgpu::IndexFormat::Uint16);
+        encoder.copy_buffer_to_buffer(
+            &self.filter_frustum_culling.cull_params_buffer,
+            0,
+            &self.filter_frustum_culling.readback_staging_buffer,
+            0,
+            std::mem::size_of::<culling::CullParams>() as u64,
+        );
 
-        // Use indirect draw with GPU-generated draw command
-        render_pass.draw_indexed_indirect(&self.filter_frustum_culling.indirect_draw_buffer, 0);
+        // Single submission for both
+        queue.submit(Some(encoder.finish()));
+
+        // Read both results
+        let main_count = self.read_staging_buffer_sync(device, &self.frustum_culling.readback_staging_buffer);
+        let filter_count = self.read_staging_buffer_sync(device, &self.filter_frustum_culling.readback_staging_buffer);
+
+        (main_count, filter_count)
     }
+
+    /// Helper to read a staging buffer synchronously
+    fn read_staging_buffer_sync(&self, device: &wgpu::Device, staging_buffer: &wgpu::Buffer) -> u32 {
+        let buffer_slice = staging_buffer.slice(..);
+        
+        use std::sync::{Arc, Mutex};
+        let result_flag = Arc::new(Mutex::new(None));
+        let flag_clone = result_flag.clone();
+
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            *flag_clone.lock().unwrap() = Some(result);
+        });
+
+        // Poll until complete
+        loop {
+            device.poll(wgpu::wgt::PollType::Poll).unwrap();
+            if let Some(result) = result_flag.lock().unwrap().as_ref() {
+                if result.is_ok() {
+                    break;
+                } else {
+                    return 0;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_micros(10));
+        }
+
+        let data = buffer_slice.get_mapped_range();
+        let cull_params: &culling::CullParams =
+            bytemuck::from_bytes(&data[..std::mem::size_of::<culling::CullParams>()]);
+        let visible_count = cull_params.visible_count;
+        drop(data);
+        staging_buffer.unmap();
+        visible_count
+    }
+
 }
