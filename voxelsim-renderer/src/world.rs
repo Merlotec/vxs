@@ -304,14 +304,11 @@ fn synchronise_world(
         for (_, net_agent) in agents_map.iter() {
             let start = net_agent.pos.cast::<f32>();
             let bevy_start = client_to_bevy_f32(start);
-            commands.spawn((
-                AgentComponent {
-                    agent: net_agent.clone(),
-                },
-                Mesh3d(assets.drone_mesh.clone()),
-                MeshMaterial3d(assets.drone_body_mat.clone()),
+            assets.spawn_agent_with_model(
+                &mut commands,
+                net_agent.clone(),
                 Transform::from_translation(bevy_start),
-            ));
+            );
             let fwd_client = net_agent.attitude * Vector3::y_axis();
             let fwd_bevy = client_to_bevy_f32(fwd_client.cast::<f32>().into_inner());
             gizmos.line(

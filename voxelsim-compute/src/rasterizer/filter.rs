@@ -1,4 +1,5 @@
 use voxelsim::Coord;
+use crate::buf::StagingBufferPool;
 
 pub struct FilterBindings {
     pub layout: wgpu::BindGroupLayout,
@@ -10,7 +11,17 @@ pub struct FilterBindings {
 }
 
 impl FilterBindings {
-    pub async fn get_filter_list(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<Coord> {
+    pub async fn get_filter_list(&self, staging_pool: &mut StagingBufferPool, queue: &wgpu::Queue) -> Vec<Coord> {
+        let data = staging_pool.read_gpu_buffer(queue, &self.output_buffer, true).await;
+        let count = u32::from_le_bytes(data[0..4].try_into().unwrap());
+
+        let output_data_slice: &[Coord] = bytemuck::cast_slice(&data[4..]);
+        let valid = &output_data_slice[..count as usize];
+
+        valid.to_vec()
+    }
+
+    pub async fn get_filter_list_legacy(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<Coord> {
         let data = crate::buf::read_gpu_buffer(device, queue, &self.output_buffer, true).await;
         let count = u32::from_le_bytes(data[0..4].try_into().unwrap());
 
@@ -131,6 +142,8 @@ impl FilterBindings {
     }
 
     pub async fn clear_buffers(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        crate::buf::clear_gpu_buffer(device, queue, &self.flags_buffer).await
+        // Clear both the flags buffer and the output buffer counter
+        crate::buf::clear_gpu_buffer(device, queue, &self.flags_buffer).await;
+        crate::buf::clear_gpu_buffer(device, queue, &self.output_buffer).await;
     }
 }

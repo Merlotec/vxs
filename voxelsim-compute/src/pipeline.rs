@@ -1,17 +1,28 @@
+use crate::buf::StagingBufferPool;
 use crate::rasterizer::RasterizerState;
 use crate::rasterizer::camera::CameraMatrix;
 use crate::rasterizer::noise::NoiseParams;
-use crate::rasterizer::{self, CellInstance, InstanceBuffer};
+use crate::rasterizer::{CellInstance, InstanceBuffer};
+use bytemuck::{Pod, Zeroable};
 use nalgebra::Vector2;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use voxelsim::viewport::{VirtualCell, VirtualGrid};
 use voxelsim::{Cell, Coord, VoxelGrid};
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Default, Pod, Zeroable)]
+pub struct FilterCoord {
+    coord: Coord,
+    _p0: i32,
+}
+
 pub struct State {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub size: Vector2<u32>,
     pub rasterizer_state: RasterizerState,
     pub filter_buffer: InstanceBuffer,
+    pub staging_pool: StagingBufferPool,
 }
 
 impl State {
@@ -45,7 +56,7 @@ impl State {
                     // WebGL doesn't support all of wgpu's features, so if
                     // we're building for the web we'll have to disable some.
                     required_limits: wgpu::Limits {
-                        max_push_constant_size: 76, // Size of mat4x4<f32>
+                        max_push_constant_size: 80, // Size of mat4x4<f32>
                         ..wgpu::Limits::default()
                     },
                     label: None,
@@ -63,12 +74,15 @@ impl State {
         let filter_buffer =
             CellInstance::create_instance_buffer_uninit(&device, world.cells().len());
 
+        let staging_pool = StagingBufferPool::new(device.clone());
+
         Self {
             device,
             queue,
             size: view_size,
             rasterizer_state,
             filter_buffer,
+            staging_pool,
         }
     }
 
@@ -78,11 +92,79 @@ impl State {
         camera_matrix: &CameraMatrix,
         filter_world: &VirtualGrid,
     ) -> Result<WorldChangeset, wgpu::SurfaceError> {
+        let profile_enabled = std::env::var("VXS_COMPUTE_PROFILE").is_ok();
+        let total_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
         // Get the current texture to render to from the swap chain.
         //let output = self.surface.get_current_texture()?;
         //let view = output
         //    .texture
         //    .create_view(&wgpu::TextureViewDescriptor::default());
+
+        // === PHASE 1: Frustum Culling ===
+        let culling_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
+
+        // Encode frustum culling compute pass
+        let mut cull_encoder =
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Frustum Culling Encoder"),
+                });
+
+        self.rasterizer_state
+            .encode_frustum_culling(&mut cull_encoder, &self.queue, camera_matrix);
+
+        let cull_submission = self.queue.submit(std::iter::once(cull_encoder.finish()));
+
+        if let Some(start) = culling_start {
+            let culling_time = start.elapsed();
+            println!(
+                "✂️  Frustum Culling: {:.2}ms",
+                culling_time.as_secs_f64() * 1000.0
+            );
+        }
+
+        // === PHASE 2: GPU Command Encoding ===
+        let encoding_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
+
+        // Wait for culling to complete
+        self.device
+            .poll(wgpu::wgt::PollType::WaitForSubmissionIndex(
+                cull_submission.clone(),
+            ))
+            .unwrap();
+
+        // Read back visible count
+        let visible_count = self
+            .rasterizer_state
+            .frustum_culling
+            .get_visible_count_sync(&self.device, &self.queue);
+        let total_instances = self.rasterizer_state.instance_count();
+
+        if profile_enabled {
+            println!(
+                "    📊 Culled: {} → {} instances ({:.1}% reduction)",
+                total_instances,
+                visible_count,
+                (1.0 - visible_count as f32 / total_instances as f32) * 100.0
+            );
+        }
+
+        // Use culling result if reasonable, otherwise fall back
+        let use_culling = visible_count > 0 && visible_count <= total_instances;
+
+        if profile_enabled {
+            if !use_culling {
+                println!(
+                    "    ⚠️  Culling result suspicious ({} visible) - using original rendering",
+                    visible_count
+                );
+            } else {
+                println!(
+                    "    ✅ Using {} culled instances for rendering",
+                    visible_count
+                );
+            }
+        }
 
         // A command encoder builds a command buffer that we can send to the GPU.
         let mut encoder = self
@@ -91,14 +173,27 @@ impl State {
                 label: Some("Rasterizer Encoder"),
             });
 
-        self.rasterizer_state
-            .encode_rasterizer(&mut encoder, camera_matrix);
+        // Render with appropriate instance buffer
+        self.rasterizer_state.encode_rasterizer(
+            &mut encoder,
+            camera_matrix,
+            use_culling,
+            if use_culling {
+                Some(visible_count)
+            } else {
+                None
+            },
+        );
 
         self.queue.submit(std::iter::once(encoder.finish()));
         //output.present();
 
-        // Update filter buffer.
-        CellInstance::write_instance_buffer(&self.queue, &self.filter_buffer, filter_world); // Run filter stage.
+        // Clear filter buffers and update filter buffer.
+        self.rasterizer_state
+            .filter
+            .clear_buffers(&self.device, &self.queue)
+            .await;
+        CellInstance::write_instance_buffer(&self.queue, &self.filter_buffer, filter_world);
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -112,26 +207,133 @@ impl State {
             self.filter_buffer.len,
         );
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        // Submit the main rendering commands and capture the submission index
+        let render_submission = self.queue.submit(std::iter::once(encoder.finish()));
 
-        let to_insert = rasterizer::texture::extract_texture_data(
-            &self.device,
+        if let Some(start) = encoding_start {
+            let encoding_time = start.elapsed();
+            println!(
+                "📋 GPU Command Encoding: {:.2}ms",
+                encoding_time.as_secs_f64() * 1000.0
+            );
+        }
+
+        // === PHASE 2: Prepare Read Operations ===
+        let prepare_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
+
+        // Prepare both operations without polling
+        let texture_op = self
+            .staging_pool
+            .prepare_texture_extraction(&self.queue, &self.rasterizer_state.render_target.texture);
+
+        let filter_op = self.staging_pool.prepare_buffer_read(
             &self.queue,
-            &self.rasterizer_state.render_target.texture,
-        )
-        .await
-        .unwrap();
+            &self.rasterizer_state.filter.output_buffer,
+            true,
+        );
 
-        let to_remove = self
-            .rasterizer_state
-            .filter
-            .get_filter_list(&self.device, &self.queue)
+        if let Some(start) = prepare_start {
+            let prepare_time = start.elapsed();
+            println!(
+                "⚙️  Read Operations Setup: {:.2}ms",
+                prepare_time.as_secs_f64() * 1000.0
+            );
+        }
+
+        // Collect submission indices before moving the operations
+        let texture_submission = texture_op.submission_index.clone();
+        let filter_submission = filter_op.submission_index.clone();
+
+        // === PHASE 3: GPU Polling ===
+        let polling_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
+
+        // Wait for all specific submissions to complete
+        self.staging_pool.wait_for_submissions(&[
+            cull_submission,
+            render_submission,
+            texture_submission,
+            filter_submission,
+        ]);
+
+        if let Some(start) = polling_start {
+            let polling_time = start.elapsed();
+            println!(
+                "⏳ GPU Submission Polling: {:.2}ms",
+                polling_time.as_secs_f64() * 1000.0
+            );
+        }
+
+        // === PHASE 4: Parallel Buffer Reads ===
+        let parallel_read_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
+
+        // Execute both read operations in parallel
+        let results = self
+            .staging_pool
+            .execute_batched_reads_parallel(vec![texture_op, filter_op])
             .await;
 
-        self.rasterizer_state
-            .filter
-            .clear_buffers(&self.device, &self.queue)
-            .await;
+        if let Some(start) = parallel_read_start {
+            let parallel_read_time = start.elapsed();
+            println!(
+                "🚀 Parallel Buffer Reads: {:.2}ms",
+                parallel_read_time.as_secs_f64() * 1000.0
+            );
+        }
+
+        // === PHASE 5: Data Processing ===
+        let processing_start = std::time::Instant::now();
+
+        // Extract results
+        let to_insert_raw = results[0]
+            .as_ref()
+            .unwrap_or_else(|e| panic!("Texture extraction failed: {}", e))
+            .clone();
+        let filter_data = results[1]
+            .as_ref()
+            .unwrap_or_else(|e| panic!("Filter buffer read failed: {}", e))
+            .clone();
+
+        // Process the raw texture data
+        let to_insert: Vec<(voxelsim::Coord, voxelsim::Cell)> = unsafe {
+            let data_slice = std::slice::from_raw_parts::<(voxelsim::Coord, voxelsim::Cell)>(
+                to_insert_raw.as_ptr() as *const (voxelsim::Coord, voxelsim::Cell),
+                to_insert_raw.len() / std::mem::size_of::<(voxelsim::Coord, voxelsim::Cell)>(),
+            );
+            data_slice.to_vec()
+        };
+
+        // Process the filter data
+        let count = u32::from_le_bytes(filter_data[0..4].try_into().unwrap()) as usize;
+        // Due to std140 we must start offset at 16
+        let base = 16usize;
+        let output_data_slice: &[FilterCoord] = bytemuck::cast_slice(
+            &filter_data[base..base + count * std::mem::size_of::<FilterCoord>()],
+        );
+        let to_remove = output_data_slice.to_vec();
+
+        if profile_enabled {
+            let processing_time = processing_start.elapsed();
+            println!(
+                "🔄 Data Processing: {:.2}ms",
+                processing_time.as_secs_f64() * 1000.0
+            );
+        }
+
+        if profile_enabled {
+            if let Some(start) = total_start {
+                let total_time = start.elapsed();
+                println!(
+                    "🏁 TOTAL PIPELINE: {:.2}ms",
+                    total_time.as_secs_f64() * 1000.0
+                );
+                println!(
+                    "📊 Items: {} to_insert, {} to_remove",
+                    to_insert.len(),
+                    to_remove.len()
+                );
+                println!("═══════════════════════════════════════");
+            }
+        }
 
         Ok(WorldChangeset {
             to_remove,
@@ -144,7 +346,7 @@ impl State {
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct WorldChangeset {
     pub to_insert: Vec<(Coord, Cell)>,
-    pub to_remove: Vec<Coord>,
+    pub to_remove: Vec<FilterCoord>,
 }
 
 #[cfg_attr(feature = "python", pyo3::prelude::pymethods)]
@@ -162,7 +364,7 @@ impl WorldChangeset {
             }
         });
         self.to_remove.par_iter().for_each(|coord| {
-            world.cells().remove(coord);
+            world.cells().remove(&coord.coord);
         });
     }
 }
