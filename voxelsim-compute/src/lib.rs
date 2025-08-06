@@ -38,7 +38,7 @@ mod ffi {
         let filter_world: &mut VirtualGrid = std::mem::transmute(filter_world);
         let camera_matrix = CameraMatrix::from_view_proj(camera_view_proj);
         let change =
-            futures::executor::block_on(render_state.run(&camera_matrix, &filter_world)).unwrap();
+            futures::executor::block_on(render_state.run(&camera_matrix, pipeline::FilterInput::VirtualGrid(&filter_world))).unwrap();
 
         change.to_insert.into_par_iter().for_each(|(coord, cell)| {
             filter_world.cells().insert(
@@ -63,7 +63,7 @@ mod ffi {
         let render_state: &mut State = std::mem::transmute(render_state);
         let camera_matrix = CameraMatrix::from_view_proj(camera_view_proj);
         let change = futures::executor::block_on(
-            render_state.run(&camera_matrix, filter_world.lock().unwrap().deref()),
+            render_state.run(&camera_matrix, pipeline::FilterInput::VirtualGrid(filter_world.lock().unwrap().deref())),
         )
         .unwrap();
 
@@ -189,7 +189,7 @@ impl AgentVisionRenderer {
                     let camera_matrix = CameraMatrix::from_view_proj(view.cast(), proj.cast());
                     // let camera_matrix = CameraMatrix::default();
                     if let Ok(changeset) = state
-                        .run(&camera_matrix, filter_world.lock().unwrap().deref())
+                        .run(&camera_matrix, pipeline::FilterInput::VirtualGrid(filter_world.lock().unwrap().deref()))
                         .await
                     {
                         sender.send(changeset).unwrap();

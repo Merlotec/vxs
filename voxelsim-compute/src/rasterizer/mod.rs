@@ -101,7 +101,7 @@ pub struct BufferSet {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CellInstance {
     pub position: Coord,
     pub value: u32,
@@ -330,6 +330,7 @@ pub struct RasterizerState {
     pub filter: FilterBindings,
     pub noise: NoiseBuffer,
     pub frustum_culling: FrustumCulling,
+    pub filter_frustum_culling: FrustumCulling, // Separate culling for filter stage
     rasterizer_pipeline: RasterizerPipeline,
     filter_pipeline: RasterizerPipeline,
     depth: TextureSet,
@@ -393,6 +394,12 @@ impl RasterizerState {
         let max_instances = (instances.len * 2).max(10000); // Allow for growth
         let mut frustum_culling = FrustumCulling::new(device, max_instances);
         frustum_culling.create_bind_group(device, &instances.buf);
+        
+        // Create separate frustum culling for filter stage
+        // Filter typically has fewer instances, but use same max for safety
+        let mut filter_frustum_culling = FrustumCulling::new(device, max_instances);
+        // Create bind group for filter culling (will be updated later in pipeline)
+        filter_frustum_culling.create_bind_group(device, &instances.buf); // Temporary bind group
 
         Self {
             cube_buffer,
@@ -400,6 +407,7 @@ impl RasterizerState {
             filter,
             noise: noise_buffer,
             frustum_culling,
+            filter_frustum_culling,
             rasterizer_pipeline,
             filter_pipeline,
             depth,
@@ -421,6 +429,27 @@ impl RasterizerState {
             queue,
             camera_uniform,
             self.instances.len,
+        );
+    }
+
+    pub fn encode_filter_frustum_culling(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+        device: &wgpu::Device,
+        camera_uniform: &CameraMatrix,
+        filter_instance_buffer: &wgpu::Buffer,
+        filter_len: u32,
+    ) {
+        // Create/update bind group for filter culling (since filter buffer can change)
+        self.filter_frustum_culling.create_bind_group(device, filter_instance_buffer);
+        
+        // Dispatch filter frustum culling
+        self.filter_frustum_culling.dispatch_culling(
+            encoder,
+            queue,
+            camera_uniform,
+            filter_len,
         );
     }
 
@@ -488,12 +517,65 @@ impl RasterizerState {
         );
     }
 
+    pub fn encode_rasterizer_indirect(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        camera_uniform: &CameraMatrix,
+    ) {
+        let view = &self.render_target.view;
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Voxel Render Pass (Indirect)"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth.view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        render_pass.set_pipeline(&self.rasterizer_pipeline.pipeline);
+        render_pass.set_bind_group(0, &self.noise.group, &[]);
+        render_pass.set_push_constants(
+            wgpu::ShaderStages::VERTEX,
+            0,
+            bytemuck::bytes_of(camera_uniform),
+        );
+
+        // Set vertex buffers
+        render_pass.set_vertex_buffer(0, self.cube_buffer.vertex.slice(..));
+        render_pass.set_vertex_buffer(1, self.frustum_culling.culled_instance_buffer.slice(..));
+        render_pass.set_index_buffer(self.cube_buffer.index.slice(..), wgpu::IndexFormat::Uint16);
+        
+        // Use indirect draw with GPU-generated draw command
+        render_pass.draw_indexed_indirect(&self.frustum_culling.indirect_draw_buffer, 0);
+    }
+
     pub fn encode_filter(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         camera_uniform: &CameraMatrix,
         filter_instance_buffer: &wgpu::Buffer,
         filter_len: u32,
+        use_culled_instances: bool,
+        culled_visible_count: Option<u32>,
     ) {
         let view = &self.filter_render_target.view;
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -521,11 +603,57 @@ impl RasterizerState {
             bytemuck::bytes_of(camera_uniform),
         );
 
-        // The rest of the drawing logic remains the same
+        // The rest of the drawing logic - choose between original and culled instances
         render_pass.set_vertex_buffer(0, self.cube_buffer.vertex.slice(..));
-        render_pass.set_vertex_buffer(1, filter_instance_buffer.slice(..));
+        
+        let (instance_buffer, instance_count) = if use_culled_instances {
+            (&self.filter_frustum_culling.culled_instance_buffer, culled_visible_count.unwrap_or(0))
+        } else {
+            (filter_instance_buffer, filter_len)
+        };
+        
+        render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
         render_pass.set_index_buffer(self.cube_buffer.index.slice(..), wgpu::IndexFormat::Uint16);
 
-        render_pass.draw_indexed(0..Vertex::CUBE_INDICES.len() as u32, 0, 0..filter_len);
+        render_pass.draw_indexed(0..Vertex::CUBE_INDICES.len() as u32, 0, 0..instance_count);
+    }
+
+    pub fn encode_filter_indirect(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        camera_uniform: &CameraMatrix,
+    ) {
+        let view = &self.filter_render_target.view;
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Filter Render Pass (Indirect)"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        render_pass.set_pipeline(&self.filter_pipeline.pipeline);
+        render_pass.set_bind_group(0, &self.filter.group, &[]);
+        render_pass.set_push_constants(
+            wgpu::ShaderStages::VERTEX,
+            0,
+            bytemuck::bytes_of(camera_uniform),
+        );
+
+        // Set vertex buffers
+        render_pass.set_vertex_buffer(0, self.cube_buffer.vertex.slice(..));
+        render_pass.set_vertex_buffer(1, self.filter_frustum_culling.culled_instance_buffer.slice(..));
+        render_pass.set_index_buffer(self.cube_buffer.index.slice(..), wgpu::IndexFormat::Uint16);
+
+        // Use indirect draw with GPU-generated draw command
+        render_pass.draw_indexed_indirect(&self.filter_frustum_culling.indirect_draw_buffer, 0);
     }
 }

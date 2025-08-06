@@ -9,12 +9,24 @@ pub struct CullParams {
     pub _padding: [u32; 2],
 }
 
+// Indirect draw command structure for GPU-driven rendering
+#[repr(C)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct IndirectDrawCommand {
+    pub index_count: u32,     // Number of indices to draw
+    pub instance_count: u32,  // Number of instances (will be set by GPU)
+    pub first_index: u32,     // First index in the index buffer
+    pub vertex_offset: i32,   // Offset added to vertex indices
+    pub first_instance: u32,  // First instance to draw
+}
+
 pub struct FrustumCulling {
     pub compute_pipeline: wgpu::ComputePipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,
     pub culled_instance_buffer: wgpu::Buffer,
     pub cull_params_buffer: wgpu::Buffer,
     pub frustum_planes_buffer: wgpu::Buffer,
+    pub indirect_draw_buffer: wgpu::Buffer, // GPU-written draw commands
     pub bind_group: Option<wgpu::BindGroup>,
     pub max_instances: u32,
 }
@@ -73,6 +85,17 @@ impl FrustumCulling {
                     },
                     count: None,
                 },
+                // Indirect draw commands buffer (GPU writes draw commands)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -119,12 +142,24 @@ impl FrustumCulling {
             mapped_at_creation: false,
         });
 
+        // Create indirect draw buffer for GPU-driven rendering
+        let indirect_draw_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Indirect Draw Commands Buffer"),
+            size: std::mem::size_of::<IndirectDrawCommand>() as u64,
+            usage: wgpu::BufferUsages::STORAGE 
+                | wgpu::BufferUsages::INDIRECT 
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC, // Add COPY_SRC for debugging
+            mapped_at_creation: false,
+        });
+
         Self {
             compute_pipeline,
             bind_group_layout,
             culled_instance_buffer,
             cull_params_buffer,
             frustum_planes_buffer,
+            indirect_draw_buffer,
             bind_group: None,
             max_instances,
         }
@@ -155,9 +190,94 @@ impl FrustumCulling {
                     binding: 3,
                     resource: self.frustum_planes_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.indirect_draw_buffer.as_entire_binding(),
+                },
             ],
         });
         self.bind_group = Some(bind_group);
+    }
+
+    pub fn initialize_indirect_draw_buffer(&self, queue: &wgpu::Queue, index_count: u32) {
+        // Initialize the indirect draw command with fixed values
+        // The GPU will update instance_count during culling
+        let draw_command = IndirectDrawCommand {
+            index_count,      // Number of cube indices (36)
+            instance_count: 0, // Will be set by GPU to visible_count
+            first_index: 0,
+            vertex_offset: 0,
+            first_instance: 0,
+        };
+
+        queue.write_buffer(
+            &self.indirect_draw_buffer,
+            0,
+            bytemuck::bytes_of(&draw_command),
+        );
+        
+        println!("🔧 Initialized indirect draw buffer: index_count={}, instance_count=0", index_count);
+    }
+
+    /// Debug: Read back the indirect draw command to see what the GPU wrote
+    pub fn debug_read_indirect_draw_command(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Debug Indirect Draw Staging"),
+            size: std::mem::size_of::<IndirectDrawCommand>() as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        // Copy the indirect draw command to staging buffer
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Debug Read Indirect Draw Command"),
+        });
+
+        encoder.copy_buffer_to_buffer(
+            &self.indirect_draw_buffer,
+            0,
+            &staging_buffer,
+            0,
+            std::mem::size_of::<IndirectDrawCommand>() as u64,
+        );
+
+        queue.submit(Some(encoder.finish()));
+
+        // Read back synchronously
+        let buffer_slice = staging_buffer.slice(..);
+        let result_flag = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let flag_clone = result_flag.clone();
+
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            *flag_clone.lock().unwrap() = Some(result);
+        });
+
+        // Poll until complete
+        loop {
+            device.poll(wgpu::wgt::PollType::Poll).unwrap();
+            if let Some(result) = result_flag.lock().unwrap().as_ref() {
+                if result.is_ok() {
+                    break;
+                } else {
+                    return;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_micros(10));
+        }
+
+        // Print the data
+        let data = buffer_slice.get_mapped_range();
+        let command: &IndirectDrawCommand = bytemuck::from_bytes(&data[..std::mem::size_of::<IndirectDrawCommand>()]);
+        println!(
+            "🔍 Indirect draw command: index_count={}, instance_count={}, first_index={}, vertex_offset={}, first_instance={}",
+            command.index_count, command.instance_count, command.first_index, command.vertex_offset, command.first_instance
+        );
+        drop(data);
+        staging_buffer.unmap();
     }
 
     pub fn dispatch_culling(
@@ -195,11 +315,14 @@ impl FrustumCulling {
         compute_pass.set_pipeline(&self.compute_pipeline);
         if let Some(bind_group) = &self.bind_group {
             compute_pass.set_bind_group(0, bind_group, &[]);
+            
+            // Dispatch with workgroups of 64 threads each
+            let workgroup_count = (instance_count + 63) / 64; // Round up division
+            println!("🚀 Dispatching culling: {} instances, {} workgroups", instance_count, workgroup_count);
+            compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+        } else {
+            println!("❌ ERROR: No bind group set for frustum culling!");
         }
-
-        // Dispatch with workgroups of 64 threads each
-        let workgroup_count = (instance_count + 63) / 64; // Round up division
-        compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
     }
 
     /// Read back the number of visible instances after culling (synchronous version)
