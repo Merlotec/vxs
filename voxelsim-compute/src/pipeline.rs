@@ -192,6 +192,7 @@ impl State {
         // Clear filter buffers and prepare filter buffer FIRST (needed for filter culling)
         let _buffer_prep_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
         
+        // Start filter clear
         self.rasterizer_state
             .filter
             .clear_buffers(&self.device, &self.queue)
@@ -199,34 +200,31 @@ impl State {
         
         let buffer_write_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
         
-        // Handle different input types and track buffer upload submission if needed
-        let (_filter_grid, buffer_len, filter_buffer_submission) = match &filter_input {
+        // Handle different input types - keep it simple and fast
+        let (_filter_grid, buffer_len) = match &filter_input {
             FilterInput::VirtualGrid(grid) => {
-                // Regular upload from VirtualGrid
+                // Regular synchronous upload - the parallel data transformation is already fast
                 CellInstance::write_instance_buffer(&self.queue, &self.filter_buffer, grid);
-                let submission = self.queue.submit(std::iter::empty()); // Get submission index for sync
                 if profile_enabled {
                     println!("💾 Regular filter buffer upload from VirtualGrid");
                 }
-                (*grid, grid.cells().len() as u32, Some(submission))
+                (*grid, grid.cells().len() as u32)
             }
             FilterInput::FilterWorld(filter_world) => {
                 if let Some(ref buffer_data) = filter_world.buffer {
-                    // Use pre-prepared buffer - buffer upload may have happened earlier
+                    // Use pre-prepared buffer
                     self.queue.write_buffer(&self.filter_buffer.buf, 0, bytemuck::cast_slice(buffer_data));
-                    let submission = self.queue.submit(std::iter::empty()); // Get submission index for sync
                     if profile_enabled {
                         println!("🚀 Used pre-prepared FilterWorld buffer");
                     }
-                    (&filter_world.grid, buffer_data.len() as u32, Some(submission))
+                    (&filter_world.grid, buffer_data.len() as u32)
                 } else {
-                    // Fall back to regular upload
+                    // Fallback upload
                     CellInstance::write_instance_buffer(&self.queue, &self.filter_buffer, &filter_world.grid);
-                    let submission = self.queue.submit(std::iter::empty());
                     if profile_enabled {
                         println!("💾 Regular filter buffer upload from FilterWorld (no buffer prepared)");
                     }
-                    (&filter_world.grid, filter_world.grid.cells().len() as u32, Some(submission))
+                    (&filter_world.grid, filter_world.grid.cells().len() as u32)
                 }
             }
         };
@@ -277,21 +275,6 @@ impl State {
 
         // === PHASE 2: GPU Command Encoding ===
         
-        // Wait for filter buffer upload AND both culling operations to complete
-        let mut submissions_to_wait = vec![culling_submissions.clone()];
-        if let Some(filter_submission) = &filter_buffer_submission {
-            submissions_to_wait.push(filter_submission.clone());
-            if profile_enabled {
-                println!("⏳ Waiting for filter buffer upload before main pipeline...");
-            }
-        }
-        
-        for submission in submissions_to_wait {
-            self.device
-                .poll(wgpu::wgt::PollType::WaitForSubmissionIndex(submission))
-                .unwrap();
-        }
-
         if profile_enabled {
             println!("    ✅ Using optimized traditional culling with readbacks");
         }
@@ -432,17 +415,12 @@ impl State {
         let polling_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
 
         // Wait for all specific submissions to complete
-        let mut all_submissions = vec![
+        let all_submissions = vec![
             culling_submissions,
             render_submission,
             texture_submission,
             filter_submission,
         ];
-        
-        // Add filter buffer submission if it exists
-        if let Some(filter_buffer_sub) = filter_buffer_submission {
-            all_submissions.push(filter_buffer_sub);
-        }
         
         self.staging_pool.wait_for_submissions(&all_submissions);
 

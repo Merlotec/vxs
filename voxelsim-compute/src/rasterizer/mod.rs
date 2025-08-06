@@ -162,6 +162,7 @@ impl CellInstance {
         queue.write_buffer(&instance.buf, 0, bytemuck::cast_slice(&instance_data));
     }
 
+
     pub fn create_instance_buffer(device: &wgpu::Device, world: &VoxelGrid) -> InstanceBuffer {
         let instance_data = world
             .cells()
