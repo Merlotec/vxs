@@ -29,7 +29,7 @@ struct AtomicFlags {
 @group(0) @binding(2) var<storage, read_write> output_buffer: OutputBuffer;
 @group(0) @binding(3) var<storage, read_write> instance_flags: AtomicFlags;
 
-const EPSILON: f32 = 0.000001;
+const EPSILON: f32 = 0.00001;
 
 struct InstanceInput {
     @builtin(instance_index) index: u32,
