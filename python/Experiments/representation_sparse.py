@@ -17,6 +17,7 @@ from collections import defaultdict
 from scipy.spatial import KDTree
 from torch.utils.data import DataLoader, IterableDataset
 import os
+import math
 
 import time, collections
 
@@ -95,7 +96,7 @@ class SparseCNNEncoder(EmbeddingEncoder, nn.Module):
             nn.Dropout(0.1),
             nn.Linear(256, embedding_dim)
         )
-    
+        
     def encode(self, voxel_batch: List[VoxelData]) -> torch.Tensor:
         batch_embeddings = []
         
@@ -131,14 +132,22 @@ class SparseCNNEncoder(EmbeddingEncoder, nn.Module):
 
 
 class SparseCNNDecoder(EmbeddingDecoder, nn.Module):
-    def __init__(self, embedding_dim=128, voxel_size=48, max_output_voxels=5000, mem_tokens=8):
+    def __init__(self, embedding_dim=128, voxel_size=48, max_output_voxels=48**3, mem_tokens=8):
         super().__init__()
         self.voxel_size = voxel_size
         self.embedding_dim = embedding_dim
-        self.num_queries = min(512, max_output_voxels // 4)
+        self.num_queries = min(55000, max_output_voxels // 4)
         self.mem_tokens = mem_tokens
 
         self.query_embed = nn.Parameter(torch.randn(self.num_queries, 128))
+
+         # 🔧 NEW: per-query grid base (coverage prior)
+        g = int(math.ceil(self.num_queries ** (1.0 / 3.0)))  # ceil so g^3 ≥ num_queries
+        self.grid_g = g
+        xs = torch.linspace(0, voxel_size - 1, g)
+        X, Y, Z = torch.meshgrid(xs, xs, xs, indexing='ij')
+        base = torch.stack([X, Y, Z], dim=-1).reshape(-1, 3)[: self.num_queries]  # [Q,3]
+        self.register_buffer("base_coords", base)  # moves with .to(device)
 
         self.embedding_mlp = nn.Sequential(
             nn.Linear(embedding_dim, 256),
@@ -174,8 +183,13 @@ class SparseCNNDecoder(EmbeddingDecoder, nn.Module):
         x = q + attended
         x = x + self.dec_ffn(x)
 
-        preds = self.voxel_head(x)                                         # [B,Q,5]
-        coords = torch.sigmoid(preds[..., :3]) * self.voxel_size           # [B,Q,3]
+        preds = self.voxel_head(x)  # [B,Q,5]
+
+        # residual around each grid cell (cell size = voxel_size / g)
+        cell = self.voxel_size / float(self.grid_g)
+        delta = torch.tanh(preds[..., :3]) * (0.5 * cell)  # [-0.5*cell, +0.5*cell]
+
+        coords = (self.base_coords.unsqueeze(0) + delta).clamp_(0, self.voxel_size - 1)
         logits = preds[..., 3]
         vals   = torch.sigmoid(preds[..., 4])
 
@@ -274,8 +288,8 @@ class SparseEmbeddingTrainer:
             pred_values = predictions["sparse_values"][i]  # [Q]
             
             # Get ground truth
-            gt_coords = voxel_batch[i].occupied_coords.to(self.device)  # [N, 3]
-            gt_values = voxel_batch[i].values.to(self.device)  # [N]
+            gt_coords = voxel_batch[i].occupied_coords.to(self.device).float()  # [N, 3]
+            gt_values = voxel_batch[i].values.to(self.device).float()  # [N]
             
             # Compute losses
             loss = self.sparse_chamfer_loss(
@@ -411,7 +425,8 @@ class TerrainBatch(IterableDataset):
             # build world in Rust
             g   = voxelsim.TerrainGenerator()
             cfg = voxelsim.TerrainConfig.default_py()
-            cfg.set_seed_py(int(np.random.randint(0, 2**31)))
+            # cfg.set_seed_py(int(np.random.randint(0, 2**31)))
+            cfg.set_seed_py(42)
             cfg.set_world_size_py(side)
             g.generate_terrain_py(cfg)
             world = g.generate_world_py()
