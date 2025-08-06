@@ -70,7 +70,21 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                     .find_nearest_param_in_range(s_cur, s_end, &x_act)
                     .expect(&format!("No nearest param in range: {}, {}", s_cur, s_end));
 
-                let s_updated = s_star.clamp(s_cur, s_cur + ds_max);
+                // Check if drone is close enough to the trajectory to advance progress
+                let pos_at_s_star = action.trajectory.position(s_star);
+                let distance_threshold = 0.5; // meters - adjust as needed
+                
+                let can_advance = if let Some(traj_pos) = pos_at_s_star {
+                    (x_act - traj_pos).norm() < distance_threshold
+                } else {
+                    false
+                };
+
+                let s_updated = if can_advance {
+                    s_star.clamp(s_cur, s_cur + ds_max)
+                } else {
+                    s_cur // Don't advance if too far from trajectory
+                };
 
                 let s_tgt = (s_updated + s_lookahead).min(s_end);
                 if let (Some(p_tgt), Some(v_tgt_nominal), Some(a_tgt_nominal)) = (
