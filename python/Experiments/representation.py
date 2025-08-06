@@ -6,6 +6,8 @@ A modular framework for testing various embedding approaches for drone navigatio
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch_sparse import SparseTensor
+from torch_geometric.nn import voxel_grid, max_pool
 import numpy as np
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional, Callable, Union
@@ -616,7 +618,7 @@ if __name__ == "__main__":
     print("Testing CNN Autoencoder...")
     print("CUDA available:", torch.cuda.is_available())
     print("CUDA device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
-    results = run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, num_epochs=1000, batch_size=5, visualize_every=20, size=48) 
+    results = run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, num_epochs=1000, batch_size=5, visualize_every=10, size=48) 
 
 
 
