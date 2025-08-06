@@ -111,19 +111,12 @@ impl StagingBufferPool {
 
     /// Wait for specific submissions to complete with individual timing
     pub fn wait_for_submissions(&self, submission_indices: &[wgpu::SubmissionIndex]) {
-        // let submission_names = ["culling", "render", "texture", "filter"];
-
-        for (i, index) in submission_indices.iter().enumerate() {
-            // let name = submission_names.get(i).unwrap_or(&"unknown");
-            // let start = std::time::Instant::now();
-
-            self.device
-                .poll(wgpu::wgt::PollType::WaitForSubmissionIndex(index.clone()))
-                .unwrap();
-
-            // let duration = start.elapsed();
-            // println!("    ⏲️  {} submission: {:.2}ms", name, duration.as_secs_f64() * 1000.0);
+        if submission_indices.is_empty() {
+            return;
         }
+
+        // Use efficient blocking wait - let GPU driver handle scheduling
+        self.device.poll(wgpu::wgt::PollType::Wait).unwrap();
     }
 
     /// Execute multiple batched read operations in parallel
