@@ -1,11 +1,11 @@
-use crate::rasterizer::camera::CameraMatrix;
 use crate::rasterizer::CellInstance;
+use crate::rasterizer::camera::CameraMatrix;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CullParams {
     pub instance_count: u32,
-    pub visible_count: u32,  // Note: This will be atomic in the shader, but stored as u32 on CPU
+    pub visible_count: u32, // Note: This will be atomic in the shader, but stored as u32 on CPU
     pub _padding: [u32; 2],
 }
 
@@ -22,7 +22,8 @@ pub struct FrustumCulling {
 impl FrustumCulling {
     pub fn new(device: &wgpu::Device, max_instances: u32) -> Self {
         // Create compute shader
-        let shader = device.create_shader_module(wgpu::include_wgsl!("../../shaders/frustum_cull_clean.wgsl"));
+        let shader = device
+            .create_shader_module(wgpu::include_wgsl!("../../shaders/frustum_cull_clean.wgsl"));
 
         // Create bind group layout
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -95,14 +96,19 @@ impl FrustumCulling {
         let culled_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Culled Instance Buffer"),
             size: (std::mem::size_of::<CellInstance>() * max_instances as usize) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
         let cull_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Cull Parameters Buffer"),
             size: std::mem::size_of::<CullParams>() as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
@@ -124,7 +130,11 @@ impl FrustumCulling {
         }
     }
 
-    pub fn create_bind_group(&mut self, device: &wgpu::Device, input_instance_buffer: &wgpu::Buffer) {
+    pub fn create_bind_group(
+        &mut self,
+        device: &wgpu::Device,
+        input_instance_buffer: &wgpu::Buffer,
+    ) {
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Frustum Culling Bind Group"),
             layout: &self.bind_group_layout,
@@ -165,8 +175,16 @@ impl FrustumCulling {
         };
 
         // Update uniform buffers
-        queue.write_buffer(&self.cull_params_buffer, 0, bytemuck::bytes_of(&cull_params));
-        queue.write_buffer(&self.frustum_planes_buffer, 0, bytemuck::bytes_of(camera_matrix));
+        queue.write_buffer(
+            &self.cull_params_buffer,
+            0,
+            bytemuck::bytes_of(&cull_params),
+        );
+        queue.write_buffer(
+            &self.frustum_planes_buffer,
+            0,
+            bytemuck::bytes_of(camera_matrix),
+        );
 
         // Dispatch compute shader
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -211,12 +229,12 @@ impl FrustumCulling {
 
         // Map and read the buffer synchronously without futures
         let buffer_slice = staging_buffer.slice(..);
-        
+
         // Use a simple boolean flag instead of futures
         use std::sync::{Arc, Mutex};
         let result_flag = Arc::new(Mutex::new(None));
         let flag_clone = result_flag.clone();
-        
+
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             *flag_clone.lock().unwrap() = Some(result);
         });
@@ -231,26 +249,34 @@ impl FrustumCulling {
                     return 0;
                 }
             }
-            std::thread::sleep(std::time::Duration::from_micros(100));
+            std::thread::sleep(std::time::Duration::from_micros(10));
         }
 
         // Read the data
         let data = buffer_slice.get_mapped_range();
-        let cull_params: &CullParams = bytemuck::from_bytes(&data[..std::mem::size_of::<CullParams>()]);
+        let cull_params: &CullParams =
+            bytemuck::from_bytes(&data[..std::mem::size_of::<CullParams>()]);
         let visible_count = cull_params.visible_count;
         drop(data);
         staging_buffer.unmap();
         visible_count
     }
-    
+
     /// Debug: Read back a few culled instances to verify they're valid
-    pub fn debug_read_culled_instances(&self, device: &wgpu::Device, queue: &wgpu::Queue, count: u32) {
-        if count == 0 { return; }
-        
+    pub fn debug_read_culled_instances(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        count: u32,
+    ) {
+        if count == 0 {
+            return;
+        }
+
         let instances_to_read = count.min(5); // Read up to 5 instances for debugging
         let size_per_instance = std::mem::size_of::<CellInstance>() as u64;
         let total_size = size_per_instance * instances_to_read as u64;
-        
+
         // Create staging buffer
         let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Debug Culled Instances Staging"),
@@ -258,12 +284,12 @@ impl FrustumCulling {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        
+
         // Copy some culled instances
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Debug Read Culled Instances"),
         });
-        
+
         encoder.copy_buffer_to_buffer(
             &self.culled_instance_buffer,
             0,
@@ -271,40 +297,44 @@ impl FrustumCulling {
             0,
             total_size,
         );
-        
+
         queue.submit(Some(encoder.finish()));
-        
+
         // Read back synchronously
         let buffer_slice = staging_buffer.slice(..);
         let result_flag = std::sync::Arc::new(std::sync::Mutex::new(None));
         let flag_clone = result_flag.clone();
-        
+
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             *flag_clone.lock().unwrap() = Some(result);
         });
-        
+
         // Poll until complete
         loop {
             device.poll(wgpu::wgt::PollType::Poll).unwrap();
             if let Some(result) = result_flag.lock().unwrap().as_ref() {
-                if result.is_ok() { break; } else { return; }
+                if result.is_ok() {
+                    break;
+                } else {
+                    return;
+                }
             }
-            std::thread::sleep(std::time::Duration::from_micros(100));
+            std::thread::sleep(std::time::Duration::from_micros(10));
         }
-        
+
         // Print the data
         let data = buffer_slice.get_mapped_range();
         println!("    🔍 First {} culled instances:", instances_to_read);
-        
+
         let mut min_pos = [i32::MAX, i32::MAX, i32::MAX];
         let mut max_pos = [i32::MIN, i32::MIN, i32::MIN];
-        
+
         for i in 0..instances_to_read {
             let offset = i as usize * std::mem::size_of::<CellInstance>();
             if offset + std::mem::size_of::<CellInstance>() <= data.len() {
                 let instance_bytes = &data[offset..offset + std::mem::size_of::<CellInstance>()];
                 let instance: &CellInstance = bytemuck::from_bytes(instance_bytes);
-                
+
                 // Track bounds
                 min_pos[0] = min_pos[0].min(instance.position.x);
                 min_pos[1] = min_pos[1].min(instance.position.y);
@@ -312,24 +342,29 @@ impl FrustumCulling {
                 max_pos[0] = max_pos[0].max(instance.position.x);
                 max_pos[1] = max_pos[1].max(instance.position.y);
                 max_pos[2] = max_pos[2].max(instance.position.z);
-                
-                println!("      [{}]: pos=({}, {}, {}), value={}, distance={:.1}", 
-                        i, 
-                        instance.position.x, 
-                        instance.position.y, 
-                        instance.position.z, 
-                        instance.value,
-                        ((instance.position.x * instance.position.x + 
-                          instance.position.y * instance.position.y + 
-                          instance.position.z * instance.position.z) as f32).sqrt());
+
+                println!(
+                    "      [{}]: pos=({}, {}, {}), value={}, distance={:.1}",
+                    i,
+                    instance.position.x,
+                    instance.position.y,
+                    instance.position.z,
+                    instance.value,
+                    ((instance.position.x * instance.position.x
+                        + instance.position.y * instance.position.y
+                        + instance.position.z * instance.position.z) as f32)
+                        .sqrt()
+                );
             }
         }
-        
+
         if instances_to_read > 0 {
-            println!("    📐 Culled range: X[{}..{}], Y[{}..{}], Z[{}..{}]", 
-                     min_pos[0], max_pos[0], min_pos[1], max_pos[1], min_pos[2], max_pos[2]);
+            println!(
+                "    📐 Culled range: X[{}..{}], Y[{}..{}], Z[{}..{}]",
+                min_pos[0], max_pos[0], min_pos[1], max_pos[1], min_pos[2], max_pos[2]
+            );
         }
-        
+
         drop(data);
         staging_buffer.unmap();
     }
@@ -370,7 +405,8 @@ impl FrustumCulling {
 
         if let Some(Ok(())) = receiver.receive().await {
             let data = buffer_slice.get_mapped_range();
-            let cull_params: &CullParams = bytemuck::from_bytes(&data[..std::mem::size_of::<CullParams>()]);
+            let cull_params: &CullParams =
+                bytemuck::from_bytes(&data[..std::mem::size_of::<CullParams>()]);
             let visible_count = cull_params.visible_count;
             drop(data);
             staging_buffer.unmap();

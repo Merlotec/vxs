@@ -307,7 +307,7 @@ impl RasterizerPipeline {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: None, // No depth testing - we manually compare depth in fragment shader
             multisample: wgpu::MultisampleState {
                 count: 1,
                 mask: !0,
@@ -497,17 +497,17 @@ impl RasterizerState {
     ) {
         let view = &self.filter_render_target.view;
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Voxel Render Pass"),
+            label: Some("Filter Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,
             })],
-            depth_stencil_attachment: None,
+            depth_stencil_attachment: None, // No depth attachment - we only read depth via texture binding
             timestamp_writes: None,
             occlusion_query_set: None,
         });

@@ -142,6 +142,8 @@ impl FilterBindings {
     }
 
     pub async fn clear_buffers(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        crate::buf::clear_gpu_buffer(device, queue, &self.flags_buffer).await
+        // Clear both the flags buffer and the output buffer counter
+        crate::buf::clear_gpu_buffer(device, queue, &self.flags_buffer).await;
+        crate::buf::clear_gpu_buffer(device, queue, &self.output_buffer).await;
     }
 }
