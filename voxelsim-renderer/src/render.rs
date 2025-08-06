@@ -66,6 +66,7 @@ pub struct CellAssets {
     pub drone_mat: Handle<StandardMaterial>,
     pub action_mat: Handle<StandardMaterial>,
     pub action_origin_mat: Handle<StandardMaterial>,
+    pub drone_scene: Option<Handle<Scene>>,
 }
 
 impl CellAssets {
@@ -85,12 +86,32 @@ impl CellAssets {
             self.drone_mat.clone()
         }
     }
+
+    pub fn spawn_agent_with_model(&self, commands: &mut Commands, agent: Agent, transform: Transform) {
+        if let Some(ref drone_scene) = self.drone_scene {
+            // Spawn GLTF scene
+            commands.spawn((
+                AgentComponent { agent },
+                SceneRoot(drone_scene.clone()),
+                transform,
+            ));
+        } else {
+            // Fallback to torus mesh
+            commands.spawn((
+                AgentComponent { agent },
+                Mesh3d(self.drone_mesh.clone()),
+                MeshMaterial3d(self.drone_body_mat.clone()),
+                transform,
+            ));
+        }
+    }
 }
 
 pub fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
 ) {
     let drone_body_mat = materials.add(Color::srgb(1.0, 0.5, 0.5));
     let sparse_mat = materials.add(StandardMaterial {
@@ -133,6 +154,14 @@ pub fn setup(
 
     let cube_mesh = meshes.add(Cuboid::default());
     let drone_mesh = meshes.add(Torus::default());
+    
+    // Try to load drone GLTF, fallback to None if it doesn't exist
+    let drone_scene = if std::path::Path::new("assets/drone.gltf").exists() {
+        Some(asset_server.load("drone.gltf#Scene0"))
+    } else {
+        None
+    };
+    
     commands.insert_resource(CellAssets {
         cube_mesh: cube_mesh.clone(),
         drone_mesh,
@@ -145,6 +174,7 @@ pub fn setup(
         target_mat,
         action_mat,
         action_origin_mat,
+        drone_scene,
     });
 
     commands.spawn((
@@ -159,6 +189,10 @@ pub fn setup(
         affects_lightmapped_meshes: true,
         ..Default::default()
     });
+    
+    // Set clear color to black
+    commands.insert_resource(ClearColor(Color::BLACK));
+    
     // Spawn PanOrbitCamera
     commands.spawn((
         PanOrbitCamera::default(),

@@ -29,7 +29,7 @@ mod ffi {
     use voxelsim::env::VoxelGrid;
 
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn render_borrowed(
+    pub unsafe extern "C" fn vxs_render_borrowed(
         camera_view_proj: Matrix4<f64>,
         filter_world: *mut VirtualGrid,
         render_state: *mut State,
@@ -55,7 +55,7 @@ mod ffi {
     }
 
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn render_shared(
+    pub unsafe extern "C" fn vxs_render_shared(
         camera_view_proj: Matrix4<f64>,
         filter_world: Arc<Mutex<VirtualGrid>>,
         render_state: *mut State,
@@ -83,7 +83,7 @@ mod ffi {
     }
 
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn create_renderer(
+    pub unsafe extern "C" fn vxs_create_renderer(
         world: *const VoxelGrid,
         view_size: Vector2<u32>,
     ) -> *mut State {

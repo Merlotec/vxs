@@ -1,6 +1,7 @@
 use nalgebra::{Matrix3, Rotation3, UnitQuaternion, Vector3};
 
 /// PID parameters for position controller
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct PosPIDParams {
     pub kp: Vector3<f64>,
     pub ki: Vector3<f64>,
@@ -14,6 +15,7 @@ pub struct PosPIDState {
 }
 
 /// PID parameters for rate controller
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct RatePIDParams {
     pub kp: Vector3<f64>,
     pub ki: Vector3<f64>,
@@ -35,6 +37,17 @@ impl Default for PosPIDParams {
             kp: Vector3::new(1.0, 1.0, 1.0),
             ki: Vector3::new(0.0, 0.0, 0.0),
             kd: Vector3::new(0.5, 0.5, 0.5),
+        }
+    }
+}
+
+impl PosPIDParams {
+    pub fn default_moving() -> Self {
+        PosPIDParams {
+            // ArduPilot default gains for position P: 1.0, I: 0.0, D: 0.5
+            kp: Vector3::new(2.5, 2.5, 2.5),
+            ki: Vector3::new(0.015, 0.015, 0.015),
+            kd: Vector3::new(5.0, 5.0, 5.0),
         }
     }
 }
@@ -63,6 +76,25 @@ impl Default for RatePIDParams {
 
             // prevent the integral term from growing unbounded
             max_integral: Vector3::new(0.2, 0.2, 0.1),
+        }
+    }
+}
+
+impl RatePIDParams {
+    pub fn default_moving() -> Self {
+        RatePIDParams {
+            // roughly half of the ArduPilot defaults
+            kp: Vector3::new(3.0, 3.0, 6.0),
+            // quarter the I‐gain to slow down windup
+            ki: Vector3::new(0.075, 0.075, 0.03),
+            // bump up D slightly to help damp any residual oscillation
+            kd: Vector3::new(0.03, 0.03, 0.015),
+
+            // clamp torques to a realistic small‐quad range
+            max_torque: Vector3::new(0.15, 0.15, 0.3),
+
+            // prevent the integral term from growing unbounded
+            max_integral: Vector3::new(0.3, 0.3, 0.15),
         }
     }
 }
