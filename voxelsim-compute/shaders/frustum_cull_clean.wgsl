@@ -18,10 +18,19 @@ struct CullParams {
     _padding: array<u32, 2>,
 }
 
+struct IndirectDrawCommand {
+    index_count: u32,     // Number of indices to draw
+    instance_count: u32,  // Number of instances (set by GPU)
+    first_index: u32,     // First index in index buffer
+    vertex_offset: i32,   // Offset added to vertex indices
+    first_instance: u32,  // First instance to draw
+}
+
 @group(0) @binding(0) var<storage, read> input_instances: array<CellInstance>;
 @group(0) @binding(1) var<storage, read_write> output_instances: array<CellInstance>;
 @group(0) @binding(2) var<storage, read_write> cull_params: CullParams;
 @group(0) @binding(3) var<uniform> camera: CameraUniform;
+@group(0) @binding(4) var<storage, read_write> indirect_draw: IndirectDrawCommand;
 
 // Test if a unit cube is visible in the frustum
 // Use the robust "positive vertex" approach for better edge handling
@@ -88,6 +97,12 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     
     // Bounds check
     if index >= cull_params.instance_count {
+        // Even out-of-bounds threads need to participate in the barrier
+        if index == cull_params.instance_count {
+            // Let the first out-of-bounds thread update the indirect draw command
+            // This ensures it happens after all valid threads are done
+            indirect_draw.instance_count = atomicLoad(&cull_params.visible_count);
+        }
         return;
     }
     
@@ -109,5 +124,15 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         if output_index < arrayLength(&output_instances) {
             output_instances[output_index] = instance;
         }
+    }
+    
+    // TEMPORARY DEBUG: Force every thread to try writing (should be atomic-safe)
+    // This will help us see if ANY thread can write to the buffer
+    let visible = atomicLoad(&cull_params.visible_count);
+    indirect_draw.instance_count = 1000u; // Force a fixed value for testing
+    
+    // Also try setting it in the main thread
+    if index == 0u {
+        indirect_draw.instance_count = 500u; // Thread 0 should write 500
     }
 }
