@@ -191,7 +191,7 @@ fn coord_noise(coord: vec3<f32>, view_pos: vec3<f32>) -> vec3<f32> {
     let dis = length(view_pos - coord);
     let err = dis * dis;
     let err_dir = normalize(coord - view_pos);
-    return coord + err_dir * (simplex6_fbm01(coord, view_pos) * 0.4 * dis);            
+    return err_dir * (simplex6_fbm01(coord, view_pos) * 0.4 * dis);            
 }
 
 fn round_to_coord(v: vec3<f32>) -> vec3<i32> {
@@ -208,13 +208,14 @@ fn vs_main(
     let camera_pos = camera.pos;
     if noise6.enabled != 0 {    
         let instance_pos = vec3<f32>(instance.coord);
-        let noisy_pos = coord_noise(instance_pos, camera_pos);
-        let world_position = vec4<f32>(model.position + instance_pos, 1.0);
-        out.clip_position = camera.view_proj * world_position;
-        out.coord = round_to_coord(noisy_pos);
+        let noise = coord_noise(instance_pos, camera_pos);
+        out.coord = round_to_coord(instance_pos + noise);
     } else {
         out.coord = instance.coord;
     }
+    
+    let world_position = vec4<f32>(model.position + vec3<f32>(out.coord), 1.0);
+    out.clip_position = camera.view_proj * world_position;
     out.value = instance.value;
     return out;
 }

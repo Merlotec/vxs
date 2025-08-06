@@ -3,10 +3,18 @@ use crate::rasterizer::RasterizerState;
 use crate::rasterizer::camera::CameraMatrix;
 use crate::rasterizer::noise::NoiseParams;
 use crate::rasterizer::{CellInstance, InstanceBuffer};
+use bytemuck::{Pod, Zeroable};
 use nalgebra::Vector2;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use voxelsim::viewport::{VirtualCell, VirtualGrid};
 use voxelsim::{Cell, Coord, VoxelGrid};
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Default, Pod, Zeroable)]
+pub struct FilterCoord {
+    coord: Coord,
+    _p0: i32,
+}
 
 pub struct State {
     pub device: wgpu::Device,
@@ -84,7 +92,7 @@ impl State {
         camera_matrix: &CameraMatrix,
         filter_world: &VirtualGrid,
     ) -> Result<WorldChangeset, wgpu::SurfaceError> {
-        let total_start = std::time::Instant::now();
+        // let total_start = std::time::Instant::now();
         // Get the current texture to render to from the swap chain.
         //let output = self.surface.get_current_texture()?;
         //let view = output
@@ -113,7 +121,7 @@ impl State {
         // );
 
         // === PHASE 2: GPU Command Encoding ===
-        let encoding_start = std::time::Instant::now();
+        // let encoding_start = std::time::Instant::now();
 
         // Wait for culling to complete
         self.device
@@ -173,8 +181,9 @@ impl State {
         self.queue.submit(std::iter::once(encoder.finish()));
         //output.present();
 
-        // Update filter buffer.
-        CellInstance::write_instance_buffer(&self.queue, &self.filter_buffer, filter_world); // Run filter stage.
+        // Clear filter buffers and update filter buffer.
+        self.rasterizer_state.filter.clear_buffers(&self.device, &self.queue).await;
+        CellInstance::write_instance_buffer(&self.queue, &self.filter_buffer, filter_world);
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -198,7 +207,7 @@ impl State {
         // );
 
         // === PHASE 2: Prepare Read Operations ===
-        let prepare_start = std::time::Instant::now();
+        // let prepare_start = std::time::Instant::now();
 
         // Prepare both operations without polling
         let texture_op = self
@@ -276,11 +285,17 @@ impl State {
         };
 
         // Process the filter data
-        let count = u32::from_le_bytes(filter_data[0..4].try_into().unwrap());
-        let output_data_slice: &[voxelsim::Coord] = bytemuck::cast_slice(&filter_data[4..]);
-        let to_remove = output_data_slice[..count as usize].to_vec();
+        let count = u32::from_le_bytes(filter_data[0..4].try_into().unwrap()) as usize;
+        // Due to std140 we must start offset at 16
+        let base = 16usize;
+        let output_data_slice: &[FilterCoord] = bytemuck::cast_slice(
+            &filter_data[base..base + count * std::mem::size_of::<FilterCoord>()],
+        );
+        let to_remove = output_data_slice.to_vec();
 
-        let processing_time = processing_start.elapsed();
+        println!("To remove: {:?}", count);
+
+        // let processing_time = processing_start.elapsed();
         // println!(
         //     "🔄 Data Processing: {:.2}ms",
         //     processing_time.as_secs_f64() * 1000.0
@@ -324,7 +339,7 @@ impl State {
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct WorldChangeset {
     pub to_insert: Vec<(Coord, Cell)>,
-    pub to_remove: Vec<Coord>,
+    pub to_remove: Vec<FilterCoord>,
 }
 
 #[cfg_attr(feature = "python", pyo3::prelude::pymethods)]
@@ -342,7 +357,7 @@ impl WorldChangeset {
             }
         });
         self.to_remove.par_iter().for_each(|coord| {
-            world.cells().remove(coord);
+            world.cells().remove(&coord.coord);
         });
     }
 }

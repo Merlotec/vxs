@@ -8,6 +8,7 @@ var<push_constant> camera: CameraUniform;
 
 struct OutputData {
     coord: vec3<i32>,
+    _p0: i32,
 };
 
 // The output buffer is a struct containing an atomic counter and the data array
@@ -70,12 +71,16 @@ fn vs_main(
 // FRAGMENT SHADER
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) u32 {
-    // 1. Sample the external depth texture at the fragment's screen coordinate
-    let frag_coords: vec2<f32> = in.clip_position.xy;
-    //let sampled_depth = textureSample(external_depth_texture, external_depth_sampler, frag_coords);
-    let coord = vec2<i32>(floor(frag_coords));
-    let sampled_depth = textureLoad(external_depth_texture, coord, 0);
-    // 2. Perform the depth check
+    // 1. Convert clip space coordinates to texture coordinates
+    // clip_position is in screen space (pixels), we need normalized [0,1] coordinates
+    let screen_size = vec2<f32>(textureDimensions(external_depth_texture, 0));
+    let tex_coords = in.clip_position.xy / screen_size;
+    
+    // 2. Sample the external depth texture using the sampler (for interpolation)
+    let sampled_depth = textureSample(external_depth_texture, external_depth_sampler, tex_coords);
+    
+    // 3. Perform the depth check - if this fragment is BEHIND the already rendered geometry
+    // (larger depth value), then it should be filtered out (removed from the scene)
     if (in.clip_position.z + EPSILON < sampled_depth) {
         // 3. Try to claim the write for this instance.
         // atomicExchange sets the flag to 1 and returns the *old* value.
