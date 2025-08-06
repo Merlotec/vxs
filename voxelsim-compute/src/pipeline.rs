@@ -182,7 +182,10 @@ impl State {
         //output.present();
 
         // Clear filter buffers and update filter buffer.
-        self.rasterizer_state.filter.clear_buffers(&self.device, &self.queue).await;
+        self.rasterizer_state
+            .filter
+            .clear_buffers(&self.device, &self.queue)
+            .await;
         CellInstance::write_instance_buffer(&self.queue, &self.filter_buffer, filter_world);
         let mut encoder = self
             .device
@@ -292,8 +295,6 @@ impl State {
             &filter_data[base..base + count * std::mem::size_of::<FilterCoord>()],
         );
         let to_remove = output_data_slice.to_vec();
-
-        println!("To remove: {:?}", count);
 
         // let processing_time = processing_start.elapsed();
         // println!(
