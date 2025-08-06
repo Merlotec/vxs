@@ -4,6 +4,7 @@ use bevy::platform::collections::HashMap;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Vector3;
+use voxelsim::trajectory::Trajectory;
 use voxelsim::viewport::{CameraOrientation, CameraProjection, VirtualGrid};
 
 use crate::network::NetworkSubscriber;
@@ -230,6 +231,7 @@ fn synchronise_world(
         (With<Camera3d>, With<PovCamera>, Without<AgentComponent>),
     >,
     mut camera_orientation: ResMut<OrientationRes>,
+    mut gizmos: Gizmos,
 ) {
     if let Some(mut pov) = pov.0.try_iter().last() {
         camera_orientation.0 = pov.orientation;
@@ -342,9 +344,25 @@ fn synchronise_world(
             agents_map.retain(|_, net_a| {
                 if agent_comp.agent.id == net_a.id {
                     let pos_f = net_a.pos.cast::<f32>();
-                    transform.translation = client_to_bevy_f32(pos_f);
+                    let bevy_pos = client_to_bevy_f32(pos_f);
+                    transform.translation = bevy_pos;
                     transform.rotation = client_to_bevy_quat(net_a.attitude);
                     agent_comp.agent = net_a.clone();
+
+                    // forward‐vector gizmo
+                    let fwd_client = agent_comp.agent.attitude * Vector3::y_axis();
+                    let fwd_bevy = client_to_bevy_f32(fwd_client.cast::<f32>().into_inner());
+                    gizmos.line(
+                        bevy_pos,
+                        bevy_pos + fwd_bevy * 5.0,
+                        Color::Srgba(Srgba::RED),
+                    );
+
+                    // spline
+                    if let Some(action) = &agent_comp.agent.action {
+                        draw_spline(&mut gizmos, &action.trajectory);
+                    }
+
                     found = true;
                     false
                 } else {
@@ -358,15 +376,50 @@ fn synchronise_world(
         // spawn new agents
         for (_, net_a) in agents_map.iter() {
             let start_f = net_a.pos.cast::<f32>();
-            commands.spawn((
-                AgentComponent {
-                    agent: net_a.clone(),
-                },
-                Mesh3d(assets.drone_mesh.clone()),
-                MeshMaterial3d(assets.drone_body_mat.clone()),
-                Transform::from_translation(client_to_bevy_f32(start_f)),
-                Visibility::Visible,
-            ));
+            let bevy_start = client_to_bevy_f32(start_f);
+            let transform = Transform::from_translation(bevy_start);
+            
+            if let Some(ref drone_scene) = assets.drone_scene {
+                // Spawn GLTF scene
+                commands.spawn((
+                    AgentComponent {
+                        agent: net_a.clone(),
+                    },
+                    SceneRoot(drone_scene.clone()),
+                    transform,
+                    Visibility::Visible,
+                ));
+            } else {
+                // Fallback to torus mesh
+                commands.spawn((
+                    AgentComponent {
+                        agent: net_a.clone(),
+                    },
+                    Mesh3d(assets.drone_mesh.clone()),
+                    MeshMaterial3d(assets.drone_body_mat.clone()),
+                    transform,
+                    Visibility::Visible,
+                ));
+            }
+
+            // forward‐vector gizmo for new agents
+            let fwd_client = net_a.attitude * Vector3::y_axis();
+            let fwd_bevy = client_to_bevy_f32(fwd_client.cast::<f32>().into_inner());
+            gizmos.line(
+                bevy_start,
+                bevy_start + fwd_bevy * 5.0,
+                Color::Srgba(Srgba::RED),
+            );
         }
     }
+}
+
+fn draw_spline(gizmos: &mut Gizmos, spline: &Trajectory) {
+    let segments = 200;
+    let pts: Vec<Vec3> = spline
+        .waypoints(segments)
+        .into_iter()
+        .map(|(_t, p)| client_to_bevy_f32(p.cast::<f32>()))
+        .collect();
+    gizmos.linestrip(pts.into_iter(), Color::Srgba(Srgba::BLUE));
 }
