@@ -292,32 +292,10 @@ impl State {
                 .unwrap();
         }
 
-        // Initialize indirect draw buffers with cube index count
-        let cube_index_count = 36u32; // 6 faces * 6 indices per face
-        self.rasterizer_state
-            .frustum_culling
-            .initialize_indirect_draw_buffer(&self.queue, cube_index_count);
-        self.rasterizer_state
-            .filter_frustum_culling
-            .initialize_indirect_draw_buffer(&self.queue, cube_index_count);
-
         if profile_enabled {
-            println!("    🎯 Using GPU-driven indirect draws (no readbacks needed)");
-            println!("    📊 Main instances: {}", self.rasterizer_state.instance_count());
-            println!("    🎯 Filter instances: {}", buffer_len);
+            println!("    ✅ Using optimized traditional culling with readbacks");
         }
 
-        // Debug: Check indirect draw commands AFTER culling completes
-        if profile_enabled {
-            println!("🔍 AFTER CULLING - Main indirect draw command:");
-            self.rasterizer_state
-                .frustum_culling
-                .debug_read_indirect_draw_command(&self.device, &self.queue);
-            println!("🔍 AFTER CULLING - Filter indirect draw command:");
-            self.rasterizer_state
-                .filter_frustum_culling
-                .debug_read_indirect_draw_command(&self.device, &self.queue);
-        }
 
         // Start GPU Command Encoding timer right before actual encoding begins
         let encoding_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
@@ -331,10 +309,28 @@ impl State {
                 label: Some("Rasterizer Encoder"),
             });
 
-        // Back to GPU-driven indirect rendering 
-        self.rasterizer_state.encode_rasterizer_indirect(
+        // Batched culling readback (more efficient than separate calls)
+        let readback_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
+        
+        let (visible_count, filter_visible_count) = self.rasterizer_state
+            .get_culling_counts_batched(&self.device, &self.queue);
+            
+        if let Some(start) = readback_start {
+            let readback_time = start.elapsed();
+            println!(
+                "📖 Batched Culling Readback: {:.2}ms (main: {} visible, filter: {} visible)",
+                readback_time.as_secs_f64() * 1000.0,
+                visible_count,
+                filter_visible_count
+            );
+        }
+            
+        // Use traditional rendering with known working count
+        self.rasterizer_state.encode_rasterizer(
             &mut encoder,
             camera_matrix,
+            visible_count > 0,
+            if visible_count > 0 { Some(visible_count) } else { None },
         );
 
         let main_submit_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
@@ -367,10 +363,15 @@ impl State {
                 label: Some("Filter Encoder"),
             });
 
-        // Use GPU-driven indirect filter rendering (fixed implementation)
-        self.rasterizer_state.encode_filter_indirect(
+        // Filter count already obtained from batched readback above
+            
+        self.rasterizer_state.encode_filter(
             &mut filter_encoder,
             camera_matrix,
+            &self.filter_buffer.buf,
+            buffer_len,
+            filter_visible_count > 0,
+            if filter_visible_count > 0 { Some(filter_visible_count) } else { None },
         );
 
         // Submit the filter rendering commands and capture the submission index
