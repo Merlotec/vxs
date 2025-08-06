@@ -241,3 +241,15 @@ impl Default for CameraView {
         }
     }
 }
+
+/// We keep track of uncertainty by generating a linear field with control points.
+/// This is updated if we are in a certain area.
+/// This basically allows us to know whether to update an area when we look at it or not.
+pub struct UncertaintyField<const X: usize, const Y: usize, const Z: usize> {
+    dense_grid: DashMap<Coord, UncertaintyChunk<X, Y, Z>>,
+}
+
+pub struct UncertaintyChunk<const X: usize, const Y: usize, const Z: usize> {
+    coord: Coord,
+    control_points: [[[u8; Z]; Y]; X],
+}

@@ -41,9 +41,9 @@ pub struct FixedLookaheadChaser {
 impl Default for FixedLookaheadChaser {
     fn default() -> Self {
         Self {
-            v_max_base: 3.0,
+            v_max_base: 6.0,
             s_lookahead_base: 0.12,
-            min_step: 1.0,
+            min_step: 2.0,
         }
     }
 }
