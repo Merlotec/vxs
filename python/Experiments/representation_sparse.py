@@ -396,6 +396,66 @@ class SparseEmbeddingTrainer:
         )
         
         return total
+    def _rasterize_gt(self, gt_coords: torch.Tensor, side: int) -> torch.Tensor:
+        # gt_coords: [G,3] in [0, side-1], float or long
+        vol = torch.zeros((side, side, side), device=gt_coords.device, dtype=torch.float32)
+        if gt_coords.numel() == 0:
+            return vol
+        ijk = gt_coords.long().clamp_(0, side-1)
+        vol[ijk[:, 0], ijk[:, 1], ijk[:, 2]] = 1.0
+        return vol
+
+    def _splat_trilinear(self, coords: torch.Tensor, mass: torch.Tensor, side: int) -> torch.Tensor:
+        """
+        coords: [Q,3], float in [0, side-1]
+        mass:   [Q]   (e.g., sigmoid(logits))
+        returns: [side, side, side] accumulated mass
+        """
+        Q = coords.size(0)
+        if Q == 0:
+            return torch.zeros((side, side, side), device=coords.device, dtype=coords.dtype)
+
+        # floor/frac indices
+        i0 = coords.floor()
+        f  = (coords - i0).clamp(0, 1)  # numeric safety
+        i0 = i0.long().clamp(0, side - 1)
+        i1 = (i0 + 1).clamp(0, side - 1)
+
+        x0, y0, z0 = i0.unbind(dim=-1)
+        x1, y1, z1 = i1.unbind(dim=-1)
+        fx, fy, fz = f.unbind(dim=-1)
+
+        w000 = (1 - fx) * (1 - fy) * (1 - fz)
+        w100 = (    fx) * (1 - fy) * (1 - fz)
+        w010 = (1 - fx) * (    fy) * (1 - fz)
+        w110 = (    fx) * (    fy) * (1 - fz)
+        w001 = (1 - fx) * (1 - fy) * (    fz)
+        w101 = (    fx) * (1 - fy) * (    fz)
+        w011 = (1 - fx) * (    fy) * (    fz)
+        w111 = (    fx) * (    fy) * (    fz)
+
+        vol = coords.new_zeros((side, side, side))
+
+        def add_(w, xi, yi, zi):
+            flat_idx = (xi * side * side + yi * side + zi)
+            vol.view(-1).scatter_add_(0, flat_idx, mass * w)
+
+        add_(w000, x0, y0, z0)
+        add_(w100, x1, y0, z0)
+        add_(w010, x0, y1, z0)
+        add_(w110, x1, y1, z0)
+        add_(w001, x0, y0, z1)
+        add_(w101, x1, y0, z1)
+        add_(w011, x0, y1, z1)
+        add_(w111, x1, y1, z1)
+
+        return vol
+
+    def _soft_occupancy(self, acc: torch.Tensor, alpha: float = 2.0) -> torch.Tensor:
+        # Convert accumulated mass to [0,1] with saturation so multiple splats don’t exceed 1.
+        # pred_occ = 1 - exp(-alpha * acc)
+        return 1.0 - torch.exp(-alpha * acc.clamp_min(0))
+
         
 
 # ============== Data Generation ==============
