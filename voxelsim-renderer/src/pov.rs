@@ -5,7 +5,7 @@ use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Vector3;
 use voxelsim::trajectory::Trajectory;
-use voxelsim::viewport::{CameraOrientation, CameraProjection, VirtualGrid};
+use voxelsim::viewport::{CameraOrientation, CameraProjection};
 
 use crate::network::NetworkSubscriber;
 use crate::render::{
@@ -243,7 +243,7 @@ fn synchronise_world(
                 .map(|x| *x.deref())
             {
                 cell.value = v;
-                **material = assets.material_for_cell(&v.cell);
+                **material = assets.material_for_cell(&v);
                 pov.virtual_world.remove(&cell.coord);
             } else {
                 commands.entity(entity).despawn();
@@ -258,7 +258,7 @@ fn synchronise_world(
                     value: *cell,
                 },
                 Mesh3d(assets.cube_mesh.clone()),
-                MeshMaterial3d(assets.material_for_cell(&cell.cell)),
+                MeshMaterial3d(assets.material_for_cell(&cell)),
                 Transform::from_translation(client_to_bevy_i32(client)),
             ));
         }

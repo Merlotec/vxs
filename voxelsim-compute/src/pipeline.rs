@@ -6,7 +6,6 @@ use crate::rasterizer::{CellInstance, InstanceBuffer};
 use bytemuck::{Pod, Zeroable};
 use nalgebra::Vector2;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use voxelsim::viewport::{VirtualCell, VirtualGrid};
 use voxelsim::{Cell, Coord, VoxelGrid};
 
 #[repr(C)]
@@ -19,16 +18,16 @@ pub struct FilterCoord {
 // FilterWorld with optional pre-uploaded buffer
 #[derive(Debug, Clone)]
 pub struct FilterWorld {
-    pub grid: VirtualGrid,
+    pub grid: VoxelGrid,
     pub buffer: Option<Vec<CellInstance>>, // Pre-transformed GPU data
 }
 
 impl FilterWorld {
-    pub fn new(grid: VirtualGrid) -> Self {
+    pub fn new(grid: VoxelGrid) -> Self {
         Self { grid, buffer: None }
     }
-    
-    pub fn from_grid(grid: VirtualGrid) -> Self {
+
+    pub fn from_grid(grid: VoxelGrid) -> Self {
         Self { grid, buffer: None }
     }
 }
@@ -36,7 +35,7 @@ impl FilterWorld {
 // Enum for passing either VirtualGrid or FilterWorld to run()
 #[derive(Debug)]
 pub enum FilterInput<'a> {
-    VirtualGrid(&'a VirtualGrid),
+    VoxelGrid(&'a VoxelGrid),
     FilterWorld(&'a FilterWorld),
 }
 
@@ -111,11 +110,13 @@ impl State {
     }
 
     // Async function to prepare a FilterWorld buffer in background
-    pub async fn prepare_filter_world(filter_world: &mut FilterWorld) -> Option<wgpu::SubmissionIndex> {
+    pub async fn prepare_filter_world(
+        filter_world: &mut FilterWorld,
+    ) -> Option<wgpu::SubmissionIndex> {
         if filter_world.buffer.is_some() {
             return None; // Already prepared
         }
-        
+
         // Transform VirtualGrid to GPU format asynchronously
         let instance_data = tokio::task::spawn_blocking({
             let grid = filter_world.grid.clone();
@@ -126,26 +127,28 @@ impl State {
                         let (p, v) = r.pair();
                         CellInstance {
                             position: *p,
-                            value: v.cell.bits(),
+                            value: v.bits(),
                         }
                     })
                     .collect::<Vec<_>>()
             }
-        }).await.unwrap();
-        
+        })
+        .await
+        .unwrap();
+
         filter_world.buffer = Some(instance_data);
         None // No GPU submission happened here, just CPU work
     }
 
     // Async function to prepare FilterWorld buffer with GPU upload and return submission index
     pub async fn prepare_filter_world_with_upload(
-        &self, 
-        filter_world: &mut FilterWorld
+        &self,
+        filter_world: &mut FilterWorld,
     ) -> Option<wgpu::SubmissionIndex> {
         if filter_world.buffer.is_some() {
             return None; // Already prepared
         }
-        
+
         // Transform VirtualGrid to GPU format asynchronously
         let instance_data = tokio::task::spawn_blocking({
             let grid = filter_world.grid.clone();
@@ -156,17 +159,23 @@ impl State {
                         let (p, v) = r.pair();
                         CellInstance {
                             position: *p,
-                            value: v.cell.bits(),
+                            value: v.bits(),
                         }
                     })
                     .collect::<Vec<_>>()
             }
-        }).await.unwrap();
-        
+        })
+        .await
+        .unwrap();
+
         // Upload to GPU buffer and get submission index
-        self.queue.write_buffer(&self.filter_buffer.buf, 0, bytemuck::cast_slice(&instance_data));
+        self.queue.write_buffer(
+            &self.filter_buffer.buf,
+            0,
+            bytemuck::cast_slice(&instance_data),
+        );
         filter_world.buffer = Some(instance_data);
-        
+
         // Submit an empty command buffer to get a submission index for synchronization
         let submission_index = self.queue.submit(std::iter::empty());
         Some(submission_index)
@@ -179,7 +188,11 @@ impl State {
         filter_input: FilterInput<'_>,
     ) -> Result<WorldChangeset, wgpu::SurfaceError> {
         let profile_enabled = std::env::var("VXS_COMPUTE_PROFILE").is_ok();
-        let total_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
+        let total_start = if profile_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
         // Get the current texture to render to from the swap chain.
         //let output = self.surface.get_current_texture()?;
         //let view = output
@@ -187,48 +200,70 @@ impl State {
         //    .create_view(&wgpu::TextureViewDescriptor::default());
 
         // === PHASE 1: PARALLEL FRUSTUM CULLING ===
-        let culling_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
+        let culling_start = if profile_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
 
         // Clear filter buffers and prepare filter buffer FIRST (needed for filter culling)
-        let _buffer_prep_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
-        
+        let _buffer_prep_start = if profile_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
         // Start filter clear
         self.rasterizer_state
             .filter
             .clear_buffers(&self.device, &self.queue)
             .await;
-        
-        let buffer_write_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
-        
+
+        let buffer_write_start = if profile_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
         // Handle different input types - keep it simple and fast
         let (_filter_grid, buffer_len) = match &filter_input {
-            FilterInput::VirtualGrid(grid) => {
+            FilterInput::VoxelGrid(grid) => {
                 // Regular synchronous upload - the parallel data transformation is already fast
                 CellInstance::write_instance_buffer(&self.queue, &self.filter_buffer, grid);
                 if profile_enabled {
-                    println!("💾 Regular filter buffer upload from VirtualGrid");
+                    println!("💾 Regular filter buffer upload from VoxelGrid");
                 }
                 (*grid, grid.cells().len() as u32)
             }
             FilterInput::FilterWorld(filter_world) => {
                 if let Some(ref buffer_data) = filter_world.buffer {
                     // Use pre-prepared buffer
-                    self.queue.write_buffer(&self.filter_buffer.buf, 0, bytemuck::cast_slice(buffer_data));
+                    self.queue.write_buffer(
+                        &self.filter_buffer.buf,
+                        0,
+                        bytemuck::cast_slice(buffer_data),
+                    );
                     if profile_enabled {
                         println!("🚀 Used pre-prepared FilterWorld buffer");
                     }
                     (&filter_world.grid, buffer_data.len() as u32)
                 } else {
                     // Fallback upload
-                    CellInstance::write_instance_buffer(&self.queue, &self.filter_buffer, &filter_world.grid);
+                    CellInstance::write_instance_buffer(
+                        &self.queue,
+                        &self.filter_buffer,
+                        &filter_world.grid,
+                    );
                     if profile_enabled {
-                        println!("💾 Regular filter buffer upload from FilterWorld (no buffer prepared)");
+                        println!(
+                            "💾 Regular filter buffer upload from FilterWorld (no buffer prepared)"
+                        );
                     }
                     (&filter_world.grid, filter_world.grid.cells().len() as u32)
                 }
             }
         };
-        
+
         if let Some(start) = buffer_write_start {
             let buffer_write_time = start.elapsed();
             println!(
@@ -238,16 +273,24 @@ impl State {
         }
 
         // Create TWO culling encoders to run in parallel
-        let mut main_cull_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Main Frustum Culling Encoder"),
-        });
+        let mut main_cull_encoder =
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Main Frustum Culling Encoder"),
+                });
 
-        let mut filter_cull_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Filter Frustum Culling Encoder"),
-        });
+        let mut filter_cull_encoder =
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Filter Frustum Culling Encoder"),
+                });
 
         // Encode main frustum culling
-        self.rasterizer_state.encode_frustum_culling(&mut main_cull_encoder, &self.queue, camera_matrix);
+        self.rasterizer_state.encode_frustum_culling(
+            &mut main_cull_encoder,
+            &self.queue,
+            camera_matrix,
+        );
 
         // Encode filter frustum culling in parallel
         self.rasterizer_state.encode_filter_frustum_culling(
@@ -260,10 +303,9 @@ impl State {
         );
 
         // Submit BOTH culling operations together for maximum parallelism
-        let culling_submissions = self.queue.submit([
-            main_cull_encoder.finish(),
-            filter_cull_encoder.finish(),
-        ].into_iter());
+        let culling_submissions = self
+            .queue
+            .submit([main_cull_encoder.finish(), filter_cull_encoder.finish()].into_iter());
 
         if let Some(start) = culling_start {
             let culling_time = start.elapsed();
@@ -274,18 +316,25 @@ impl State {
         }
 
         // === PHASE 2: GPU Command Encoding ===
-        
+
         if profile_enabled {
             println!("    ✅ Using optimized traditional culling with readbacks");
         }
 
-
         // Start GPU Command Encoding timer right before actual encoding begins
-        let encoding_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
+        let encoding_start = if profile_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
 
         // A command encoder builds a command buffer that we can send to the GPU.
-        let main_encode_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
-        
+        let main_encode_start = if profile_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -293,11 +342,16 @@ impl State {
             });
 
         // Batched culling readback (more efficient than separate calls)
-        let readback_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
-        
-        let (visible_count, filter_visible_count) = self.rasterizer_state
+        let readback_start = if profile_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
+        let (visible_count, filter_visible_count) = self
+            .rasterizer_state
             .get_culling_counts_batched(&self.device, &self.queue);
-            
+
         if let Some(start) = readback_start {
             let readback_time = start.elapsed();
             println!(
@@ -307,18 +361,26 @@ impl State {
                 filter_visible_count
             );
         }
-            
+
         // Use traditional rendering with known working count
         self.rasterizer_state.encode_rasterizer(
             &mut encoder,
             camera_matrix,
             visible_count > 0,
-            if visible_count > 0 { Some(visible_count) } else { None },
+            if visible_count > 0 {
+                Some(visible_count)
+            } else {
+                None
+            },
         );
 
-        let main_submit_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
+        let main_submit_start = if profile_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
         self.queue.submit(std::iter::once(encoder.finish()));
-        
+
         if let Some(start) = main_submit_start {
             let main_submit_time = start.elapsed();
             println!(
@@ -326,7 +388,7 @@ impl State {
                 main_submit_time.as_secs_f64() * 1000.0
             );
         }
-        
+
         if let Some(start) = main_encode_start {
             let main_encode_time = start.elapsed();
             println!(
@@ -334,33 +396,45 @@ impl State {
                 main_encode_time.as_secs_f64() * 1000.0
             );
         }
-        
+
         //output.present();
 
         // Create filter encoder with culling results
-        let filter_encode_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
-        
-        let mut filter_encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Filter Encoder"),
-            });
+        let filter_encode_start = if profile_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
+        let mut filter_encoder =
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Filter Encoder"),
+                });
 
         // Filter count already obtained from batched readback above
-            
+
         self.rasterizer_state.encode_filter(
             &mut filter_encoder,
             camera_matrix,
             &self.filter_buffer.buf,
             buffer_len,
             filter_visible_count > 0,
-            if filter_visible_count > 0 { Some(filter_visible_count) } else { None },
+            if filter_visible_count > 0 {
+                Some(filter_visible_count)
+            } else {
+                None
+            },
         );
 
         // Submit the filter rendering commands and capture the submission index
-        let filter_submit_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
+        let filter_submit_start = if profile_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
         let render_submission = self.queue.submit(std::iter::once(filter_encoder.finish()));
-        
+
         if let Some(start) = filter_submit_start {
             let filter_submit_time = start.elapsed();
             println!(
@@ -368,7 +442,7 @@ impl State {
                 filter_submit_time.as_secs_f64() * 1000.0
             );
         }
-        
+
         if let Some(start) = filter_encode_start {
             let filter_encode_time = start.elapsed();
             println!(
@@ -386,7 +460,11 @@ impl State {
         }
 
         // === PHASE 2: Prepare Read Operations ===
-        let prepare_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
+        let prepare_start = if profile_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
 
         // Prepare both operations without polling
         let texture_op = self
@@ -412,7 +490,11 @@ impl State {
         let filter_submission = filter_op.submission_index.clone();
 
         // === PHASE 3: GPU Polling ===
-        let polling_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
+        let polling_start = if profile_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
 
         // Wait for all specific submissions to complete
         let all_submissions = vec![
@@ -421,7 +503,7 @@ impl State {
             texture_submission,
             filter_submission,
         ];
-        
+
         self.staging_pool.wait_for_submissions(&all_submissions);
 
         if let Some(start) = polling_start {
@@ -433,7 +515,11 @@ impl State {
         }
 
         // === PHASE 4: Parallel Buffer Reads ===
-        let parallel_read_start = if profile_enabled { Some(std::time::Instant::now()) } else { None };
+        let parallel_read_start = if profile_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
 
         // Execute both read operations in parallel
         let results = self
@@ -520,16 +606,10 @@ pub struct WorldChangeset {
 
 #[cfg_attr(feature = "python", pyo3::prelude::pymethods)]
 impl WorldChangeset {
-    pub fn update_world(&self, world: &mut VirtualGrid) {
+    pub fn update_world(&self, world: &mut VoxelGrid) {
         self.to_insert.par_iter().for_each(|(coord, cell)| {
             if !cell.is_empty() {
-                world.cells().insert(
-                    *coord,
-                    VirtualCell {
-                        cell: *cell,
-                        uncertainty: 0.0,
-                    },
-                );
+                world.cells().insert(*coord, *cell);
             }
         });
         self.to_remove.par_iter().for_each(|coord| {
