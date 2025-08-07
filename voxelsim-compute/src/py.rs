@@ -5,6 +5,7 @@ use crate::rasterizer::noise::NoiseParams;
 
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
+use std::ops::Deref;
 use voxelsim::RendererClient;
 use voxelsim::env::VoxelGrid;
 use voxelsim::viewport::CameraOrientation;
@@ -51,23 +52,27 @@ impl AgentVisionRenderer {
     }
     pub fn update_filter_world_py(
         &self,
+        py: Python<'_>,
         camera: CameraView,
         proj: CameraProjection,
-        filter_world: FilterWorld,
+        filter_world: Py<FilterWorld>,
         timestamp: f64,
         callback: PyObject,
     ) {
-        self.update_filter_world(
-            camera.view_matrix(),
-            proj.projection_matrix(),
-            filter_world,
-            timestamp,
-            move |fw| {
-                Python::with_gil(|py| {
-                    let _ = callback.call1(py, (fw.clone(),));
-                });
-            },
-        )
+        let fw_clone = filter_world.borrow(py).deref().clone();
+        py.allow_threads(move || {
+            self.update_filter_world(
+                camera.view_matrix(),
+                proj.projection_matrix(),
+                fw_clone,
+                timestamp,
+                move |fw| {
+                    Python::with_gil(|py| {
+                        let _ = callback.call1(py, (filter_world.clone_ref(py),));
+                    });
+                },
+            )
+        });
     }
 }
 
