@@ -3,7 +3,6 @@ use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Vector3;
 
-use voxelsim::viewport::VirtualCell;
 use voxelsim::{Agent, Cell, Coord, PovData, VoxelGrid};
 
 use bevy::app::AppExit;
@@ -20,7 +19,7 @@ pub struct CellComponent {
 #[derive(Component)]
 pub struct VirtualCellComponent {
     pub coord: Coord,
-    pub value: VirtualCell,
+    pub value: Cell,
 }
 
 #[derive(Component)]

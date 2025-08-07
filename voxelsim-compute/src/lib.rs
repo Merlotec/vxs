@@ -11,7 +11,7 @@ use pipeline::State;
 use std::ops::{Deref, DerefMut};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
-use voxelsim::viewport::{CameraOrientation, CameraProjection, VirtualGrid};
+use voxelsim::viewport::{CameraOrientation, CameraProjection};
 use voxelsim::{PovDataRef, RendererClient, VoxelGrid};
 
 use crate::rasterizer::noise::NoiseParams;
@@ -25,32 +25,25 @@ mod ffi {
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
     use std::ops::Deref;
     use std::sync::{Arc, Mutex};
-    use voxelsim::agent::viewport::{VirtualCell, VirtualGrid};
-    use voxelsim::env::VoxelGrid;
+    use voxelsim::VoxelGrid;
 
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn vxs_render_borrowed(
         camera_view_proj: Matrix4<f64>,
-        filter_world: *mut VirtualGrid,
+        filter_world: *mut VoxelGrid,
         render_state: *mut State,
     ) {
         let render_state: &mut State = std::mem::transmute(render_state);
-        let filter_world: &mut VirtualGrid = std::mem::transmute(filter_world);
+        let filter_world: &mut VoxelGrid = std::mem::transmute(filter_world);
         let camera_matrix = CameraMatrix::from_view_proj(camera_view_proj);
         let change = futures::executor::block_on(render_state.run(
             &camera_matrix,
-            pipeline::FilterInput::VirtualGrid(&filter_world),
+            pipeline::FilterInput::VoxelGrid(&filter_world),
         ))
         .unwrap();
 
         change.to_insert.into_par_iter().for_each(|(coord, cell)| {
-            filter_world.cells().insert(
-                coord,
-                VirtualCell {
-                    cell,
-                    uncertainty: 0.0,
-                },
-            );
+            filter_world.cells().insert(coord, cell);
         });
         change.to_remove.into_par_iter().for_each(|coord| {
             filter_world.cells().remove(&coord);
@@ -60,26 +53,20 @@ mod ffi {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn vxs_render_shared(
         camera_view_proj: Matrix4<f64>,
-        filter_world: Arc<Mutex<VirtualGrid>>,
+        filter_world: Arc<Mutex<VoxelGrid>>,
         render_state: *mut State,
     ) {
         let render_state: &mut State = std::mem::transmute(render_state);
         let camera_matrix = CameraMatrix::from_view_proj(camera_view_proj);
         let change = futures::executor::block_on(render_state.run(
             &camera_matrix,
-            pipeline::FilterInput::VirtualGrid(filter_world.lock().unwrap().deref()),
+            pipeline::FilterInput::VoxelGrid(filter_world.lock().unwrap().deref()),
         ))
         .unwrap();
 
         let filter_world = filter_world.lock().unwrap();
         change.to_insert.into_par_iter().for_each(|(coord, cell)| {
-            filter_world.cells().insert(
-                coord,
-                VirtualCell {
-                    cell,
-                    uncertainty: 0.0,
-                },
-            );
+            filter_world.cells().insert(coord, cell);
         });
         change.to_remove.into_par_iter().for_each(|coord| {
             filter_world.cells().remove(&coord);
@@ -109,14 +96,14 @@ pub struct RenderFrameId(u64);
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct FilterWorld {
-    world: Arc<Mutex<VirtualGrid>>,
+    world: Arc<Mutex<VoxelGrid>>,
     frames: Arc<Mutex<Vec<f64>>>,
 }
 
 impl Default for FilterWorld {
     fn default() -> Self {
         Self {
-            world: Arc::new(Mutex::new(VirtualGrid::with_capacity(1000))),
+            world: Arc::new(Mutex::new(VoxelGrid::new())),
             frames: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -162,7 +149,7 @@ pub enum RenderCommand {
     Render {
         view: Matrix4<f64>,
         proj: Matrix4<f64>,
-        filter_world: Arc<Mutex<VirtualGrid>>,
+        filter_world: Arc<Mutex<VoxelGrid>>,
         sender: SyncSender<WorldChangeset>,
     },
 }
@@ -195,7 +182,7 @@ impl AgentVisionRenderer {
                     if let Ok(changeset) = state
                         .run(
                             &camera_matrix,
-                            pipeline::FilterInput::VirtualGrid(
+                            pipeline::FilterInput::VoxelGrid(
                                 filter_world.lock().unwrap().deref(),
                             ),
                         )
@@ -239,7 +226,7 @@ impl AgentVisionRenderer {
         &self,
         view: Matrix4<f64>,
         proj: Matrix4<f64>,
-        filter_world: Arc<Mutex<VirtualGrid>>,
+        filter_world: Arc<Mutex<VoxelGrid>>,
     ) {
         let rx = self.render(view, proj, filter_world.clone());
         std::thread::spawn(move || {
@@ -254,7 +241,7 @@ impl AgentVisionRenderer {
         &self,
         view: Matrix4<f64>,
         proj: Matrix4<f64>,
-        filter_world: Arc<Mutex<VirtualGrid>>,
+        filter_world: Arc<Mutex<VoxelGrid>>,
     ) -> Receiver<WorldChangeset> {
         let (tx, rx) = mpsc::sync_channel(1000);
         self.sender

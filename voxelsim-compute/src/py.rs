@@ -53,7 +53,7 @@ impl AgentVisionRenderer {
     pub fn update_filter_world_py(
         &self,
         py: Python<'_>,
-        camera: CameraView,
+        camera: &CameraView,
         proj: CameraProjection,
         filter_world: Py<FilterWorld>,
         timestamp: f64,
