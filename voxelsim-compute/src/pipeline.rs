@@ -211,37 +211,12 @@ impl State {
                 label: Some("Rasterizer Encoder"),
             });
 
-        // Batched culling readback (more efficient than separate calls)
-        let readback_start = if profile_enabled {
-            Some(std::time::Instant::now())
-        } else {
-            None
-        };
-
-        let (visible_count, filter_visible_count) = self
-            .rasterizer_state
-            .get_culling_counts_batched(&self.device, &self.queue);
-
-        if let Some(start) = readback_start {
-            let readback_time = start.elapsed();
-            println!(
-                "📖 Batched Culling Readback: {:.2}ms (main: {} visible, filter: {} visible)",
-                readback_time.as_secs_f64() * 1000.0,
-                visible_count,
-                filter_visible_count
-            );
-        }
-
-        // Use traditional rendering with known working count
+        // Encode main rasterizer pass using culled instances with indirect draw
         self.rasterizer_state.encode_rasterizer(
             &mut encoder,
             camera_matrix,
-            visible_count > 0,
-            if visible_count > 0 {
-                Some(visible_count)
-            } else {
-                None
-            },
+            true,
+            None,
         );
 
         let main_submit_start = if profile_enabled {
@@ -282,19 +257,13 @@ impl State {
                     label: Some("Filter Encoder"),
                 });
 
-        // Filter count already obtained from batched readback above
-
         self.rasterizer_state.encode_filter(
             &mut filter_encoder,
             camera_matrix,
             &self.filter_buffer.buf,
             buffer_len,
-            filter_visible_count > 0,
-            if filter_visible_count > 0 {
-                Some(filter_visible_count)
-            } else {
-                None
-            },
+            true,
+            None,
         );
 
         // Submit the filter rendering commands and capture the submission index
