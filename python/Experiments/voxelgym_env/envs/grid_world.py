@@ -127,7 +127,7 @@ class GridWorldEnv(gym.Env):
                 self.agent.perform_sequence_py(mv_commands)
             else:
                 # We need to keep getting commands until we either get a stop or we hit the limit.
-                return self.snapshot, self.reward, False, False, "next_command"
+                return self.snapshot, 0, False, False, "next_command"
 
         if self.filter_world_upd_ts and self.filter_world_update_ts - self.world_time >= self.filter_update_lag:
             changeset = self.await_changeset()
