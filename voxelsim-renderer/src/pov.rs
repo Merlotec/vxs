@@ -27,6 +27,15 @@ pub struct CameraMode {
 #[derive(Component)]
 pub struct PovCamera;
 
+#[derive(Component)]
+struct TelemetryText;
+
+#[derive(Resource, Default, Debug, Clone, Copy)]
+struct PovStats {
+    voxel_count: usize,
+    agent_id: usize,
+}
+
 pub fn run_pov_server(port_offset: u16) {
     let (mut pov_sub, pov_receiver) = NetworkSubscriber::<PovData>::new(
         std::env::var("VXS_POV_ADDR").unwrap_or("172.0.0.1".to_string()),
@@ -97,10 +106,10 @@ pub fn begin_render(
                 }),
             PanOrbitCameraPlugin,
         ))
-        .add_systems(Startup, render::setup)
+        .add_systems(Startup, (render::setup, setup_pov_ui))
         .add_systems(
             Update,
-            (synchronise_world, centre_camera_system, quit_system),
+            (synchronise_world, centre_camera_system, update_pov_ui_text, quit_system),
         )
         .insert_resource(PovReceiver(pov_receiver))
         .insert_resource(AgentReceiver(agent_receiver))
@@ -108,6 +117,7 @@ pub fn begin_render(
         .insert_resource(CameraMode { is_pov: false })
         .insert_resource(QuitReceiver(quit_receiver))
         .insert_resource(OrientationRes(CameraOrientation::default()))
+        .insert_resource(PovStats::default())
         .run();
 }
 
@@ -232,8 +242,12 @@ fn synchronise_world(
     >,
     mut camera_orientation: ResMut<OrientationRes>,
     mut gizmos: Gizmos,
+    mut pov_stats: ResMut<PovStats>,
 ) {
     if let Some(mut pov) = pov.0.try_iter().last() {
+        // Snapshot voxel count before we mutate the grid while syncing
+        pov_stats.voxel_count = pov.virtual_world.cells().len();
+        pov_stats.agent_id = pov.agent_id;
         camera_orientation.0 = pov.orientation;
         for (entity, mut cell, mut material) in cell_query.iter_mut() {
             if let Some(v) = pov
@@ -422,4 +436,78 @@ fn draw_spline(gizmos: &mut Gizmos, spline: &Trajectory) {
         .map(|(_t, p)| client_to_bevy_f32(p.cast::<f32>()))
         .collect();
     gizmos.linestrip(pts.into_iter(), Color::Srgba(Srgba::BLUE));
+}
+
+fn setup_pov_ui(mut commands: Commands) {
+    // Root container (top-left overlay)
+    commands
+        .spawn((
+            Node {
+                position_type: bevy::ui::PositionType::Absolute,
+                left: bevy::ui::Val::Px(10.0),
+                top: bevy::ui::Val::Px(10.0),
+                ..default()
+            },
+            BackgroundColor(Color::NONE),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new(""),
+                TextColor(Color::WHITE),
+                TelemetryText,
+            ));
+        });
+}
+
+fn update_pov_ui_text(
+    mut text_q: Query<&mut Text, With<TelemetryText>>,
+    agents_q: Query<&AgentComponent>,
+    pov_stats: Res<PovStats>,
+    focused: Res<FocusedAgent>,
+) {
+    let mut text = match text_q.get_single_mut() {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+
+    // Find the focused agent
+    let mut display = String::from("No agent");
+    let target_id = if pov_stats.agent_id != 0 {
+        pov_stats.agent_id
+    } else {
+        focused.0
+    };
+    for a in agents_q.iter() {
+            // Prefer the POV stream's agent id; fallback to FocusedAgent for safety
+        if a.agent.id == target_id {
+            let p = a.agent.pos;
+            let v = a.agent.vel;
+            let (roll, pitch, yaw) = a.agent.attitude.euler_angles();
+            let actions = a
+                .agent
+                .action
+                .as_ref()
+                .map(|act| act.cmd_sequence.len())
+                .unwrap_or(0);
+
+            display = format!(
+                "Agent {}\nPos:  ({:.2}, {:.2}, {:.2})\nVel:  ({:.2}, {:.2}, {:.2})\nRot:  R:{:.1}° P:{:.1}° Y:{:.1}°\nActions: {}\nBlocks: {}",
+                a.agent.id,
+                p.x,
+                p.y,
+                p.z,
+                v.x,
+                v.y,
+                v.z,
+                roll.to_degrees(),
+                pitch.to_degrees(),
+                yaw.to_degrees(),
+                actions,
+                pov_stats.voxel_count
+            );
+            break;
+        }
+    }
+
+    *text = Text::new(display);
 }
