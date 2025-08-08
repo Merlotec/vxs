@@ -359,6 +359,9 @@ pub struct RasterizerState {
     pub render_target: TextureSet,
     pub filter_render_target: TextureSet,
     pub depth_sampler: wgpu::Sampler,
+    // Indirect draw args buffers for main and filter passes
+    main_indirect_args: wgpu::Buffer,
+    filter_indirect_args: wgpu::Buffer,
 }
 
 impl RasterizerState {
@@ -423,6 +426,34 @@ impl RasterizerState {
         // Create bind group for filter culling (will be updated later in pipeline)
         filter_frustum_culling.create_bind_group(device, &instances.buf); // Temporary bind group
 
+        // Create indirect draw args buffers with fixed index count
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct DrawIndexedIndirectArgs {
+            index_count: u32,
+            instance_count: u32,
+            first_index: u32,
+            base_vertex: i32,
+            first_instance: u32,
+        }
+        let index_count = Vertex::CUBE_INDICES.len() as u32;
+        let make_args = |device: &wgpu::Device| -> wgpu::Buffer {
+            let args = DrawIndexedIndirectArgs {
+                index_count,
+                instance_count: 0,
+                first_index: 0,
+                base_vertex: 0,
+                first_instance: 0,
+            };
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Indirect Draw Args"),
+                contents: bytemuck::bytes_of(&args),
+                usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+            })
+        };
+        let main_indirect_args = make_args(device);
+        let filter_indirect_args = make_args(device);
+
         Self {
             cube_buffer,
             instances,
@@ -437,6 +468,8 @@ impl RasterizerState {
             render_target,
             depth_sampler,
             filter_render_target,
+            main_indirect_args,
+            filter_indirect_args,
         }
     }
 
@@ -452,6 +485,14 @@ impl RasterizerState {
             queue,
             camera_uniform,
             self.instances.len,
+        );
+        // Copy visible_count (offset 4) into indirect args' instance_count (offset 4)
+        encoder.copy_buffer_to_buffer(
+            &self.frustum_culling.cull_params_buffer,
+            4,
+            &self.main_indirect_args,
+            4,
+            4,
         );
     }
 
@@ -479,6 +520,14 @@ impl RasterizerState {
             camera_uniform,
             filter_len,
         );
+        // Copy filter visible_count into filter indirect args
+        encoder.copy_buffer_to_buffer(
+            &self.filter_frustum_culling.cull_params_buffer,
+            4,
+            &self.filter_indirect_args,
+            4,
+            4,
+        );
     }
 
     pub fn encode_rasterizer(
@@ -486,7 +535,7 @@ impl RasterizerState {
         encoder: &mut wgpu::CommandEncoder,
         camera_uniform: &CameraMatrix, // Pass camera data directly
         use_culled_instances: bool,
-        visible_count: Option<u32>,
+        _visible_count_unused: Option<u32>,
     ) {
         let view = &self.render_target.view;
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -530,19 +579,22 @@ impl RasterizerState {
         render_pass.set_vertex_buffer(0, self.cube_buffer.vertex.slice(..));
         
         let (instance_buffer, instance_count) = if use_culled_instances {
-            (&self.frustum_culling.culled_instance_buffer, visible_count.unwrap_or(0))
+            (&self.frustum_culling.culled_instance_buffer, 0)
         } else {
             (&self.instances.buf, self.instances.len)
         };
         
         render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
         render_pass.set_index_buffer(self.cube_buffer.index.slice(..), wgpu::IndexFormat::Uint16);
-        
-        render_pass.draw_indexed(
-            0..Vertex::CUBE_INDICES.len() as u32,
-            0,
-            0..instance_count,
-        );
+        if use_culled_instances {
+            render_pass.draw_indexed_indirect(&self.main_indirect_args, 0);
+        } else {
+            render_pass.draw_indexed(
+                0..Vertex::CUBE_INDICES.len() as u32,
+                0,
+                0..instance_count,
+            );
+        }
     }
 
 
@@ -553,7 +605,7 @@ impl RasterizerState {
         filter_instance_buffer: &wgpu::Buffer,
         filter_len: u32,
         use_culled_instances: bool,
-        culled_visible_count: Option<u32>,
+        _culled_visible_count_unused: Option<u32>,
     ) {
         let view = &self.filter_render_target.view;
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -585,15 +637,18 @@ impl RasterizerState {
         render_pass.set_vertex_buffer(0, self.cube_buffer.vertex.slice(..));
         
         let (instance_buffer, instance_count) = if use_culled_instances {
-            (&self.filter_frustum_culling.culled_instance_buffer, culled_visible_count.unwrap_or(0))
+            (&self.filter_frustum_culling.culled_instance_buffer, 0)
         } else {
             (filter_instance_buffer, filter_len)
         };
         
         render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
         render_pass.set_index_buffer(self.cube_buffer.index.slice(..), wgpu::IndexFormat::Uint16);
-
-        render_pass.draw_indexed(0..Vertex::CUBE_INDICES.len() as u32, 0, 0..instance_count);
+        if use_culled_instances {
+            render_pass.draw_indexed_indirect(&self.filter_indirect_args, 0);
+        } else {
+            render_pass.draw_indexed(0..Vertex::CUBE_INDICES.len() as u32, 0, 0..instance_count);
+        }
     }
 
     /// Batched readback of both main and filter culling results (more efficient than separate calls)
