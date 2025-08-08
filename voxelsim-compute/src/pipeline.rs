@@ -1,3 +1,5 @@
+use std::ops::DerefMut;
+
 use crate::buf::StagingBufferPool;
 use crate::rasterizer::RasterizerState;
 use crate::rasterizer::camera::CameraMatrix;
@@ -13,30 +15,6 @@ use voxelsim::{Cell, Coord, VoxelGrid};
 pub struct FilterCoord {
     coord: Coord,
     _p0: i32,
-}
-
-// FilterWorld with optional pre-uploaded buffer
-#[derive(Debug, Clone)]
-pub struct FilterWorld {
-    pub grid: VoxelGrid,
-    pub buffer: Option<Vec<CellInstance>>, // Pre-transformed GPU data
-}
-
-impl FilterWorld {
-    pub fn new(grid: VoxelGrid) -> Self {
-        Self { grid, buffer: None }
-    }
-
-    pub fn from_grid(grid: VoxelGrid) -> Self {
-        Self { grid, buffer: None }
-    }
-}
-
-// Enum for passing either VirtualGrid or FilterWorld to run()
-#[derive(Debug)]
-pub enum FilterInput<'a> {
-    VoxelGrid(&'a VoxelGrid),
-    FilterWorld(&'a FilterWorld),
 }
 
 pub struct State {
@@ -109,83 +87,11 @@ impl State {
         }
     }
 
-    // Async function to prepare a FilterWorld buffer in background
-    pub async fn prepare_filter_world(
-        filter_world: &mut FilterWorld,
-    ) -> Option<wgpu::SubmissionIndex> {
-        if filter_world.buffer.is_some() {
-            return None; // Already prepared
-        }
-
-        // Transform VirtualGrid to GPU format asynchronously
-        let instance_data = tokio::task::spawn_blocking({
-            let grid = filter_world.grid.clone();
-            move || {
-                grid.cells()
-                    .par_iter()
-                    .map(|r| {
-                        let (p, v) = r.pair();
-                        CellInstance {
-                            position: *p,
-                            value: v.bits(),
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            }
-        })
-        .await
-        .unwrap();
-
-        filter_world.buffer = Some(instance_data);
-        None // No GPU submission happened here, just CPU work
-    }
-
-    // Async function to prepare FilterWorld buffer with GPU upload and return submission index
-    pub async fn prepare_filter_world_with_upload(
-        &self,
-        filter_world: &mut FilterWorld,
-    ) -> Option<wgpu::SubmissionIndex> {
-        if filter_world.buffer.is_some() {
-            return None; // Already prepared
-        }
-
-        // Transform VirtualGrid to GPU format asynchronously
-        let instance_data = tokio::task::spawn_blocking({
-            let grid = filter_world.grid.clone();
-            move || {
-                grid.cells()
-                    .par_iter()
-                    .map(|r| {
-                        let (p, v) = r.pair();
-                        CellInstance {
-                            position: *p,
-                            value: v.bits(),
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            }
-        })
-        .await
-        .unwrap();
-
-        // Upload to GPU buffer and get submission index
-        self.queue.write_buffer(
-            &self.filter_buffer.buf,
-            0,
-            bytemuck::cast_slice(&instance_data),
-        );
-        filter_world.buffer = Some(instance_data);
-
-        // Submit an empty command buffer to get a submission index for synchronization
-        let submission_index = self.queue.submit(std::iter::empty());
-        Some(submission_index)
-    }
-
-    // The main rendering function.
     pub async fn run(
         &mut self,
         camera_matrix: &CameraMatrix,
-        filter_input: FilterInput<'_>,
+        filter_world: &VoxelGrid,
+        timestamp: f64,
     ) -> Result<WorldChangeset, wgpu::SurfaceError> {
         let profile_enabled = std::env::var("VXS_COMPUTE_PROFILE").is_ok();
         let total_start = if profile_enabled {
@@ -225,44 +131,12 @@ impl State {
             None
         };
 
-        // Handle different input types - keep it simple and fast
-        let (_filter_grid, buffer_len) = match &filter_input {
-            FilterInput::VoxelGrid(grid) => {
-                // Regular synchronous upload - the parallel data transformation is already fast
-                CellInstance::write_instance_buffer(&self.queue, &self.filter_buffer, grid);
-                if profile_enabled {
-                    println!("💾 Regular filter buffer upload from VoxelGrid");
-                }
-                (*grid, grid.cells().len() as u32)
-            }
-            FilterInput::FilterWorld(filter_world) => {
-                if let Some(ref buffer_data) = filter_world.buffer {
-                    // Use pre-prepared buffer
-                    self.queue.write_buffer(
-                        &self.filter_buffer.buf,
-                        0,
-                        bytemuck::cast_slice(buffer_data),
-                    );
-                    if profile_enabled {
-                        println!("🚀 Used pre-prepared FilterWorld buffer");
-                    }
-                    (&filter_world.grid, buffer_data.len() as u32)
-                } else {
-                    // Fallback upload
-                    CellInstance::write_instance_buffer(
-                        &self.queue,
-                        &self.filter_buffer,
-                        &filter_world.grid,
-                    );
-                    if profile_enabled {
-                        println!(
-                            "💾 Regular filter buffer upload from FilterWorld (no buffer prepared)"
-                        );
-                    }
-                    (&filter_world.grid, filter_world.grid.cells().len() as u32)
-                }
-            }
-        };
+        let buffer_len = filter_world.cells().len() as u32;
+
+        CellInstance::write_instance_buffer(&self.queue, &self.filter_buffer, filter_world);
+        if profile_enabled {
+            println!("💾 Regular filter buffer upload from VirtualGrid");
+        }
 
         if let Some(start) = buffer_write_start {
             let buffer_write_time = start.elapsed();
@@ -593,6 +467,7 @@ impl State {
         Ok(WorldChangeset {
             to_remove,
             to_insert,
+            timestamp,
         })
     }
 }
@@ -602,10 +477,13 @@ impl State {
 pub struct WorldChangeset {
     pub to_insert: Vec<(Coord, Cell)>,
     pub to_remove: Vec<FilterCoord>,
+    pub timestamp: f64,
 }
 
-#[cfg_attr(feature = "python", pyo3::prelude::pymethods)]
 impl WorldChangeset {
+    pub fn timestamp(&self) -> f64 {
+        self.timestamp
+    }
     pub fn update_world(&self, world: &mut VoxelGrid) {
         self.to_insert.par_iter().for_each(|(coord, cell)| {
             if !cell.is_empty() {
@@ -615,5 +493,16 @@ impl WorldChangeset {
         self.to_remove.par_iter().for_each(|coord| {
             world.cells().remove(&coord.coord);
         });
+    }
+
+    pub fn update_filter_world(&self, filter_world: &crate::FilterWorld) {
+        let mut vgrid = filter_world.world.lock().unwrap();
+        self.update_world(vgrid.deref_mut());
+        filter_world
+            .frames
+            .lock()
+            .unwrap()
+            .retain(|x| *x != self.timestamp);
+        *filter_world.timestamp.lock().unwrap() = Some(self.timestamp);
     }
 }

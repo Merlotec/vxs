@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use bitflags::bitflags;
 use dashmap::DashMap;
 use nalgebra::Vector3;
@@ -137,5 +139,52 @@ impl VoxelGrid {
             }
         }
         collisions
+    }
+
+    pub fn dense_snapshot(&self, centre: Coord, half_dims: Vector3<i32>) -> DenseSnapshot {
+        // We encode in the distance first approach.
+        let min = centre - half_dims;
+        let max = centre + half_dims;
+
+        let dim = max - min;
+        let len = dim.x * dim.y * dim.z;
+        let mut dense = Vec::with_capacity(len as usize);
+        for x in min.x..=max.y {
+            for y in min.y..=max.y {
+                for z in min.z..=max.z {
+                    let c = self
+                        .cells()
+                        .get(&Vector3::new(x, y, z))
+                        .map(|x| *x)
+                        .unwrap_or(Cell::empty());
+                    dense.push(c);
+                }
+            }
+        }
+
+        DenseSnapshot {
+            data: dense,
+            centre,
+            half_dims,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
+pub struct DenseSnapshot {
+    centre: Coord,
+    half_dims: Vector3<i32>,
+
+    data: Vec<Cell>,
+}
+
+impl DenseSnapshot {
+    pub fn centre(&self) -> Coord {
+        self.centre
+    }
+
+    pub fn half_dims(&self) -> Vector3<i32> {
+        self.half_dims
     }
 }

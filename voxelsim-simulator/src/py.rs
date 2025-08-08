@@ -62,6 +62,14 @@ impl EnvState {
 
 #[pymethods]
 impl TerrainConfig {
+    #[new]
+    pub fn new_py(seed: u32) -> Self {
+        Self {
+            seed,
+            ..Default::default()
+        }
+    }
+
     #[staticmethod]
     pub fn default_py() -> Self {
         Self::default()

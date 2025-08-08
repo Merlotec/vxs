@@ -57,6 +57,7 @@ impl Default for CameraProjection {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct CameraView {
     /// World‐space camera position, as (X, Y, Z) with Z = up
