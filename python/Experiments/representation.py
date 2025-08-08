@@ -6,17 +6,19 @@ A modular framework for testing various embedding approaches for drone navigatio
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_sparse import SparseTensor
-from torch_geometric.nn import voxel_grid, max_pool
+import csv, datetime
+from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional, Callable, Union
 from abc import ABC, abstractmethod
 import voxelsim
 from collections import defaultdict
-from scipy.spatial import KDTree
+from losses import make_recon_loss
 from torch.utils.data import DataLoader, IterableDataset
 import os
+from scipy.spatial import KDTree
+
 
 import time, collections
 
@@ -57,14 +59,26 @@ class EmbeddingDecoder(ABC):
         pass
 
 
-class LossHead(ABC):
-    """Base class for auxiliary loss heads"""
+class LossHead(ABC, nn.Module):
+    variable_length_target: bool = False  # override in subclasses if needed
+
+    def __init__(self, logits_fn: Optional[Callable[[torch.Tensor], torch.Tensor]] = None):
+        super().__init__()
+        self.logits_fn = logits_fn
+
+    def bind_logits(self, fn: Callable[[torch.Tensor], torch.Tensor]):
+        self.logits_fn = fn
+        return self
+
     @abstractmethod
-    def forward(self, embedding: torch.Tensor) -> torch.Tensor:
-        pass
-    
+    def forward(self, embedding: torch.Tensor, logits: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Return 'prediction' used by compute_loss.
+        If logits is None and self.logits_fn is set, the head may call self.logits_fn(embedding).
+        """
+
     @abstractmethod
-    def compute_loss(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def compute_loss(self, prediction: torch.Tensor, target) -> torch.Tensor:
         pass
 
 
@@ -132,7 +146,7 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
         self.deconv2 = nn.ConvTranspose3d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1)
         self.deconv3 = nn.ConvTranspose3d(32, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
         
-    def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+    def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None) -> Dict[str, torch.Tensor]:
         x = self.fc(embedding)
         x = x.view(-1, 128, self.init_size, self.init_size, self.init_size)
         
@@ -143,7 +157,98 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
         return {"logits": logits}
 
 
-# ============== Loss Heads ,Currently not in use ==============
+
+# ---------------------------------------------------------------------------
+
+
+class ResBlock3D(nn.Module):
+    def __init__(self, c):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv3d(c, c, 3, padding=1, bias=False),
+            nn.BatchNorm3d(c), nn.ReLU(inplace=True),
+            nn.Conv3d(c, c, 3, padding=1, bias=False),
+            nn.BatchNorm3d(c),
+        )
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        return self.act(x + self.net(x))
+
+
+class UNet3DEncoder(EmbeddingEncoder, nn.Module):
+    def __init__(self, voxel_size=48, embedding_dim=512):   # pick any ≤1000
+        super().__init__()
+        self.voxel_size    = voxel_size
+        self.embedding_dim = embedding_dim
+
+        self.stem = nn.Sequential(                 # 48³ → 24³ (32ch)
+            nn.Conv3d(1, 32, 3, padding=1, bias=False),
+            nn.BatchNorm3d(32), nn.ReLU(inplace=True),
+            ResBlock3D(32),
+            nn.Conv3d(32, 64, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm3d(64), nn.ReLU(inplace=True),
+            ResBlock3D(64)
+        )
+        self.down = nn.Sequential(                 # 24³ → 12³ (128ch)
+            nn.Conv3d(64, 128, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm3d(128), nn.ReLU(inplace=True),
+            ResBlock3D(128)
+        )
+
+        self.fc = nn.Linear(128, embedding_dim)
+
+    # same helper you already have
+    def _sparse_to_dense(self, vd):
+        g = torch.zeros((1,1,self.voxel_size,self.voxel_size,self.voxel_size),
+                        device=vd.occupied_coords.device)
+        if vd.occupied_coords.numel():
+            xyz = (vd.occupied_coords.float()/vd.bounds.float()*(self.voxel_size-1)).long()
+            g[0,0, xyz[:,0], xyz[:,1], xyz[:,2]] = vd.values
+        return g
+
+    def encode(self, voxel_batch):
+        x = torch.cat([self._sparse_to_dense(v) for v in voxel_batch], 0)
+        x = self.stem(x)
+        x = self.down(x)                 # [B,128,12,12,12]
+        x = x.mean(dim=[2,3,4])          # global average-pool
+        return self.fc(x)                # **only latent**, no skips
+
+    def get_embedding_dim(self):
+        return self.embedding_dim
+
+
+# ------------------------------------------------------------------
+#  🄱 Decoder: latent → 12³ → 24³ → 48³ (no skip cat)
+# ------------------------------------------------------------------
+class UNet3DDecoder(EmbeddingDecoder, nn.Module):
+    def __init__(self, embedding_dim=512, voxel_size=48):
+        super().__init__()
+        self.voxel_size = voxel_size
+        self.init_size  = voxel_size // 4       # 12
+        self.fc = nn.Linear(embedding_dim, 128 * self.init_size**3)
+
+        self.up1 = nn.Sequential(               # 12³ → 24³
+            nn.ConvTranspose3d(128, 64, 4, stride=2, padding=1, bias=False),
+            nn.BatchNorm3d(64), nn.ReLU(inplace=True),
+            ResBlock3D(64)
+        )
+        self.up0 = nn.Sequential(               # 24³ → 48³
+            nn.ConvTranspose3d(64, 32, 4, stride=2, padding=1, bias=False),
+            nn.BatchNorm3d(32), nn.ReLU(inplace=True),
+            ResBlock3D(32)
+        )
+        self.out = nn.Conv3d(32, 3, 3, padding=1)
+
+    def decode(self, embedding, skips=None):    # skips ignored
+        x = self.fc(embedding)
+        x = x.view(-1, 128, self.init_size, self.init_size, self.init_size)
+        x = self.up1(x)
+        x = self.up0(x)
+        return {"logits": self.out(x)}
+    # ----------------------------------------------------------------------
+
+# ============== Loss Heads ==============
 class ContourHead(LossHead, nn.Module):
     """Predicts max altitude contour map from top-down view"""
     def __init__(self, embedding_dim=128, map_size=32):
@@ -194,33 +299,86 @@ class CoverMaskHead(LossHead, nn.Module):
     
     def compute_loss(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         return F.binary_cross_entropy(prediction, target)
+class TopDownHeightHead(LossHead, nn.Module):
+    """Predict 2D max-height map (x,z) normalized to [0,1]."""
+    def __init__(self, embedding_dim=128, map_size=32):
+        super().__init__()
+        self.map_size = map_size
+        self.net = nn.Sequential(
+            nn.Linear(embedding_dim, 256), nn.ReLU(True),
+            nn.Linear(256, map_size*map_size)
+        )
 
+    def forward(self, embedding):                    # [B,E] -> [B,S,S]
+        return self.net(embedding).view(-1, self.map_size, self.map_size)
+
+    def compute_loss(self, prediction, target):
+        return F.l1_loss(prediction, target)         # robust to outliers
+
+class DistanceTransformHead(LossHead, nn.Module):
+    """Predict a coarse 3D distance transform to nearest occupancy."""
+    def __init__(self, embedding_dim=128, grid=24):
+        super().__init__()
+        self.grid = grid
+        self.net = nn.Sequential(
+            nn.Linear(embedding_dim, 512), nn.ReLU(True),
+            nn.Linear(512, grid*grid*grid)
+        )
+
+    def forward(self, embedding):
+        return self.net(embedding).view(-1, self.grid, self.grid, self.grid)
+
+    def compute_loss(self, prediction, target_dt):   # expect normalized DT
+        return F.smooth_l1_loss(prediction, target_dt)
+
+class OccupancyProjectionHead(LossHead, nn.Module):
+    """Predict 3D occupancy at lower res for multi-scale supervision."""
+    def __init__(self, embedding_dim=128, grid=24, out_ch=1):
+        super().__init__()
+        self.grid = grid
+        self.fc = nn.Sequential(
+            nn.Linear(embedding_dim, 1024), nn.ReLU(True),
+            nn.Linear(1024, out_ch*grid*grid*grid)
+        )
+
+    def forward(self, embedding):
+        x = self.fc(embedding).view(-1, 1, self.grid, self.grid, self.grid)
+        return torch.sigmoid(x)  # prob of occupancy
+
+    def compute_loss(self, prediction, target_occ):  # [B,1,G,G,G] float∈[0,1]
+        return F.binary_cross_entropy(prediction, target_occ)
 
 # ============== Training Framework ==============
 class EmbeddingTrainer:
     def __init__(self, encoder: EmbeddingEncoder, decoder: EmbeddingDecoder, 
-                 loss_heads: Dict[str, LossHead], device='cuda', lr=1e-3):
+                 loss_heads: Dict[str, LossHead], device='cuda', lr=1e-3, recon_loss = None):
         self.encoder = encoder
         self.decoder = decoder
         self.loss_heads = loss_heads
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         
-        # Collect all parameters
-        all_params = []
+
         
         # Move models to device and collect parameters TODO: Not too sure what this does, I think it moves something to GPU if possible
         if isinstance(encoder, nn.Module):
             encoder.to(self.device)
-            all_params.extend(encoder.parameters())
+
         if isinstance(decoder, nn.Module):
             decoder.to(self.device)
-            all_params.extend(decoder.parameters())
-        for head in loss_heads.values():
-            if isinstance(head, nn.Module):
-                head.to(self.device)
-                all_params.extend(head.parameters())
-        
-        # Create optimizer
+
+        # ↓↓↓ wrap and move once
+        self.loss_heads = nn.ModuleDict(loss_heads)
+        self.loss_heads.to(self.device)
+
+        # collect params cleanly
+        all_params = []
+        if isinstance(encoder, nn.Module):
+            all_params += list(encoder.parameters())
+        if isinstance(decoder, nn.Module):
+            all_params += list(decoder.parameters())
+        all_params += list(self.loss_heads.parameters())
+
+        self.recon_loss_fn = recon_loss or (lambda l,t,extra=None: F.cross_entropy(l, t))
         self.optimizer = torch.optim.Adam(all_params, lr=lr)
     
     def train_step(self, voxel_batch: List[VoxelData], target_batch: List[Dict[str, torch.Tensor]],
@@ -230,11 +388,15 @@ class EmbeddingTrainer:
         self.optimizer.zero_grad()
         
         # Encode
-        embedding = self.encoder.encode(voxel_batch)
-        
+        out = self.encoder.encode(voxel_batch)
+        if isinstance(out, tuple):
+            embedding, skips = out
+        else:
+            embedding, skips = out, None
+
         # Decode for reconstruction loss
-        reconstruction = self.decoder.decode(embedding)
-        
+        reconstruction = self.decoder.decode(embedding, skips=skips)
+        logits = reconstruction["logits"]    
         # Compute losses
         losses = {}
         
@@ -243,7 +405,7 @@ class EmbeddingTrainer:
             recon_targets = torch.cat(
             [self._create_reconstruction_target(vd) for vd in voxel_batch], dim=0
         )   
-            logits = reconstruction["logits"]                              # [1,3,D,H,W]
+
             # TODO: Check adaptive histogram weighting
             
             # hist = torch.bincount(recon_target.view(-1), minlength=3).float() 
@@ -252,15 +414,30 @@ class EmbeddingTrainer:
 
             weights = torch.tensor([0.2, 1.0, 1.5], device=logits.device)
 
-            losses["reconstruction"] = F.cross_entropy(logits, recon_targets, weight=weights)
-        
+            losses["reconstruction"] = self.recon_loss_fn(
+            logits, recon_targets,
+            extra={"class_weights": weights}
+        )
+            
         # Auxiliary head losses, currently not in use
+        # inside EmbeddingTrainer.train_step, for aux heads loop
         for name, head in self.loss_heads.items():
-            if name in loss_weights and all(name in tb for tb in target_batch):
-                preds   = head(embedding)
-                t_stack = torch.stack([tb[name] for tb in target_batch])
-                losses[name] = head.compute_loss(preds, t_stack)
-        
+            if name not in loss_weights: 
+                continue
+            if not all(name in tb for tb in target_batch):
+                continue
+
+            # reuse decoder output once
+            preds = head(embedding, logits=logits)
+
+            if getattr(head, "variable_length_target", False):
+                # e.g. Chamfer/RDP lists of points per sample
+                t_for_head = [tb[name] for tb in target_batch]   # list (no stack)
+            else:
+                t_for_head = torch.stack([tb[name] for tb in target_batch], dim=0)
+
+            losses[name] = head.compute_loss(preds, t_for_head)
+                
         # Total loss
         total_loss = sum(loss_weights.get(name, 0) * loss for name, loss in losses.items())
         losses["total"] = total_loss
@@ -327,7 +504,8 @@ class TerrainBatch(IterableDataset):
             world = g.generate_world_py()
 
             voxel_data = self.world_to_voxeldata_np(world, side)
-            yield voxel_data, {}          # empty target dict for now
+            targets = self._generate_targets(voxel_data)
+            yield voxel_data, targets          # empty target dict for now
             
     def _generate_targets(self, voxel_data: VoxelData) -> Dict[str, torch.Tensor]:
         """Generate ground truth targets for loss heads"""
@@ -381,19 +559,28 @@ def collate_fn(batch):
     return list(voxel_list), list(target_list)
 
 
-def run_experiment(encoder_class, decoder_class, num_epochs=100, batch_size=1, visualize_every=10, size = 48):
+def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embedding_dim=128, num_epochs=100, batch_size=1, visualize_every=10, size = 48, ckpt_every=100):
     """Run a complete experiment with given encoder/decoder"""
     # Initialize components
-    encoder  = SimpleCNNEncoder(voxel_size=size)
-    decoder  = SimpleCNNDecoder(voxel_size=size)
+    encoder  = encoder_class(voxel_size=size, embedding_dim=embedding_dim)
+    decoder  = decoder_class(voxel_size=size, embedding_dim=embedding_dim)
     
-    loss_heads = {
-        "contour": ContourHead(),
-        "relative_offset": RelativeOffsetHead(),
-        "cover_mask": CoverMaskHead()  # Disabled until we have semantic labels
-    }
+        
+    # one-step logits function
+    logits_fn = lambda z: decoder.decode(z)["logits"]
+
+    # bind it to all heads that need logits
+    for h in loss_heads.values():
+        if hasattr(h, "bind_logits"):
+            h.bind_logits(logits_fn)
+
+    loss_keys = {"total", "reconstruction", *loss_heads.keys()}
+
+    logger = RunLogger(encoder_class.__name__, decoder_class.__name__,
+                       loss_keys=loss_keys, ckpt_every=ckpt_every)
+    print("▶ logging to:", logger.dir)
     
-    trainer = EmbeddingTrainer(encoder, decoder, loss_heads)
+    trainer = EmbeddingTrainer(encoder, decoder, loss_heads, recon_loss=recon_loss)
     
     # Initialize renderer clients for before/after visualization
     client_input = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
@@ -499,26 +686,37 @@ def run_experiment(encoder_class, decoder_class, num_epochs=100, batch_size=1, v
 
             if viz_sample is not None:
                 # Show input (before)
-                show_voxels(viz_sample[0], client_input)
+                # show_voxels(viz_sample[0], client_input)
                 with Timer() as t_disp:
                     # Generate reconstruction (after)
                     with torch.no_grad():
                         viz_data = [viz_sample[0].to_device(trainer.device)]
-                        embedding = encoder.encode(viz_data)
-                        out = decoder.decode(embedding)
-                        logits = out["logits"]                  # [1,3,D,H,W]
+                        out = encoder.encode(viz_data)
+        
+
+                        # handle (latent)   vs   (latent, skips)
+                        if isinstance(out, tuple):
+                            embedding, skips = out
+                        else:
+                            embedding, skips = out, None
+                        reconstruction = decoder.decode(embedding,skips)
+                        logits = reconstruction["logits"]                  # [1,3,D,H,W]
                         
                     
                     # Show output (after)
            
-                    show_voxels(logits, client_output)
+                    # show_voxels(logits, client_output)
                     
                 print(
                     f"Visualization updated  –  "
                     f"Input:8090 Output:8091   "
                     f"(render {t_disp.dt*1e3:6.1f} ms)"
                 )
-    
+            # log & checkpoint
+        logger.log_epoch(epoch, epoch_losses,
+                            {"fetch": f, "move": m, "model": g})
+        logger.maybe_ckpt(epoch, encoder, decoder, trainer.optimizer)
+    logger.close()
     return loss_history
 
 class Timer:
@@ -612,14 +810,91 @@ def show_voxels(sample, client):
 
 
 
+class RunLogger:
+    """
+    Logs any combination of loss heads + timing into CSV and TensorBoard.
+    loss_keys : iterable of strings you plan to log, e.g.
+                {"total","reconstruction","contour","relative_offset"}
+    """
+
+    def __init__(self, enc_name, dec_name, *,
+                 loss_keys,                     # ← NEW (set/list)
+                 root="runs", ckpt_every=50):
+        stamp = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+        self.dir = os.path.join(root, f"{stamp}-{enc_name}_{dec_name}")
+        os.makedirs(self.dir, exist_ok=True) 
+        os.makedirs(f"{self.dir}/checkpoints", exist_ok=True)
+
+        # ---- CSV header -------------------------------------------------
+        self.loss_keys = list(loss_keys)          # keep a stable order
+        header = (["epoch"] +
+                  [f"loss_{k}" for k in self.loss_keys] +
+                  ["t_fetch_ms", "t_move_ms", "t_model_ms"])
+        self.csv_f = open(os.path.join(self.dir, "losses.csv"), "w", newline="")
+        self.csv_w = csv.writer(self.csv_f); self.csv_w.writerow(header)
+
+        # ---- TensorBoard ------------------------------------------------
+        self.tb = SummaryWriter(self.dir)
+        self.tb.flush()
+        self.ckpt_every = ckpt_every
+
+    # ---------------------------------------------------------------------
+    def log_epoch(self, epoch:int, losses:dict, t:dict):
+        row = [epoch] + [losses.get(k, 0.0) for k in self.loss_keys] + [
+            t.get("fetch",0)*1e3, t.get("move",0)*1e3, t.get("model",0)*1e3
+        ]
+        self.csv_w.writerow(row); self.csv_f.flush()
+
+        for k in self.loss_keys:
+            self.tb.add_scalar(f"loss/{k}", losses.get(k,0.0), epoch)
+        for k,v in t.items():
+            self.tb.add_scalar(f"time/{k}", v, epoch)
+
+    # ---------------------------------------------------------------------
+    def maybe_ckpt(self, epoch:int, enc, dec, opt):
+        if (epoch+1) % self.ckpt_every == 0:
+            torch.save({
+                "epoch": epoch+1,
+                "encoder": enc.state_dict(),
+                "decoder": dec.state_dict(),
+                "optim"  : opt.state_dict()
+            }, os.path.join(self.dir, "checkpoints",
+                            f"epoch-{epoch+1:04d}.pt"))
+
+    def close(self):
+        self.csv_f.close(); self.tb.close()
+
 # ============== Usage Example ==============
 if __name__ == "__main__":
     # Test simple CNN autoencoder
     print("Testing CNN Autoencoder...")
     print("CUDA available:", torch.cuda.is_available())
     print("CUDA device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
-    results = run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, num_epochs=1000, batch_size=5, visualize_every=10, size=48) 
-
+    loss_heads = {
+        # "contour": ContourHead(),
+        # "relative_offset": RelativeOffsetHead(),
+        # "cover_mask": CoverMaskHead()  # Disabled until we have semantic labels
+    }
+    recon_loss = make_recon_loss("ce") 
+    torch.cuda.empty_cache()
+    # dims = [128, 256, 512, 1024]          # sweep list
+    # for d in dims:
+    #     print(f"\n=== 🔵 latent_dim = {d} ===")
+    #     run_experiment(SimpleCNNEncoder, SimpleCNNDecoder,
+    #                    embedding_dim=d,
+    #                    num_epochs=500,            # shorter for quick sweep
+    #                    batch_size=8,
+    #                    visualize_every=50,
+    #                    size=48,
+    #                    ckpt_every=50)
+    run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, loss_heads,
+                       embedding_dim=512,
+                       num_epochs=500,            # shorter for quick sweep
+                       recon_loss=recon_loss,
+                       batch_size=1,
+                       visualize_every=10,
+                       size=48,
+                       ckpt_every=50)
 
 
 
