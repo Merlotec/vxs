@@ -80,7 +80,7 @@ last_view_time = time.time()
 FRAME_DELTA_MAX = 0.13
 
 upd_start = 0.0
-def world_update(world):
+def world_update(world, timestamp):
     dtime = time.time() - upd_start
     print(f"upd_time: {dtime}")
 

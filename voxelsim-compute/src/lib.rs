@@ -25,7 +25,8 @@ mod ffi {
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
     use std::ops::Deref;
     use std::sync::{Arc, Mutex};
-    use voxelsim::VoxelGrid;
+    use voxelsim::agent::viewport::{VirtualCell, VoxelGrid};
+    use voxelsim::env::VoxelGrid;
 
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn vxs_render_borrowed(
@@ -43,7 +44,13 @@ mod ffi {
         .unwrap();
 
         change.to_insert.into_par_iter().for_each(|(coord, cell)| {
-            filter_world.cells().insert(coord, cell);
+            filter_world.cells().insert(
+                coord,
+                VirtualCell {
+                    cell,
+                    uncertainty: 0.0,
+                },
+            );
         });
         change.to_remove.into_par_iter().for_each(|coord| {
             filter_world.cells().remove(&coord);
@@ -66,7 +73,13 @@ mod ffi {
 
         let filter_world = filter_world.lock().unwrap();
         change.to_insert.into_par_iter().for_each(|(coord, cell)| {
-            filter_world.cells().insert(coord, cell);
+            filter_world.cells().insert(
+                coord,
+                VirtualCell {
+                    cell,
+                    uncertainty: 0.0,
+                },
+            );
         });
         change.to_remove.into_par_iter().for_each(|coord| {
             filter_world.cells().remove(&coord);
@@ -98,13 +111,15 @@ pub struct RenderFrameId(u64);
 pub struct FilterWorld {
     world: Arc<Mutex<VoxelGrid>>,
     frames: Arc<Mutex<Vec<f64>>>,
+    timestamp: Arc<Mutex<Option<f64>>>,
 }
 
 impl Default for FilterWorld {
     fn default() -> Self {
         Self {
-            world: Arc::new(Mutex::new(VoxelGrid::new())),
+            world: Arc::new(Mutex::new(VoxelGrid::with_capacity(1000))),
             frames: Arc::new(Mutex::new(Vec::new())),
+            timestamp: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -151,6 +166,7 @@ pub enum RenderCommand {
         proj: Matrix4<f64>,
         filter_world: Arc<Mutex<VoxelGrid>>,
         sender: SyncSender<WorldChangeset>,
+        timestamp: f64,
     },
 }
 
@@ -176,15 +192,15 @@ impl AgentVisionRenderer {
                     proj,
                     filter_world,
                     sender,
+                    timestamp,
                 } => {
                     let camera_matrix = CameraMatrix::from_view_proj(view.cast(), proj.cast());
                     // let camera_matrix = CameraMatrix::default();
                     if let Ok(changeset) = state
                         .run(
                             &camera_matrix,
-                            pipeline::FilterInput::VoxelGrid(
-                                filter_world.lock().unwrap().deref(),
-                            ),
+                            filter_world.lock().unwrap().deref(),
+                            timestamp,
                         )
                         .await
                     {
@@ -203,21 +219,33 @@ impl AgentVisionRenderer {
         timestamp: f64,
         on_update: F,
     ) where
-        F: FnOnce(&FilterWorld) + Send + 'static,
+        F: FnOnce(&FilterWorld, f64) + Send + 'static,
     {
         filter_world.frames.lock().unwrap().push(timestamp);
-        let rx = self.render(view, proj, filter_world.world.clone());
+        let rx = self.render(view, proj, filter_world.world.clone(), timestamp);
         std::thread::spawn(move || {
             if let Ok(change) = rx.recv() {
-                let mut vgrid = filter_world.world.lock().unwrap();
-                change.update_world(vgrid.deref_mut());
-                filter_world
-                    .frames
-                    .lock()
-                    .unwrap()
-                    .retain(|x| *x != timestamp);
+                change.update_filter_world(&filter_world);
+                on_update(&filter_world, timestamp);
+            }
+        });
+    }
 
-                on_update(&filter_world);
+    pub fn render_changeset<F>(
+        &self,
+        view: Matrix4<f64>,
+        proj: Matrix4<f64>,
+        filter_world: FilterWorld,
+        timestamp: f64,
+        on_complete: F,
+    ) where
+        F: FnOnce(WorldChangeset) + Send + 'static,
+    {
+        filter_world.frames.lock().unwrap().push(timestamp);
+        let rx = self.render(view, proj, filter_world.world.clone(), timestamp);
+        std::thread::spawn(move || {
+            if let Ok(change) = rx.recv() {
+                on_complete(change);
             }
         });
     }
@@ -227,8 +255,9 @@ impl AgentVisionRenderer {
         view: Matrix4<f64>,
         proj: Matrix4<f64>,
         filter_world: Arc<Mutex<VoxelGrid>>,
+        timestamp: f64,
     ) {
-        let rx = self.render(view, proj, filter_world.clone());
+        let rx = self.render(view, proj, filter_world.clone(), timestamp);
         std::thread::spawn(move || {
             if let Ok(change) = rx.recv() {
                 let mut vgrid = filter_world.lock().unwrap();
@@ -242,6 +271,7 @@ impl AgentVisionRenderer {
         view: Matrix4<f64>,
         proj: Matrix4<f64>,
         filter_world: Arc<Mutex<VoxelGrid>>,
+        timestamp: f64,
     ) -> Receiver<WorldChangeset> {
         let (tx, rx) = mpsc::sync_channel(1000);
         self.sender
@@ -250,6 +280,7 @@ impl AgentVisionRenderer {
                 proj,
                 filter_world,
                 sender: tx,
+                timestamp,
             })
             .unwrap();
         rx

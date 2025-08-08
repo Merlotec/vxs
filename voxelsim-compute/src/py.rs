@@ -53,7 +53,7 @@ impl AgentVisionRenderer {
     pub fn update_filter_world_py(
         &self,
         py: Python<'_>,
-        camera: &CameraView,
+        camera: CameraView,
         proj: CameraProjection,
         filter_world: Py<FilterWorld>,
         timestamp: f64,
@@ -66,9 +66,34 @@ impl AgentVisionRenderer {
                 proj.projection_matrix(),
                 fw_clone,
                 timestamp,
-                move |fw| {
+                move |fw, ts| {
                     Python::with_gil(|py| {
-                        let _ = callback.call1(py, (filter_world.clone_ref(py),));
+                        let _ = callback.call(py, (filter_world.clone_ref(py), ts), None);
+                    });
+                },
+            )
+        });
+    }
+
+    pub fn render_changeset_py(
+        &self,
+        py: Python<'_>,
+        camera: CameraView,
+        proj: CameraProjection,
+        filter_world: Py<FilterWorld>,
+        timestamp: f64,
+        callback: PyObject,
+    ) {
+        let fw_clone = filter_world.borrow(py).deref().clone();
+        py.allow_threads(move || {
+            self.render_changeset(
+                camera.view_matrix(),
+                proj.projection_matrix(),
+                fw_clone,
+                timestamp,
+                move |changeset| {
+                    Python::with_gil(|py| {
+                        let _ = callback.call1(py, (changeset,));
                     });
                 },
             )
@@ -86,5 +111,16 @@ impl NoiseParams {
     #[staticmethod]
     pub fn none_py() -> Self {
         Self::none()
+    }
+}
+
+#[pymethods]
+impl WorldChangeset {
+    pub fn timestamp_py(&self) -> f64 {
+        self.timestamp()
+    }
+
+    pub fn update_filter_world_py(&self, filter_world: &FilterWorld) {
+        self.update_filter_world(filter_world)
     }
 }

@@ -16,7 +16,7 @@ use crate::{
         viewport::{CameraProjection, CameraView},
     },
     chase::{ChaseTarget, FixedLookaheadChaser, TrajectoryChaser},
-    env::VoxelGrid,
+    env::{DenseSnapshot, VoxelGrid},
     network::RendererClient,
     viewport::CameraOrientation,
 };
@@ -34,6 +34,7 @@ pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FixedLookaheadChaser>()?;
     m.add_class::<ChaseTarget>()?;
     m.add_class::<CameraOrientation>()?;
+    m.add_class::<DenseSnapshot>()?;
     Ok(())
 }
 
@@ -111,6 +112,10 @@ impl VoxelGrid {
         let vals_arr: Py<PyArray1<f32>> = PyArray1::from_vec(py, vals).into();
 
         Ok((coords_arr, vals_arr))
+    }
+
+    pub fn dense_snapshot_py(&self, centre: [i32; 3], dims: [i32; 3]) -> DenseSnapshot {
+        self.dense_snapshot(centre.into(), dims.into())
     }
 }
 
