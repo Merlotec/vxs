@@ -91,6 +91,9 @@ class GridWorldEnv(gym.Env):
     def value_function(self):
         # Calculate the value function based on the agent's state and reward history
         return
+
+    def decode_action(action) -> list[vxs.MoveCommand]:
+        
     
     def step(self, action):
         if self.filter_world_upd_ts and self.filter_world_update_ts - self.world_time >= self.filter_update_lag:

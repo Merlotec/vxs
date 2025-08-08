@@ -208,4 +208,14 @@ pub fn setup(
         },
         Transform::from_xyz(0.0, 7., 14.0).looking_at(Vec3::new(0., 0., 0.), Vec3::Y),
     ));
+
+    // Dedicated UI camera to always render HUD on top
+    commands.spawn((
+        Camera2d::default(),
+        Camera {
+            // Ensure UI draws over 3D cameras
+            order: 100,
+            ..default()
+        },
+    ));
 }
