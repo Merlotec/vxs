@@ -24,6 +24,8 @@ pub struct State {
     pub rasterizer_state: RasterizerState,
     pub filter_buffer: InstanceBuffer,
     pub staging_pool: StagingBufferPool,
+    // Reused scratch space for instance uploads to avoid per-frame allocations
+    instance_scratch: Vec<crate::rasterizer::CellInstance>,
 }
 
 impl State {
@@ -84,6 +86,7 @@ impl State {
             rasterizer_state,
             filter_buffer,
             staging_pool,
+            instance_scratch: Vec::with_capacity(world.cells().len()),
         }
     }
 
@@ -122,8 +125,7 @@ impl State {
         // Start filter clear
         self.rasterizer_state
             .filter
-            .clear_buffers(&self.device, &self.queue)
-            .await;
+            .clear_buffers(&self.device, &self.queue);
 
         let buffer_write_start = if profile_enabled {
             Some(std::time::Instant::now())
@@ -133,7 +135,12 @@ impl State {
 
         let buffer_len = filter_world.cells().len() as u32;
 
-        CellInstance::write_instance_buffer(&self.queue, &self.filter_buffer, filter_world);
+        CellInstance::write_instance_buffer_with_scratch(
+            &self.queue,
+            &self.filter_buffer,
+            filter_world,
+            &mut self.instance_scratch,
+        );
         if profile_enabled {
             println!("💾 Regular filter buffer upload from VirtualGrid");
         }
@@ -146,29 +153,21 @@ impl State {
             );
         }
 
-        // Create TWO culling encoders to run in parallel
-        let mut main_cull_encoder =
-            self.device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Main Frustum Culling Encoder"),
-                });
+        // Encode BOTH culling passes into a single encoder and submit once
+        let mut cull_encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Frustum Culling Encoder (Combined)"),
+            });
 
-        let mut filter_cull_encoder =
-            self.device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Filter Frustum Culling Encoder"),
-                });
-
-        // Encode main frustum culling
         self.rasterizer_state.encode_frustum_culling(
-            &mut main_cull_encoder,
+            &mut cull_encoder,
             &self.queue,
             camera_matrix,
         );
 
-        // Encode filter frustum culling in parallel
         self.rasterizer_state.encode_filter_frustum_culling(
-            &mut filter_cull_encoder,
+            &mut cull_encoder,
             &self.queue,
             &self.device,
             camera_matrix,
@@ -176,10 +175,7 @@ impl State {
             buffer_len,
         );
 
-        // Submit BOTH culling operations together for maximum parallelism
-        let culling_submissions = self
-            .queue
-            .submit([main_cull_encoder.finish(), filter_cull_encoder.finish()].into_iter());
+        let culling_submissions = self.queue.submit(std::iter::once(cull_encoder.finish()));
 
         if let Some(start) = culling_start {
             let culling_time = start.elapsed();

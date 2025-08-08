@@ -41,6 +41,9 @@ class GridWorldEnv(gym.Env):
         self.filter_world_upd_ts = None
         self.current_step = 0
 
+
+        self.action_buffer = []
+
         # Self initialise world and agent
         self._init_world()
 
