@@ -30,7 +30,9 @@ pub struct Agent {
     pub action: Option<Action>,
 }
 
-#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Default, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, num_enum::TryFromPrimitive,
+)]
 #[repr(i32)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub enum MoveDir {

@@ -1,5 +1,4 @@
 pub mod dynamics;
-pub mod sim;
 pub mod terrain;
 
 // Re-export core types for Rust consumers

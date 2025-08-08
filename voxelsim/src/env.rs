@@ -25,7 +25,6 @@ bitflags! {
 pub type Coord = Vector3<i32>;
 
 pub type GridShell = [Vector3<i32>; 26];
-pub type CollisionShell = ArrayVec<[(Coord, Cell); 26]>;
 
 pub(crate) fn adjacent_coords(coord: Vector3<i32>) -> GridShell {
     let mut coords = [Vector3::zeros(); 26];
@@ -127,8 +126,8 @@ impl VoxelGrid {
 
     /// Returns a the list of cells if an object with the given centre coordinate and dimensions collides with any
     /// cells.
-    pub fn collisions(&self, centre: Vector3<f64>, dims: Vector3<f64>) -> CollisionShell {
-        let mut collisions = ArrayVec::new();
+    pub fn collisions(&self, centre: Vector3<f64>, dims: Vector3<f64>) -> Vec<(Coord, Cell)> {
+        let mut collisions = Vec::new();
         // We only need to check the cubes around.
         assert!(dims.x < 1.0 && dims.y < 1.0 && dims.z < 1.0);
         for cell_coord in adjacent_coords(centre.try_cast::<i32>().unwrap()) {
