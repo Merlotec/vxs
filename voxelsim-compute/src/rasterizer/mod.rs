@@ -162,6 +162,26 @@ impl CellInstance {
         queue.write_buffer(&instance.buf, 0, bytemuck::cast_slice(&instance_data));
     }
 
+    pub fn write_instance_buffer_with_scratch(
+        queue: &wgpu::Queue,
+        instance: &InstanceBuffer,
+        world: &VoxelGrid,
+        scratch: &mut Vec<CellInstance>,
+    ) {
+        scratch.clear();
+        // Pre-reserve to avoid growth
+        let target_len = world.cells().len();
+        if scratch.capacity() < target_len {
+            scratch.reserve(target_len - scratch.capacity());
+        }
+        for r in world.cells().iter() {
+            let (p, v) = r.pair();
+            scratch.push(CellInstance { position: *p, value: v.bits() });
+        }
+        assert!(scratch.len() <= instance.len as usize);
+        queue.write_buffer(&instance.buf, 0, bytemuck::cast_slice(&scratch));
+    }
+
 
     pub fn create_instance_buffer(device: &wgpu::Device, world: &VoxelGrid) -> InstanceBuffer {
         let instance_data = world
