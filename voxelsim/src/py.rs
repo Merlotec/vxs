@@ -12,7 +12,7 @@ use numpy::ndarray::ShapeError;
 use crate::{
     Cell, Coord,
     agent::{
-        Action, Agent, MoveCommand, MoveDir,
+        Action, Agent, MAX_ACTIONS, MoveCommand, MoveDir,
         viewport::{CameraProjection, CameraView},
     },
     chase::{ChaseTarget, FixedLookaheadChaser, TrajectoryChaser},
@@ -114,6 +114,13 @@ impl VoxelGrid {
         Ok((coords_arr, vals_arr))
     }
 
+    pub fn collisions_py(&self, centre: [f64; 3], dims: [f64; 3]) -> Vec<([i32; 3], Cell)> {
+        self.collisions(centre.into(), dims.into())
+            .into_iter()
+            .map(|(coord, cell)| (coord.into(), cell))
+            .collect()
+    }
+
     pub fn dense_snapshot_py(&self, centre: [i32; 3], dims: [i32; 3]) -> DenseSnapshot {
         self.dense_snapshot(centre.into(), dims.into())
     }
@@ -167,6 +174,14 @@ impl Agent {
 
     pub fn get_pos(&self) -> [f64; 3] {
         self.pos.into()
+    }
+
+    pub fn get_voxel_coord(&self) -> [i32; 3] {
+        self.pos.map(|x| x.round() as i32).into()
+    }
+
+    pub fn max_command_count(&self) -> usize {
+        MAX_ACTIONS
     }
 }
 
@@ -235,6 +250,12 @@ impl Action {
 
 #[pymethods]
 impl MoveDir {
+    #[staticmethod]
+    pub fn from_code_py(code: i32) -> PyResult<Self> {
+        Self::try_from(code)
+            .map_err(|e| PyException::new_err(format!("Failed to parse code: {}", e)))
+    }
+
     /// Create a None/stationary direction
     #[classmethod]
     pub fn none(_cls: &Bound<'_, pyo3::types::PyType>) -> Self {

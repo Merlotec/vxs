@@ -6,13 +6,13 @@ pub mod rasterizer;
 #[cfg(feature = "python")]
 pub mod py;
 
-use nalgebra::{Matrix4, Vector2};
+use nalgebra::{Matrix4, Vector2, Vector3};
 use pipeline::State;
 use std::ops::{Deref, DerefMut};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use voxelsim::viewport::{CameraOrientation, CameraProjection};
-use voxelsim::{PovDataRef, RendererClient, VoxelGrid};
+use voxelsim::{Coord, DenseSnapshot, PovDataRef, RendererClient, VoxelGrid};
 
 use crate::rasterizer::noise::NoiseParams;
 use crate::{pipeline::WorldChangeset, rasterizer::camera::CameraMatrix};
@@ -150,6 +150,12 @@ impl FilterWorld {
                 orientation,
             },
         )
+    }
+
+    /// Generates a cuboidal dense voxelgrid by sampling the filter world around the centre.
+    /// The dimensions of this grid are half_dims * 2 + 1 (to acount for the centre being part of the grid).
+    pub fn dense_snapshot(&self, centre: Coord, half_dims: Vector3<i32>) -> DenseSnapshot {
+        self.world.lock().unwrap().dense_snapshot(centre, half_dims)
     }
 }
 

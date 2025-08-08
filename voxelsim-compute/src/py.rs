@@ -7,7 +7,7 @@ use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use std::ops::Deref;
 use voxelsim::RendererClient;
-use voxelsim::env::VoxelGrid;
+use voxelsim::env::{DenseSnapshot, VoxelGrid};
 use voxelsim::viewport::CameraOrientation;
 use voxelsim::viewport::{CameraProjection, CameraView};
 
@@ -41,6 +41,10 @@ impl FilterWorld {
     ) -> PyResult<()> {
         self.send_pov(client, stream_idx, agent_id, proj, orientation)
             .map_err(|e| PyException::new_err(format!("Could not send pov: {}", e)))
+    }
+
+    pub fn dense_snapshot_py(&self, centre: [i32; 3], half_dims: [i32; 3]) -> DenseSnapshot {
+        self.dense_snapshot(centre.into(), half_dims.into())
     }
 }
 
