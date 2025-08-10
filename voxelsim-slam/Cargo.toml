@@ -1,0 +1,40 @@
+[package]
+name = "voxelsim-slam"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["with-voxelsim"]
+with-voxelsim = []
+cuvslam-ffi = []
+ros2 = ["dep:rclrs", "dep:nav_msgs"]
+
+[dependencies]
+anyhow = "1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+nalgebra = { version = "0.32", features = ["serde-serialize"] }
+
+# Use the core voxelsim types (VoxelGrid, Cell, etc.)
+voxelsim = { path = "../voxelsim" }
+
+# RealSense bindings (librealsense2). Ensure librealsense2 is installed on the Nano.
+realsense-rust = { package = "realsense-rust", version = "0.8", default-features = false, features = ["record", "sensor"] }
+
+# For dynamic loading of cuVSLAM if available
+libloading = { version = "0.8", optional = true }
+
+# Optional ROS2 pose bridge
+rclrs = { version = "0.11", optional = true }
+nav_msgs = { version = "0.11", optional = true }
+
+[target.'cfg(feature = "cuvslam-ffi")'.dependencies]
+libloading = { version = "0.8" }
+
+# Optional dependency on voxelsim crate; adjust to your local path or registry as needed.
+# Uncomment and set correct path or version if available locally.
+# voxelsim = { path = "../voxelsim" }
+
+[dev-dependencies]
+clap = { version = "4", features = ["derive"] }
