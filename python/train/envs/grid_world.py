@@ -57,18 +57,19 @@ class GridWorldEnv(gym.Env):
         camera_orientation: vxs.CameraOrientation = vxs.CameraOrientation.vertical_tilt_py(-0.5),
         agent_bounds: Tuple[float, float, float] = (0.5, 0.5, 0.4),
         filter_update_lag: float = 0.2,
+        filter_delta: float = 0.25,
         dense_half_dims: Tuple[int, int, int] = (50, 50, 50),
         start_pos: Tuple[int, int, int] = (0, 0, 0),
         renderer_view_size: Tuple[int, int] = (150, 100),
         noise: vxs.NoiseParams = vxs.NoiseParams.default_with_seed_py([0, 0, 0]),
-        delta_time: float = 0.01,
+        delta_time: float = 0.1,
         client: Optional[vxs.RendererClient] = None,
         reward_fn: Optional[RewardFunction] = None,
     ):
         super().__init__()
 
-        # Action: [move(0..6), urgency(0..5), rotation(0..7)]
-        self.action_space = gym.spaces.MultiDiscrete([7, 6, 8])
+        # Action: [move(0..6), urgency(1..5), rotation(0..7)]
+        self.action_space = gym.spaces.MultiDiscrete([7, 5, 8])
 
         # Save config
         self.agent_dynamics = agent_dynamics
@@ -77,6 +78,7 @@ class GridWorldEnv(gym.Env):
         self.camera_orientation = camera_orientation
         self.agent_bounds = agent_bounds
         self.filter_update_lag = float(filter_update_lag)
+        self.filter_delta = float(filter_delta)
         self.dense_half_dims = tuple(int(x) for x in dense_half_dims)
         self.start_pos = tuple(start_pos)
         self.renderer_view_size = tuple(renderer_view_size)
@@ -241,7 +243,7 @@ class GridWorldEnv(gym.Env):
         urgency_idx = int(action[1])     # 0..5
         yaw_idx = int(action[2])         # 0..7
 
-        urgency = 0.2 * urgency_idx
+        urgency = 0.2 * (urgency_idx + 1)
         yaw = math.pi * 0.25 * yaw_idx
 
         if cmd == 6:
@@ -292,14 +294,23 @@ class GridWorldEnv(gym.Env):
         self.world_time += self.delta_time
         self.current_step += 1
 
+        update_fw = False
         # Update filter world if needed
-        if (self.filter_world_upd_ts is None) or (self.world_time - self.filter_world_upd_ts >= self.filter_update_lag):
-            self._render_agent_vision()
+        if self.filter_world_upd_ts != None and self.world_time - self.filter_world_upd_ts >= self.filter_update_lag:
             changeset = self.await_changeset()
             self.update_filter_world(changeset)
+            update_fw = True
             # Start a new planning buffer for next step
             self.action_buffer = []
             self.action_buffer_codes = []
+
+        
+        # Check whether to start the render pass:
+        fw_ts = self.filter_world.timestamp_py()
+        if (fw_ts == None) or (self.world_time - fw_ts >= self.filter_delta) and (self.next_changeset == None):
+            # We cannot have a frame currently in process/awaiting pop.
+            self._render_agent_vision()
+        
 
         # Collisions
         collisions = self.world.collisions_py(self.agent.get_pos(), self.agent_bounds)
@@ -314,12 +325,13 @@ class GridWorldEnv(gym.Env):
         # Reward
         reward = self.reward_fn.compute(self, observation, action, info)
 
-        self.render()
+        self.render(update_fw)
 
         return observation, reward, terminated, truncated, info
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
         super().reset(seed=seed)
+        print("RESET")
         if seed is None:
             seed = random.randint(1, 10**6)
 
@@ -351,9 +363,11 @@ class GridWorldEnv(gym.Env):
         info: Dict[str, Any] = {}
         return observation, info
 
-    def render(self):
+    def render(self, update_fw):
         if self.client:
             self.client.send_agents_py({0: self.agent})
+            if update_fw:
+                self.filter_world.send_pov_py(self.client, 0, 0, self.camera_proj, self.camera_orientation)
         pass
 
     def close(self):

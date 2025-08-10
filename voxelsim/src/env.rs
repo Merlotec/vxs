@@ -148,7 +148,7 @@ impl VoxelGrid {
         let dim = max - min;
         let len = dim.x * dim.y * dim.z;
         let mut dense = Vec::with_capacity(len as usize);
-        for x in min.x..=max.y {
+        for x in min.x..=max.x {
             for y in min.y..=max.y {
                 for z in min.z..=max.z {
                     let c = self
