@@ -14,7 +14,7 @@ from typing import Dict, List, Tuple, Optional, Callable, Union
 from abc import ABC, abstractmethod
 import voxelsim
 from collections import defaultdict
-
+from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader, IterableDataset
 import os
 
@@ -157,6 +157,81 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
         return {"logits": logits}
 
 
+# Mein Encoder
+
+class MeinEncoder(EmbeddingEncoder, nn.Module):
+    def __init__(self, voxel_size=48, embedding_dim=128):
+        super().__init__()
+        self.voxel_size = voxel_size
+        self.embedding_dim = embedding_dim
+        
+        # 3D CNN encoder
+        self.conv1 = nn.Conv3d(1, 32, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv3d(32, 64, kernel_size=3, stride=2, padding=1)
+        self.conv3 = nn.Conv3d(64, 128, kernel_size=3, stride=2, padding=1)
+        
+        # Calculate flattened size
+        self.flat_size = 128 * (voxel_size // 8) ** 3
+        self.fc = nn.Linear(self.flat_size, embedding_dim)
+        
+    def encode(self, voxel_batch: List[VoxelData]) -> torch.Tensor:
+        # Build one dense grid per sample, then stack
+        grids = [self._sparse_to_dense(vd) for vd in voxel_batch]  # each [1,1,D,D,D]
+        x = torch.cat(grids, dim=0)                                # [B,1,D,D,D]
+
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = x.flatten(1)                                           # [B, F]
+        return self.fc(x) 
+    
+    def _sparse_to_dense(self, voxel_data: VoxelData) -> torch.Tensor:
+        """Convert sparse voxel coordinates to dense grid"""
+
+        grid = torch.zeros((1, 1, self.voxel_size, self.voxel_size, self.voxel_size),
+                          device=voxel_data.occupied_coords.device, dtype=torch.float32)
+        
+        if voxel_data.occupied_coords.shape[0] > 0:
+            # Normalize coordinates to grid size
+            coords = voxel_data.occupied_coords.float()
+            coords = coords / voxel_data.bounds.float() * (self.voxel_size - 1)
+            coords = coords.long().clamp(0, self.voxel_size - 1)
+            
+            # Fill grid
+            grid[0, 0, coords[:, 0], coords[:, 1], coords[:, 2]] = voxel_data.values
+     
+
+        return grid
+    
+    def get_embedding_dim(self) -> int:
+        return self.embedding_dim
+
+
+class MeinDecoder(EmbeddingDecoder, nn.Module):
+    def __init__(self, embedding_dim=128, voxel_size=48):
+        super().__init__()
+        self.voxel_size = voxel_size
+        self.embedding_dim = embedding_dim
+        
+        # Calculate sizes
+        self.init_size = voxel_size // 8
+        self.flat_size = 128 * self.init_size ** 3
+        
+        self.fc = nn.Linear(embedding_dim, self.flat_size)
+        self.deconv1 = nn.ConvTranspose3d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.deconv2 = nn.ConvTranspose3d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.deconv3 = nn.ConvTranspose3d(32, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
+        
+    def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None) -> Dict[str, torch.Tensor]:
+        x = self.fc(embedding)
+        x = x.view(-1, 128, self.init_size, self.init_size, self.init_size)
+        
+        x = F.relu(self.deconv1(x))
+        x = F.relu(self.deconv2(x))
+        logits = self.deconv3(x)
+        
+        return {"logits": logits}
+
 
 # ---------------------------------------------------------------------------
 
@@ -204,6 +279,7 @@ class UNet3DEncoder(EmbeddingEncoder, nn.Module):
                         device=vd.occupied_coords.device)
         if vd.occupied_coords.numel():
             xyz = (vd.occupied_coords.float()/vd.bounds.float()*(self.voxel_size-1)).long()
+            xyz = xyz.clamp(0, self.voxel_size-1)  # ← add this
             g[0,0, xyz[:,0], xyz[:,1], xyz[:,2]] = vd.values
         return g
 
@@ -247,6 +323,371 @@ class UNet3DDecoder(EmbeddingDecoder, nn.Module):
         x = self.up0(x)
         return {"logits": self.out(x)}
     # ----------------------------------------------------------------------
+
+# ===== ResNet-style 3D encoder/decoder (GroupNorm) =====
+class _GN3d(torch.nn.GroupNorm):
+    def __init__(self, num_channels, groups=32):
+        super().__init__(num_groups=min(groups, num_channels), num_channels=num_channels)
+
+class _ResBlock3D_GN(nn.Module):
+    def __init__(self, c):
+        super().__init__()
+        self.conv1 = nn.Conv3d(c, c, 3, padding=1, bias=False)
+        self.gn1   = _GN3d(c); self.act = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv3d(c, c, 3, padding=1, bias=False)
+        self.gn2   = _GN3d(c)
+    def forward(self, x):
+        return self.act(x + self.gn2(self.conv2(self.act(self.gn1(self.conv1(x))))))
+
+class ResNet3DEncoder(EmbeddingEncoder, nn.Module):
+    """48/96/etc → 24 → 12 → 6; GAP → latent. No skips."""
+    def __init__(self, voxel_size=48, embedding_dim=1024, widths=(32, 64, 128)):
+        super().__init__()
+        assert voxel_size % 8 == 0, "ResNet3DEncoder expects voxel_size divisible by 8"
+        self.voxel_size = voxel_size
+        self.embedding_dim = embedding_dim
+        c0, c1, c2 = widths
+
+        self.stem = nn.Sequential(
+            nn.Conv3d(1, c0, 5, stride=2, padding=2, bias=False), _GN3d(c0), nn.ReLU(True),
+            _ResBlock3D_GN(c0),
+        )  # x/2
+        self.stage1 = nn.Sequential(
+            nn.Conv3d(c0, c1, 3, stride=2, padding=1, bias=False), _GN3d(c1), nn.ReLU(True),
+            _ResBlock3D_GN(c1),
+        )  # x/4
+        self.stage2 = nn.Sequential(
+            nn.Conv3d(c1, c2, 3, stride=2, padding=1, bias=False), _GN3d(c2), nn.ReLU(True),
+            _ResBlock3D_GN(c2),
+        )  # x/8
+
+        self.proj = nn.Linear(c2, embedding_dim)
+
+    def _sparse_to_dense(self, vd: VoxelData) -> torch.Tensor:
+        g = torch.zeros((1,1,self.voxel_size,self.voxel_size,self.voxel_size),
+                        device=vd.occupied_coords.device, dtype=torch.float32)
+        if vd.occupied_coords.numel():
+            xyz = (vd.occupied_coords.float()/vd.bounds.float()*(self.voxel_size-1)).long().clamp(0,self.voxel_size-1)
+            g[0,0, xyz[:,0], xyz[:,1], xyz[:,2]] = vd.values
+        return g
+
+    def encode(self, voxel_batch: List[VoxelData]) -> torch.Tensor:
+        x = torch.cat([self._sparse_to_dense(v) for v in voxel_batch], 0)  # [B,1,D,H,W]
+        x = self.stem(x); x = self.stage1(x); x = self.stage2(x)           # [B,c2,D/8,H/8,W/8]
+        x = x.mean(dim=(2,3,4))                                            # GAP → [B,c2]
+        return self.proj(x)                                                # [B,E]
+
+    def get_embedding_dim(self) -> int:
+        return self.embedding_dim
+
+class ResNet3DDecoder(EmbeddingDecoder, nn.Module):
+    """latent → 1/8 grid → 1/4 → 1/2 → full; 3-class logits."""
+    def __init__(self, embedding_dim=1024, voxel_size=48, widths=(128, 64, 32)):
+        super().__init__()
+        assert voxel_size % 8 == 0, "ResNet3DDecoder expects voxel_size divisible by 8"
+        self.voxel_size = voxel_size
+        self.init_size  = voxel_size // 8
+        c2, c1, c0 = widths
+
+        self.fc = nn.Linear(embedding_dim, c2 * self.init_size**3)
+
+        self.up1 = nn.Sequential(  # 1/8 → 1/4
+            nn.ConvTranspose3d(c2, c1, 4, stride=2, padding=1, bias=False), _GN3d(c1), nn.ReLU(True),
+            _ResBlock3D_GN(c1),
+        )
+        self.up2 = nn.Sequential(  # 1/4 → 1/2
+            nn.ConvTranspose3d(c1, c0, 4, stride=2, padding=1, bias=False), _GN3d(c0), nn.ReLU(True),
+            _ResBlock3D_GN(c0),
+        )
+        self.up3 = nn.Sequential(  # 1/2 → 1
+            nn.ConvTranspose3d(c0, 32, 4, stride=2, padding=1, bias=False), _GN3d(32), nn.ReLU(True),
+        )
+        self.out = nn.Conv3d(32, 3, 3, padding=1)
+
+    def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None) -> Dict[str, torch.Tensor]:
+        x = self.fc(embedding).view(-1, self.up1[0].in_channels, self.init_size, self.init_size, self.init_size)
+        x = self.up1(x); x = self.up2(x); x = self.up3(x)
+        logits = self.out(x)
+        return {"logits": logits}
+
+# ===== Implicit MLP decoder (chunked) =====
+class ImplicitMLPDecoder(EmbeddingDecoder, nn.Module):
+    """
+    Predicts per-voxel logits from (z, xyz) with an MLP; returns dense [B,3,D,H,W].
+    Good for smooth surfaces; can be slower — use chunking.
+    """
+    def __init__(self, embedding_dim=1024, voxel_size=48, hidden=256, depth=4, chunk=65536):
+        super().__init__()
+        self.voxel_size = voxel_size
+        self.embedding_dim = embedding_dim
+        self.hidden = hidden
+        self.depth = depth
+        self.chunk = chunk
+
+        layers = []
+        in_dim = embedding_dim + 3
+        for i in range(depth):
+            out = hidden if i < depth - 1 else 3
+            layers.append(nn.Linear(in_dim, out, bias=True))
+            if i < depth - 1:
+                layers.append(nn.ReLU(inplace=True))
+                in_dim = hidden
+        self.mlp = nn.Sequential(*layers)
+
+        # precompute normalized grid in [-1, 1]³
+        coords = torch.stack(torch.meshgrid(
+            torch.linspace(-1, 1, voxel_size),
+            torch.linspace(-1, 1, voxel_size),
+            torch.linspace(-1, 1, voxel_size),
+            indexing='ij'
+        ), dim=-1).view(-1, 3)  # [V,3]
+        self.register_buffer("grid", coords, persistent=False)
+
+    def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None) -> Dict[str, torch.Tensor]:
+        # embedding: [B,E]
+        B, E = embedding.shape
+        V = self.grid.shape[0]
+        outs = []
+        for b in range(B):
+            z = embedding[b].unsqueeze(0).expand(V, -1)   # [V,E]
+            feats = torch.cat([z, self.grid.to(z.dtype)], dim=1)  # [V,E+3]
+            preds = []
+            for i in range(0, V, self.chunk):
+                preds.append(self.mlp(feats[i:i+self.chunk]))
+            pred = torch.cat(preds, dim=0)  # [V,3]
+            outs.append(pred.view(self.voxel_size, self.voxel_size, self.voxel_size, 3)
+                             .permute(3,0,1,2))  # [3,D,H,W]
+        logits = torch.stack(outs, dim=0)  # [B,3,D,H,W]
+        return {"logits": logits}
+    
+# Point MLP Encoder
+
+class PointMLPEncoder(EmbeddingEncoder, nn.Module):
+    """
+    Encodes directly from sparse points: [x,y,z] (normalized) + value.
+    Robust at coarse grids; no dense voxel tensor needed.
+    """
+    def __init__(self, voxel_size=48, embedding_dim=512,
+                 fourier_feats: int = 0, max_points: int = 4096):
+        super().__init__()
+        self.voxel_size = voxel_size
+        self.embedding_dim = embedding_dim
+        self.max_points = max_points
+        self.k = fourier_feats
+
+        in_dim = 4  # x,y,z,val
+        if self.k > 0:
+            in_dim += 6 * self.k  # sin/cos on 3 coords with k bands
+
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim, 128), nn.ReLU(True),
+            nn.Linear(128, 256),     nn.ReLU(True),
+            nn.Linear(256, 256),     nn.ReLU(True),
+        )
+        self.head = nn.Linear(256 * 2, embedding_dim)  # mean+max concat
+
+        # precompute Fourier frequencies if requested
+        if self.k > 0:
+            bands = 2.0 ** torch.arange(self.k).float() * np.pi
+            self.register_buffer("bands", bands, persistent=False)
+
+    def get_embedding_dim(self): return self.embedding_dim
+
+    def _featify(self, vd: VoxelData) -> torch.Tensor:
+        if vd.occupied_coords.numel() == 0:
+            return torch.zeros((1, 4 + (6*self.k if self.k>0 else 0)),
+                               device=self.head.weight.device)
+
+        xyz = vd.occupied_coords.float() / vd.bounds.float()  # [0,1]
+        val = vd.values.float().unsqueeze(1)                  # [N,1]
+        x = torch.cat([xyz, val], dim=1)                      # [N,4]
+
+        if self.k > 0:
+            # Fourier features on coords mapped to [-1,1]
+            uvw = (xyz * 2 - 1)                               # [-1,1]
+            # [N,3] -> [N,3,k]
+            ang = uvw.unsqueeze(-1) * self.bands
+            sins = torch.sin(ang); coss = torch.cos(ang)
+            # concat along last dim -> [N,3,2k], then flatten 3*(2k)
+            fourier = torch.cat([sins, coss], dim=-1).reshape(uvw.size(0), -1)
+            x = torch.cat([x, fourier], dim=1)
+
+        # random or strided subsample if too many points
+        if x.size(0) > self.max_points:
+            idx = torch.randperm(x.size(0), device=x.device)[:self.max_points]
+            x = x[idx]
+        return x
+
+    def encode(self, voxel_batch: List[VoxelData]) -> torch.Tensor:
+        embs = []
+        for vd in voxel_batch:
+            x = self._featify(vd)              # [N,d]
+            f = self.mlp(x)                    # [N,256]
+            mean = f.mean(0)
+            mx, _ = f.max(0)
+            embs.append(self.head(torch.cat([mean, mx], dim=0)))
+        return torch.stack(embs, dim=0)        # [B,E]
+
+class CrossAttnTokensEncoder(EmbeddingEncoder, nn.Module):
+    """
+    Conv ↓ to 1/8 grid → tokens; learnable queries attend to tokens; pooled to latent.
+    """
+    def __init__(self, voxel_size=48, embedding_dim=1024,
+                 token_channels=256, num_queries=20, heads=4, layers=2):
+        super().__init__()
+        assert voxel_size % 8 == 0
+        self.voxel_size = voxel_size
+        self.embedding_dim = embedding_dim
+        self.proj = nn.Identity()
+        g = voxel_size // 8
+
+        self.conv = nn.Sequential(
+            nn.Conv3d(1, 32, 5, stride=2, padding=2), nn.ReLU(True),  # /2
+            nn.Conv3d(32, 64, 3, stride=2, padding=1), nn.ReLU(True), # /4
+            nn.Conv3d(64, token_channels, 3, stride=2, padding=1), nn.ReLU(True), # /8
+        )
+
+        self.queries = nn.Parameter(torch.randn(num_queries, token_channels))
+
+        self.mhas = nn.ModuleList([
+            nn.MultiheadAttention(token_channels, heads, batch_first=True)
+            for _ in range(layers)
+        ])
+        self.ffns = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(token_channels, 4*token_channels), nn.ReLU(True),
+                nn.Linear(4*token_channels, token_channels)
+            ) for _ in range(layers)
+        ])
+        self.norm_q = nn.LayerNorm(token_channels)
+        self.norm_t = nn.LayerNorm(token_channels)
+   
+
+    def _sparse_to_dense(self, vd):
+        g = torch.zeros((1,1,self.voxel_size,self.voxel_size,self.voxel_size),
+                        device=vd.occupied_coords.device)
+        if vd.occupied_coords.numel():
+            xyz = (vd.occupied_coords.float()/vd.bounds.float()*(self.voxel_size-1)).long().clamp(0,self.voxel_size-1)
+            g[0,0, xyz[:,0], xyz[:,1], xyz[:,2]] = vd.values
+        return g
+
+    def encode(self, voxel_batch):
+        x = torch.cat([self._sparse_to_dense(v) for v in voxel_batch], 0)  # [B,1,D,H,W]
+        x = self.conv(x)                                                   # [B,C,g,g,g]
+        B, C, g, _, _ = x.shape
+        tokens = x.view(B, C, g*g*g).transpose(1, 2)                       # [B,T,C]
+        tokens = self.norm_t(tokens)
+
+        q = self.queries.unsqueeze(0).expand(B, -1, -1)      # [B,Q,C]
+        for mha, ffn in zip(self.mhas, self.ffns):
+            q2,_ = mha(self.norm_q(q), tokens, tokens)
+            q = q + q2
+            q = q + ffn(q)                                    # still [B,Q,C]
+        z = q.reshape(B, -1)                                  # [B,Q*C] = [B,5120]
+        return z
+
+    def get_embedding_dim(self): return self.embedding_dim
+
+class SepConv3D(nn.Module):
+    def __init__(self, c_in, c_out):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv3d(c_in, c_in, kernel_size=(3,1,1), padding=(1,0,0), groups=c_in, bias=False),
+            nn.Conv3d(c_in, c_in, kernel_size=(1,3,1), padding=(0,1,0), groups=c_in, bias=False),
+            nn.Conv3d(c_in, c_in, kernel_size=(1,1,3), padding=(0,0,1), groups=c_in, bias=False),
+            nn.Conv3d(c_in, c_out, kernel_size=1, bias=False),
+            nn.ReLU(True),
+        )
+    def forward(self, x): return self.net(x)
+
+class Factorised3DDecoder(EmbeddingDecoder, nn.Module):
+    """
+    latent → 1/8 grid → 1/4 → 1/2 → full using separable 3D convs
+    """
+    def __init__(self, embedding_dim=512, voxel_size=48, base=96):
+        super().__init__()
+        assert voxel_size % 8 == 0
+        self.voxel_size = voxel_size
+        s = voxel_size // 8
+        self.fc = nn.Linear(embedding_dim, base * s * s * s)
+
+        self.up1 = nn.Sequential(
+        nn.ConvTranspose3d(base, base//2, 4, stride=2, padding=1, bias=False),
+        SepConv3D(base//2, base//2),   # ← add c_out
+        )
+        self.up2 = nn.Sequential(
+            nn.ConvTranspose3d(base//2, base//4, 4, stride=2, padding=1, bias=False),
+            SepConv3D(base//4, base//4),   # ← add c_out
+        )
+        self.up3 = nn.Sequential(
+            nn.ConvTranspose3d(base//4, base//8, 4, stride=2, padding=1, bias=False),
+            SepConv3D(base//8, base//8),   # ← add c_out
+        )
+
+        self.out = nn.Conv3d(base//8, 3, 1)
+
+    def decode(self, embedding, query_points=None, skips=None):
+        B = embedding.size(0)
+        s = self.voxel_size // 8
+        x = self.fc(embedding).view(B, -1, s, s, s)
+        x = self.up1(x); x = self.up2(x); x = self.up3(x)
+        return {"logits": self.out(x)}
+
+class ImplicitFourierDecoder(EmbeddingDecoder, nn.Module):
+    """
+    Stronger implicit field: concat latent with multi-scale Fourier features of xyz.
+    Returns dense logits [B,3,D,H,W]. Chunked to fit memory.
+    """
+    def __init__(self, embedding_dim=512, voxel_size=48, fourier_bands=6, hidden=256, depth=4, chunk=65536):
+        super().__init__()
+        self.voxel_size = voxel_size
+        self.chunk = chunk
+
+        self.register_buffer("xyz", torch.stack(torch.meshgrid(
+            torch.linspace(-1, 1, voxel_size),
+            torch.linspace(-1, 1, voxel_size),
+            torch.linspace(-1, 1, voxel_size),
+            indexing='ij'
+        ), dim=-1).view(-1,3), persistent=False)  # [V,3]
+
+        freqs = 2.0 ** torch.arange(fourier_bands)
+        self.register_buffer("freqs", freqs * np.pi, persistent=False)
+        in_dim = embedding_dim + 3 + 6*fourier_bands  # xyz + sin/cos
+        layers = []
+        d = in_dim
+        for i in range(depth-1):
+            layers += [nn.Linear(d, hidden), nn.ReLU(True)]
+            d = hidden
+        layers += [nn.Linear(d, 3)]
+        self.mlp = nn.Sequential(*layers)
+
+    def _encode_xyz(self, xyz):
+        # xyz: [N,3] in [-1,1]
+        ang = xyz.unsqueeze(-1) * self.freqs  # [N,3,B]
+        pe = torch.cat([torch.sin(ang), torch.cos(ang)], dim=-1).view(xyz.size(0), -1)
+        return torch.cat([xyz, pe], dim=1)   # [N, 3+6B]
+
+    def decode(self, embedding, query_points=None, skips=None):
+        B, E = embedding.shape
+        V = self.xyz.size(0)
+        xyz_pe = self._encode_xyz(self.xyz)
+
+        outs = []
+        for b in range(B):
+            z = embedding[b].unsqueeze(0).expand(V, -1)           # [V,E]
+            feats = torch.cat([z, xyz_pe.to(z.dtype)], dim=1)     # [V,E+pos]
+            preds = []
+            for i in range(0, V, self.chunk):
+                preds.append(self.mlp(feats[i:i+self.chunk]))
+            logits = torch.cat(preds, dim=0)                      # [V,3]
+            outs.append(logits.view(self.voxel_size, self.voxel_size, self.voxel_size, 3)
+                              .permute(3,0,1,2))
+        return {"logits": torch.stack(outs, 0)}  # [B,3,D,H,W]
+
+
+
+
+
 
 # ============== Loss Heads ==============
 class AuxFnHead(LossHead):
@@ -397,6 +838,7 @@ class EmbeddingTrainer:
         all_params += list(self.loss_heads.parameters())
 
         self.recon_loss_fn = recon_loss or (lambda l,t,extra=None: F.cross_entropy(l, t))
+        
         self.optimizer = torch.optim.Adam(all_params, lr=lr)
     
     def train_step(self, voxel_batch: List[VoxelData], target_batch: List[Dict[str, torch.Tensor]],
@@ -537,8 +979,8 @@ class TerrainBatch(IterableDataset):
         while True:
             g   = voxelsim.TerrainGenerator()
             cfg = voxelsim.TerrainConfig.default_py()
-            # cfg.set_seed_py(int(np.random.randint(0, 2**31)))
-            cfg.set_seed_py(42)
+            cfg.set_seed_py(int(np.random.randint(0, 2**31)))
+            # cfg.set_seed_py(42)
             cfg.set_world_size_py(side)
             g.generate_terrain_py(cfg)
             world = g.generate_world_py()
@@ -771,15 +1213,15 @@ def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embeddi
         for name in epoch_losses:
             epoch_losses[name] /= steps_per_epoch
             loss_history[name].append(epoch_losses[name])
-        
+        f = np.mean(stats["fetch"][-steps_per_epoch:])
+        m = np.mean(stats["move" ][-steps_per_epoch:])
+        g = np.mean(stats["model"][-steps_per_epoch:])
         if epoch % visualize_every == 0:
             print(f"Epoch {epoch}: {dict(epoch_losses)}")
 
             
             # --- averaged timings for the last “epoch” (10 steps) ---
-            f = np.mean(stats["fetch"][-steps_per_epoch:])
-            m = np.mean(stats["move" ][-steps_per_epoch:])
-            g = np.mean(stats["model"][-steps_per_epoch:])
+ 
             print(
                 f"Epoch {epoch:04d}  "
                 f"| fetch {f*1e3:6.1f} ms   "
@@ -931,46 +1373,102 @@ class RunLogger:
         self.csv_f.close(); self.tb.close()
 
 # ============== Usage Example ==============
-if __name__ == "__main__":
-    # Test simple CNN autoencoder
-    print("Testing CNN Autoencoder...")
-    print("CUDA available:", torch.cuda.is_available())
-    print("CUDA device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
+# if __name__ == "__main__":
+#     # Test simple CNN autoencoder
+#     print("Testing CNN Autoencoder...")
+#     print("CUDA available:", torch.cuda.is_available())
+#     print("CUDA device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
         
-    loss_heads = {
-        # # function losses wrapped as heads
-        # "soft_iou":      AuxFnHead(make_aux_loss("soft_iou")),
+#     loss_heads = {
+#         # # function losses wrapped as heads
+#         # "soft_iou":      AuxFnHead(make_aux_loss("soft_iou")),
+#         # "tv":            AuxFnHead(make_aux_loss("tv")),
+#         # "boundary":      AuxFnHead(make_aux_loss("boundary")),
+#         # "com":           AuxFnHead(make_aux_loss("com")),
+#         # "class_balance": AuxFnHead(make_aux_loss("class_balance")),
+#         # "ms_occ":        AuxFnHead(make_aux_loss("ms_occ", scale=4)),
+#         # "chamfer":       AuxFnHead(make_aux_loss("chamfer", topk=2048)),
+#     }
+#     # loss_heads["chamfer"].variable_length_target = True
+#     recon_loss = make_recon_loss("ce") 
+#     torch.cuda.empty_cache()
+#     # dims = [128, 256, 512, 1024]          # sweep list
+#     # for d in dims:
+#     #     print(f"\n=== 🔵 latent_dim = {d} ===")
+#     #     run_experiment(SimpleCNNEncoder, SimpleCNNDecoder,
+#     #                    embedding_dim=d,
+#     #                    num_epochs=500,            # shorter for quick sweep
+#     #                    batch_size=8,
+#     #                    visualize_every=50,
+#     #                    size=48,
+#     #                    ckpt_every=50)
+#     run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, loss_heads,
+#                        embedding_dim=512,
+#                        num_epochs=5000,            # shorter for quick sweep
+#                        recon_loss=recon_loss,
+#                        batch_size=1,
+#                        visualize_every=50,
+#                        size=48,
+#                        ckpt_every=50)
+
+def make_aux_heads(embedding_dim):
+    heads = {
+        "soft_iou":      AuxFnHead(make_aux_loss("soft_iou")),
         # "tv":            AuxFnHead(make_aux_loss("tv")),
-        # "boundary":      AuxFnHead(make_aux_loss("boundary")),
-        # "com":           AuxFnHead(make_aux_loss("com")),
+        "boundary":      AuxFnHead(make_aux_loss("boundary")),
+        "com":           AuxFnHead(make_aux_loss("com")),
         # "class_balance": AuxFnHead(make_aux_loss("class_balance")),
-        # "ms_occ":        AuxFnHead(make_aux_loss("ms_occ", scale=4)),
+        "ms_occ":        AuxFnHead(make_aux_loss("ms_occ", scale=4)),
         # "chamfer":       AuxFnHead(make_aux_loss("chamfer", topk=2048)),
+        # Add navigation heads with correct dim:
+        # "topdown":       TopDownHeightHead(embedding_dim=embedding_dim),
+        # "dt":            DistanceTransformHead(embedding_dim=embedding_dim, grid=24),
+        # "rel_offset":    RelativeOffsetHead(embedding_dim=embedding_dim, k_nearest=5),
     }
-    # loss_heads["chamfer"].variable_length_target = True
-    recon_loss = make_recon_loss("ce") 
+    # heads["chamfer"].variable_length_target = True
+    return heads
+
+def sweep():
+    recon_loss = make_recon_loss("ce")
+
+    encoder_decoder_pairs = [
+        # (SimpleCNNEncoder,        SimpleCNNDecoder),
+        # (UNet3DEncoder,           UNet3DDecoder),
+        # (ResNet3DEncoder,         ResNet3DDecoder),
+        (CrossAttnTokensEncoder,  ImplicitFourierDecoder),
+        # (PointMLPEncoder,         ImplicitFourierDecoder),   # sparse-in / implicit-out
+    ]
+
+    emb_dims = [128, 256, 512, 1024]
+    emb_dims = [5120]
+    size = 48
+
+     # Regimes are factories now
+    regimes = [
+        ("recon_only",    lambda dim: {}),
+        ("recon_plus_aux", make_aux_heads),   # will be called with dim
+    ]
+
+    for regime_name, heads_factory in regimes:
+        for Enc, Dec in encoder_decoder_pairs:
+            for d in emb_dims:
+                loss_heads = heads_factory(d)
+                print(f"\n=== {regime_name} | {Enc.__name__} → {Dec.__name__} | dim={d} ===")
+                run_experiment(
+                    encoder_class=Enc,
+                    decoder_class=Dec,
+                    loss_heads=loss_heads,
+                    recon_loss=recon_loss,
+                    embedding_dim=d,
+                    num_epochs=2000,
+                    batch_size=2,
+                    visualize_every=100,
+                    size=size,
+                    ckpt_every=50,
+                )
+
+if __name__ == "__main__":
+    print("CUDA available:", torch.cuda.is_available())
     torch.cuda.empty_cache()
-    # dims = [128, 256, 512, 1024]          # sweep list
-    # for d in dims:
-    #     print(f"\n=== 🔵 latent_dim = {d} ===")
-    #     run_experiment(SimpleCNNEncoder, SimpleCNNDecoder,
-    #                    embedding_dim=d,
-    #                    num_epochs=500,            # shorter for quick sweep
-    #                    batch_size=8,
-    #                    visualize_every=50,
-    #                    size=48,
-    #                    ckpt_every=50)
-    run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, loss_heads,
-                       embedding_dim=512,
-                       num_epochs=5000,            # shorter for quick sweep
-                       recon_loss=recon_loss,
-                       batch_size=1,
-                       visualize_every=50,
-                       size=48,
-                       ckpt_every=50)
-
-
-
-    # Simple test: Generate terrain, extract subvolume, and visualize
-
+    sweep()
 
