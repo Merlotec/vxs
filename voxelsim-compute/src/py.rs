@@ -46,6 +46,10 @@ impl FilterWorld {
     pub fn dense_snapshot_py(&self, centre: [i32; 3], half_dims: [i32; 3]) -> DenseSnapshot {
         self.dense_snapshot(centre.into(), half_dims.into())
     }
+
+    pub fn timestamp_py(&self) -> Option<f64> {
+        *self.timestamp.lock().unwrap()
+    }
 }
 
 #[pymethods]
