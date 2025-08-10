@@ -6,3 +6,5 @@ target
 .venv3102
 /python/Experiments/runs
 /runs
+logs
+

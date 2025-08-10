@@ -5,7 +5,6 @@ use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use voxelsim::viewport::VirtualGrid;
 use voxelsim::{Agent, VoxelGrid};
 
 pub struct NetworkSubscriber<T> {

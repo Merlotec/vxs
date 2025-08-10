@@ -9,6 +9,7 @@ pub struct CullParams {
     pub _padding: [u32; 2],
 }
 
+
 pub struct FrustumCulling {
     pub compute_pipeline: wgpu::ComputePipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,
@@ -17,6 +18,7 @@ pub struct FrustumCulling {
     pub frustum_planes_buffer: wgpu::Buffer,
     pub bind_group: Option<wgpu::BindGroup>,
     pub max_instances: u32,
+    pub readback_staging_buffer: wgpu::Buffer, // Cached staging buffer for readbacks
 }
 
 impl FrustumCulling {
@@ -119,6 +121,14 @@ impl FrustumCulling {
             mapped_at_creation: false,
         });
 
+        // Create cached staging buffer for readbacks
+        let readback_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Culling Readback Staging Buffer"),
+            size: std::mem::size_of::<CullParams>() as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
         Self {
             compute_pipeline,
             bind_group_layout,
@@ -127,6 +137,7 @@ impl FrustumCulling {
             frustum_planes_buffer,
             bind_group: None,
             max_instances,
+            readback_staging_buffer,
         }
     }
 
@@ -159,6 +170,7 @@ impl FrustumCulling {
         });
         self.bind_group = Some(bind_group);
     }
+
 
     pub fn dispatch_culling(
         &self,
@@ -195,24 +207,16 @@ impl FrustumCulling {
         compute_pass.set_pipeline(&self.compute_pipeline);
         if let Some(bind_group) = &self.bind_group {
             compute_pass.set_bind_group(0, bind_group, &[]);
+            
+            // Dispatch with workgroups of 64 threads each
+            let workgroup_count = (instance_count + 63) / 64; // Round up division
+            compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
         }
-
-        // Dispatch with workgroups of 64 threads each
-        let workgroup_count = (instance_count + 63) / 64; // Round up division
-        compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
     }
 
     /// Read back the number of visible instances after culling (synchronous version)
     pub fn get_visible_count_sync(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> u32 {
-        // Create a staging buffer to read back the visible count
-        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Visible Count Staging Buffer"),
-            size: std::mem::size_of::<CullParams>() as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
-        // Copy the cull params to staging buffer
+        // Use cached staging buffer instead of creating new one each frame
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Read Visible Count Encoder"),
         });
@@ -220,15 +224,15 @@ impl FrustumCulling {
         encoder.copy_buffer_to_buffer(
             &self.cull_params_buffer,
             0,
-            &staging_buffer,
+            &self.readback_staging_buffer,
             0,
             std::mem::size_of::<CullParams>() as u64,
         );
 
         queue.submit(Some(encoder.finish()));
 
-        // Map and read the buffer synchronously without futures
-        let buffer_slice = staging_buffer.slice(..);
+        // Map and read the cached buffer synchronously
+        let buffer_slice = self.readback_staging_buffer.slice(..);
 
         // Use a simple boolean flag instead of futures
         use std::sync::{Arc, Mutex};
@@ -258,7 +262,7 @@ impl FrustumCulling {
             bytemuck::from_bytes(&data[..std::mem::size_of::<CullParams>()]);
         let visible_count = cull_params.visible_count;
         drop(data);
-        staging_buffer.unmap();
+        self.readback_staging_buffer.unmap();
         visible_count
     }
 

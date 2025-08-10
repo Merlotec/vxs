@@ -43,7 +43,7 @@ impl Default for FixedLookaheadChaser {
         Self {
             v_max_base: 6.0,
             s_lookahead_base: 0.12,
-            min_step: 2.0,
+            min_step: 1.0,
         }
     }
 }
@@ -62,7 +62,7 @@ impl TrajectoryChaser for FixedLookaheadChaser {
             ) {
                 let v_max_cur = self.v_max_base * urgency;
                 let ds_max = v_max_cur * delta;
-                let ds_min = self.min_step * delta;
+                let ds_min = self.min_step * delta * urgency;
                 let s_lookahead = self.s_lookahead_base * urgency;
 
                 let s_star = action
@@ -73,7 +73,7 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                 // Check if drone is close enough to the trajectory to advance progress
                 let pos_at_s_star = action.trajectory.position(s_star);
                 let distance_threshold = 0.5; // meters - adjust as needed
-                
+
                 let can_advance = if let Some(traj_pos) = pos_at_s_star {
                     (x_act - traj_pos).norm() < distance_threshold
                 } else {
@@ -87,6 +87,7 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                 };
 
                 let s_tgt = (s_updated + s_lookahead).min(s_end);
+                println!("tgt: {}, {}, {}, {}", s_tgt, s_updated, s_star, s_cur);
                 if let (Some(p_tgt), Some(v_tgt_nominal), Some(a_tgt_nominal)) = (
                     action.trajectory.position(s_tgt),
                     action.trajectory.velocity(s_tgt),

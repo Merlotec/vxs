@@ -3,7 +3,6 @@ use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Vector3;
 
-use voxelsim::viewport::VirtualCell;
 use voxelsim::{Agent, Cell, Coord, PovData, VoxelGrid};
 
 use bevy::app::AppExit;
@@ -20,7 +19,7 @@ pub struct CellComponent {
 #[derive(Component)]
 pub struct VirtualCellComponent {
     pub coord: Coord,
-    pub value: VirtualCell,
+    pub value: Cell,
 }
 
 #[derive(Component)]
@@ -208,5 +207,15 @@ pub fn setup(
             ..default()
         },
         Transform::from_xyz(0.0, 7., 14.0).looking_at(Vec3::new(0., 0., 0.), Vec3::Y),
+    ));
+
+    // Dedicated UI camera to always render HUD on top
+    commands.spawn((
+        Camera2d::default(),
+        Camera {
+            // Ensure UI draws over 3D cameras
+            order: 100,
+            ..default()
+        },
     ));
 }

@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use bitflags::bitflags;
 use dashmap::DashMap;
 use nalgebra::Vector3;
@@ -23,7 +25,6 @@ bitflags! {
 pub type Coord = Vector3<i32>;
 
 pub type GridShell = [Vector3<i32>; 26];
-pub type CollisionShell = ArrayVec<[(Coord, Cell); 26]>;
 
 pub(crate) fn adjacent_coords(coord: Vector3<i32>) -> GridShell {
     let mut coords = [Vector3::zeros(); 26];
@@ -125,8 +126,8 @@ impl VoxelGrid {
 
     /// Returns a the list of cells if an object with the given centre coordinate and dimensions collides with any
     /// cells.
-    pub fn collisions(&self, centre: Vector3<f64>, dims: Vector3<f64>) -> CollisionShell {
-        let mut collisions = ArrayVec::new();
+    pub fn collisions(&self, centre: Vector3<f64>, dims: Vector3<f64>) -> Vec<(Coord, Cell)> {
+        let mut collisions = Vec::new();
         // We only need to check the cubes around.
         assert!(dims.x < 1.0 && dims.y < 1.0 && dims.z < 1.0);
         for cell_coord in adjacent_coords(centre.try_cast::<i32>().unwrap()) {
@@ -137,5 +138,56 @@ impl VoxelGrid {
             }
         }
         collisions
+    }
+
+    pub fn dense_snapshot(&self, centre: Coord, half_dims: Vector3<i32>) -> DenseSnapshot {
+        // We encode in the distance first approach.
+        let min = centre - half_dims;
+        let max = centre + half_dims;
+
+        let dim = max - min;
+        let len = dim.x * dim.y * dim.z;
+        let mut dense = Vec::with_capacity(len as usize);
+        for x in min.x..=max.x {
+            for y in min.y..=max.y {
+                for z in min.z..=max.z {
+                    let c = self
+                        .cells()
+                        .get(&Vector3::new(x, y, z))
+                        .map(|x| *x)
+                        .unwrap_or(Cell::empty());
+                    dense.push(c);
+                }
+            }
+        }
+
+        DenseSnapshot {
+            data: dense,
+            centre,
+            half_dims,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
+pub struct DenseSnapshot {
+    centre: Coord,
+    half_dims: Vector3<i32>,
+
+    data: Vec<Cell>,
+}
+
+impl DenseSnapshot {
+    pub fn centre(&self) -> Coord {
+        self.centre
+    }
+
+    pub fn half_dims(&self) -> Vector3<i32> {
+        self.half_dims
+    }
+
+    pub fn data(&self) -> &[Cell] {
+        &self.data
     }
 }

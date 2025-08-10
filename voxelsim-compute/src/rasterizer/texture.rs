@@ -146,8 +146,6 @@ impl StagingBufferPool {
             texture.size(),
         );
 
-        encoder.clear_texture(texture, &ImageSubresourceRange::default());
-
         // Submit and capture submission index
         let submission_index = queue.submit(Some(encoder.finish()));
         
@@ -209,8 +207,6 @@ impl StagingBufferPool {
             },
             texture.size(),
         );
-
-        encoder.clear_texture(texture, &ImageSubresourceRange::default());
 
         // Submit and map the buffer
         queue.submit(Some(encoder.finish()));
@@ -304,8 +300,6 @@ where
         },
         texture.size(),
     );
-
-    encoder.clear_texture(texture, &ImageSubresourceRange::default());
 
     // 3. Submit and map the buffer
     queue.submit(Some(encoder.finish()));
