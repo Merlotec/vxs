@@ -59,5 +59,5 @@ model = PPO(
     # device="mps",
 )
 
-model.learn(total_timesteps=1_000_000, callback=[eval_cb, ckpt_cb])
+model.learn(total_timesteps=1_000_000, callback=[ckpt_cb])
 model.save(os.path.join(logdir, "final_model"))

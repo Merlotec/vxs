@@ -4,13 +4,14 @@ use voxelsim::chase::ChaseTarget;
 use voxelsim::py::PyCoord;
 use voxelsim::{Agent, VoxelGrid};
 
-use crate::dynamics::quad::QuadDynamics;
+use crate::dynamics::quad::{QuadDynamics, QuadParams};
 use crate::dynamics::{AgentDynamics, EnvState};
 use crate::terrain::{TerrainConfig, TerrainGenerator};
 
 #[pymodule]
 pub fn voxelsim_simulator(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<QuadDynamics>()?;
+    m.add_class::<QuadParams>()?;
     m.add_class::<TerrainGenerator>()?;
     m.add_class::<TerrainConfig>()?;
     m.add_class::<EnvState>()?;
@@ -18,10 +19,18 @@ pub fn voxelsim_simulator(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 #[pymethods]
-impl QuadDynamics {
+impl QuadParams {
     #[staticmethod]
     pub fn default_py() -> Self {
         Self::default()
+    }
+}
+
+#[pymethods]
+impl QuadDynamics {
+    #[new]
+    pub fn new_py(params: QuadParams) -> Self {
+        Self::new(params)
     }
     pub fn update_agent_dynamics_py(
         &mut self,

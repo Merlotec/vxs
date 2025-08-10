@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import time
 import random
+import copy
 from typing import Optional, Tuple, List, Any, Dict
 
 from abc import ABC, abstractmethod
@@ -25,10 +26,11 @@ class RewardFunction(ABC):
 
 
 class BaselineReward(RewardFunction):
-    def __init__(self, collision_penalty: float = -1000.0, living_cost: float = -0.01, move_bonus: float = 0.05):
+    def __init__(self, collision_penalty: float = -1000.0, living_cost: float = -0.05, move_bonus: float = 5.0, overwrite_cost: float = -10.0):
         self.collision_penalty = collision_penalty
         self.living_cost = living_cost
         self.move_bonus = move_bonus
+        self.overwrite_cost = overwrite_cost
 
     def compute(self, env, observation, action, info) -> float:
         r = 0.0
@@ -41,7 +43,14 @@ class BaselineReward(RewardFunction):
                 r += self.move_bonus
         except Exception:
             pass
+
+        if info["mv_commands"] > 0:
+            if info["current_commands"] > 0:
+                r -= self.overwrite_cost
+        
         return r
+
+
 
 
 class GridWorldEnv(gym.Env):
@@ -51,7 +60,7 @@ class GridWorldEnv(gym.Env):
 
     def __init__(
         self,
-        agent_dynamics: vxs.QuadDynamics = vxs.QuadDynamics.default_py(),
+        agent_params: vxs.QuadParams = vxs.QuadParams.default_py(),
         chaser: vxs.FixedLookaheadChaser = vxs.FixedLookaheadChaser.default_py(),
         camera_proj: vxs.CameraProjection = vxs.CameraProjection.default_py(),
         camera_orientation: vxs.CameraOrientation = vxs.CameraOrientation.vertical_tilt_py(-0.5),
@@ -72,7 +81,8 @@ class GridWorldEnv(gym.Env):
         self.action_space = gym.spaces.MultiDiscrete([7, 5, 8])
 
         # Save config
-        self.agent_dynamics = agent_dynamics
+        self.agent_params = agent_params
+        self.agent_dynamics = vxs.QuadDynamics(self.agent_params)
         self.chaser = chaser
         self.camera_proj = camera_proj
         self.camera_orientation = camera_orientation
@@ -267,17 +277,24 @@ class GridWorldEnv(gym.Env):
         terminated = False
         truncated = False
 
+        curr_action = self.agent.get_action()
+        self.executing_actions_codes = list(self.action_buffer_codes) if self.action_buffer_codes and curr_action else []
+        info["current_commands"] = curr_action.len() if curr_action else 0
+        info["mv_commands"] = 0
+        info["waiting_for_more_commands"] = False
         mv_commands = self._decode_action(action)
         if mv_commands is None:
             observation = self._last_or_dummy_obs()
-            reward = self.reward_fn.compute(self, observation, action, {"waiting_for_more_commands": True})
+            info["waiting_for_more_commands"] = True
+            reward = self.reward_fn.compute(self, observation, action, info)
             info["next"] = "next_command"
             return observation, reward, terminated, truncated, info
 
+
         # We have a full sequence to execute
-        self.executing_actions_codes = list(self.action_buffer_codes) if self.action_buffer_codes else []
         if len(mv_commands) > 0:
             try:
+                info["mv_commands"] = len(mv_commands)
                 self.agent.perform_sequence_py(mv_commands)
             except:
                 # Invalid sequence, we must punish.
@@ -286,16 +303,13 @@ class GridWorldEnv(gym.Env):
                 reward = -100
                 return observation, reward, terminated, truncated, info
 
-        # Chase target & dynamics (adjust signatures to your SDK if needed)
         self.chase_target = self.chaser.step_chase_py(self.agent, self.delta_time)
         self.agent_dynamics.update_agent_dynamics_py(self.agent, self.world_env, self.chase_target, self.delta_time)
 
-        # Advance time
         self.world_time += self.delta_time
         self.current_step += 1
 
         update_fw = False
-        # Update filter world if needed
         if self.filter_world_upd_ts != None and self.world_time - self.filter_world_upd_ts >= self.filter_update_lag:
             changeset = self.await_changeset()
             self.update_filter_world(changeset)
@@ -308,7 +322,9 @@ class GridWorldEnv(gym.Env):
         # Check whether to start the render pass:
         fw_ts = self.filter_world.timestamp_py()
         if (fw_ts == None) or (self.world_time - fw_ts >= self.filter_delta) and (self.next_changeset == None):
+            print(f"updts: {fw_ts}")
             # We cannot have a frame currently in process/awaiting pop.
+            assert(self.next_changeset == None)
             self._render_agent_vision()
         
 
@@ -340,8 +356,11 @@ class GridWorldEnv(gym.Env):
             self.client.send_world_py(self.world)
 
         self.filter_world = vxs.FilterWorld()
+        self.agent_vision = vxs.AgentVisionRenderer(self.world, self.renderer_view_size, self.noise)
+        self.agent_dynamics = vxs.QuadDynamics(self.agent_params)
         self.agent = vxs.Agent(0)
         self.agent.set_pos(self.start_pos)
+        self.chase_target = None
         self.world_time = 0.0
         self.current_step = 0
         self.next_changeset = None
