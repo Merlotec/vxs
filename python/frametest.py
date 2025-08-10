@@ -1,30 +1,30 @@
 from pynput import keyboard, mouse
-import voxelsim, time
+import voxelsim as vxs, time
 
-# dynamics = voxelsim.AgentDynamics.default_drone()
-agent = voxelsim.Agent(0)
+# dynamics = vxs.AgentDynamics.default_drone()
+agent = vxs.Agent(0)
 agent.set_pos([50.0, 50.0, 20.0])
 
-fw = voxelsim.FilterWorld()
-dynamics = voxelsim.QuadDynamics.default_py()
+fw = vxs.FilterWorld()
+dynamics = vxs.QuadDynamics.default_py()
 
-chaser = voxelsim.FixedLookaheadChaser.default_py()
+chaser = vxs.FixedLookaheadChaser.default_py()
 
-generator = voxelsim.TerrainGenerator()
-generator.generate_terrain_py(voxelsim.TerrainConfig.default_py())
+generator = vxs.TerrainGenerator()
+generator.generate_terrain_py(vxs.TerrainConfig.default_py())
 world = generator.generate_world_py()
-proj = voxelsim.CameraProjection.default_py()
-env = voxelsim.EnvState.default_py()
+proj = vxs.CameraProjection.default_py()
+env = vxs.EnvState.default_py()
 
 AGENT_CAMERA_TILT = -0.5
-camera_orientation = voxelsim.CameraOrientation.vertical_tilt_py(-0.5)
+camera_orientation = vxs.CameraOrientation.vertical_tilt_py(-0.5)
 # Renderer
-noise = voxelsim.NoiseParams.default_with_seed_py([0.0, 0.0, 0.0])
-renderer = voxelsim.AgentVisionRenderer(world, [200, 150], noise)
+noise = vxs.NoiseParams.default_with_seed_py([0.0, 0.0, 0.0])
+renderer = vxs.AgentVisionRenderer(world, [200, 150], noise)
 
 # Client
 
-client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
+client = vxs.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
 # Specify the number of agent renderers we want to connect to.
 client.connect_py(1)
 print("Controls: WASD=move, Space=up, Shift=down, ESC=quit")
@@ -117,12 +117,12 @@ while listener.running:
     if action:
         commands = action.get_commands()
     commands_cl = list(commands)
-    if 'w' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Forward, 0.8, 0.0))
-    if 's' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Back, 0.8, 0.0))
-    if 'a' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Left, 0.8, 0.0))
-    if 'd' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Right, 0.8, 0.0))
-    if 'space' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Up, 0.8, 0.0))
-    if 'shift' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Down, 0.8, 0.0))
+    if 'w' in just_pressed: commands.append(vxs.MoveCommand(vxs.MoveDir.Forward, 0.8, 0.0))
+    if 's' in just_pressed: commands.append(vxs.MoveCommand(vxs.MoveDir.Back, 0.8, 0.0))
+    if 'a' in just_pressed: commands.append(vxs.MoveCommand(vxs.MoveDir.Left, 0.8, 0.0))
+    if 'd' in just_pressed: commands.append(vxs.MoveCommand(vxs.MoveDir.Right, 0.8, 0.0))
+    if 'space' in just_pressed: commands.append(vxs.MoveCommand(vxs.MoveDir.Up, 0.8, 0.0))
+    if 'shift' in just_pressed: commands.append(vxs.MoveCommand(vxs.MoveDir.Down, 0.8, 0.0))
     if not action or commands != commands_cl:
         if len(commands) > 0:
             agent.perform_sequence_py(commands)

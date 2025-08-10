@@ -186,4 +186,8 @@ impl DenseSnapshot {
     pub fn half_dims(&self) -> Vector3<i32> {
         self.half_dims
     }
+
+    pub fn data(&self) -> &[Cell] {
+        &self.data
+    }
 }

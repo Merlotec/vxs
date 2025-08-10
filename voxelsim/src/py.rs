@@ -375,6 +375,11 @@ impl RendererClient {
         )
     }
 
+    #[staticmethod]
+    pub fn default_localhost_py() -> Self {
+        Self::new("127.0.0.1", 8080, 8081, 8090, 9090)
+    }
+
     fn connect_py(&mut self, pov_count: u16) -> PyResult<()> {
         self.connect(pov_count)
             .map_err(|e| PyException::new_err(e.to_string()))
@@ -423,5 +428,17 @@ impl CameraOrientation {
     #[staticmethod]
     pub fn vertical_tilt_py(tilt: f64) -> Self {
         Self::vertical_tilt(tilt)
+    }
+}
+
+#[pymethods]
+impl DenseSnapshot {
+    pub fn data_py(&self) -> Vec<i32> {
+        // Safety:
+        // Since the underlying type of the Cell is 32 bit, should be fine.
+        let data = self.data().to_vec();
+        let transmuted_data = unsafe { std::mem::transmute_copy(&data) };
+        std::mem::forget(data);
+        transmuted_data
     }
 }
