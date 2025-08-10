@@ -26,27 +26,55 @@ class RewardFunction(ABC):
 
 
 class BaselineReward(RewardFunction):
-    def __init__(self, collision_penalty: float = -1000.0, living_cost: float = -0.05, move_bonus: float = 5.0, overwrite_cost: float = -10.0):
+    def __init__(
+        self,
+        collision_penalty: float = -1000.0,
+        living_cost: float = -0.05,
+        move_bonus: float = 5.0,
+        overwrite_cost: float = -10.0,
+        noop_bonus_executing: float = 0.2,
+        buffer_penalty_executing: float = 0.2,
+    ):
         self.collision_penalty = collision_penalty
         self.living_cost = living_cost
+        # Applied only when idle (no commands executing)
         self.move_bonus = move_bonus
+        # Applied when a new sequence overwrites an in-flight one
         self.overwrite_cost = overwrite_cost
+        # Small positive shaping for explicitly no-op while executing
+        self.noop_bonus_executing = noop_bonus_executing
+        # Small penalty for trying to add to buffer while executing
+        self.buffer_penalty_executing = buffer_penalty_executing
 
     def compute(self, env, observation, action, info) -> float:
         r = 0.0
         if info.get("collided", False):
             r += self.collision_penalty
         r += self.living_cost
+        # Action-dependent shaping
         try:
             cmd = int(action[0])
-            if cmd != 6:  # not flush/no-op
-                r += self.move_bonus
         except Exception:
-            pass
+            cmd = None
 
-        if info["mv_commands"] > 0:
-            if info["current_commands"] > 0:
-                r -= self.overwrite_cost
+        current = int(info.get("current_commands", 0))
+        waiting = bool(info.get("waiting_for_more_commands", False))
+        mv_count = int(info.get("mv_commands", 0))
+
+        # Encourage movement only when idle (no in-flight commands)
+        if cmd is not None and cmd != 6 and current == 0:
+            r += self.move_bonus
+
+        # If we are executing, encourage no-op and discourage fiddling with buffer
+        if current > 0:
+            if cmd == 6:
+                r += self.noop_bonus_executing
+            elif waiting:
+                r -= self.buffer_penalty_executing
+
+        # Penalize overwriting an active sequence (flush with non-empty buffer)
+        if mv_count > 0 and current > 0:
+            r -= self.overwrite_cost
         
         return r
 
@@ -71,7 +99,7 @@ class GridWorldEnv(gym.Env):
         start_pos: Tuple[int, int, int] = (0, 0, 0),
         renderer_view_size: Tuple[int, int] = (150, 100),
         noise: vxs.NoiseParams = vxs.NoiseParams.default_with_seed_py([0, 0, 0]),
-        delta_time: float = 0.1,
+        delta_time: float = 0.01,
         client: Optional[vxs.RendererClient] = None,
         reward_fn: Optional[RewardFunction] = None,
     ):
@@ -282,6 +310,51 @@ class GridWorldEnv(gym.Env):
         info["current_commands"] = curr_action.len() if curr_action else 0
         info["mv_commands"] = 0
         info["waiting_for_more_commands"] = False
+        # Provide an action mask to hint the policy: when executing, prefer NO-OP/flush
+        # MultiDiscrete[7,5,8] -> we expose mask for the move component (index 0)
+        if info["current_commands"] > 0:
+            move_mask = np.zeros(7, dtype=np.int8)
+            move_mask[6] = 1  # prefer 6 as the "no-op" signal from the policy
+        else:
+            move_mask = np.ones(7, dtype=np.int8)
+        info["action_mask_move"] = move_mask
+
+        # If we are already executing a sequence, ignore any attempt to modify/flush
+        # and just advance the simulation. This prevents accidental overwrites.
+        if info["current_commands"] > 0:
+            # Do not touch the action buffer or flush while executing
+            self.chase_target = self.chaser.step_chase_py(self.agent, self.delta_time)
+            self.agent_dynamics.update_agent_dynamics_py(
+                self.agent, self.world_env, self.chase_target, self.delta_time
+            )
+
+            self.world_time += self.delta_time
+            self.current_step += 1
+
+            update_fw = False
+            if self.filter_world_upd_ts != None and self.world_time - self.filter_world_upd_ts >= self.filter_update_lag:
+                changeset = self.await_changeset()
+                self.update_filter_world(changeset)
+                update_fw = True
+
+            fw_ts = self.filter_world.timestamp_py()
+            if (fw_ts == None) or (self.world_time - fw_ts >= self.filter_delta) and (self.next_changeset == None):
+                print(f"updts: {fw_ts}")
+                assert(self.next_changeset == None)
+                self._render_agent_vision()
+
+            # Collisions
+            collisions = self.world.collisions_py(self.agent.get_pos(), self.agent_bounds)
+            collided = len(collisions) > 0
+            info["collided"] = collided
+            if collided:
+                terminated = True
+
+            observation = self._build_observation()
+            reward = self.reward_fn.compute(self, observation, action, info)
+
+            self.render(update_fw)
+            return observation, reward, terminated, truncated, info
         mv_commands = self._decode_action(action)
         if mv_commands is None:
             observation = self._last_or_dummy_obs()
@@ -378,8 +451,11 @@ class GridWorldEnv(gym.Env):
         changeset = self.await_changeset()
         self.update_filter_world(changeset)
         observation = self._build_observation()
-        
+
+        # Provide initial action mask in reset info (idle -> all moves allowed)
         info: Dict[str, Any] = {}
+        move_mask = np.ones(7, dtype=np.int8)
+        info["action_mask_move"] = move_mask
         return observation, info
 
     def render(self, update_fw):
