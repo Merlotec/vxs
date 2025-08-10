@@ -1,4 +1,4 @@
-use crate::viewport::{CameraOrientation, CameraProjection, VirtualGrid};
+use crate::viewport::{CameraOrientation, CameraProjection};
 use crate::{Agent, VoxelGrid};
 use serde::{Deserialize, Serialize};
 
@@ -155,7 +155,7 @@ impl Drop for RendererClient {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PovData {
-    pub virtual_world: VirtualGrid,
+    pub virtual_world: VoxelGrid,
     pub agent_id: usize,
     pub proj: CameraProjection,
     pub orientation: CameraOrientation,
@@ -163,7 +163,7 @@ pub struct PovData {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PovDataRef<'a> {
-    pub virtual_world: &'a VirtualGrid,
+    pub virtual_world: &'a VoxelGrid,
     pub agent_id: usize,
     pub proj: CameraProjection,
     pub orientation: CameraOrientation,

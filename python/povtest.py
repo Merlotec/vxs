@@ -6,7 +6,7 @@ agent = voxelsim.Agent(0)
 agent.set_pos([50.0, 50.0, 20.0])
 
 fw = voxelsim.FilterWorld()
-dynamics = voxelsim.QuadDynamics.default_py()
+dynamics = voxelsim.QuadDynamics(voxelsim.QuadParams.default_py())
 
 chaser = voxelsim.FixedLookaheadChaser.default_py()
 
@@ -24,7 +24,7 @@ renderer = voxelsim.AgentVisionRenderer(world, [200, 150], noise)
 
 # Client
 
-client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
+client = voxelsim.RendererClient.default_localhost_py()
 # Specify the number of agent renderers we want to connect to.
 client.connect_py(1)
 print("Controls: WASD=move, Space=up, Shift=down, ESC=quit")
@@ -80,7 +80,7 @@ last_view_time = time.time()
 FRAME_DELTA_MAX = 0.13
 
 upd_start = 0.0
-def world_update(world):
+def world_update(world, timestamp):
     dtime = time.time() - upd_start
     print(f"upd_time: {dtime}")
 
@@ -121,6 +121,9 @@ while listener.running:
     chase_target = chaser.step_chase_py(agent, delta)
     dynamics.update_agent_dynamics_py(agent, env, chase_target, delta)
     just_pressed.clear()
+    collisions = world.collisions_py(agent.get_pos(), [0.5, 0.5, 0.3])
+    if len(collisions) > 0:
+        print (f"{len(collisions)}, collisions")
     # collisions = env.update_py(dynamics, delta)
     # if len(collisions) > 0:
     #     print("Collision!")

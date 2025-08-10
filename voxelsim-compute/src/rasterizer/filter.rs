@@ -141,9 +141,15 @@ impl FilterBindings {
         }
     }
 
-    pub async fn clear_buffers(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        // Clear both the flags buffer and the output buffer counter
-        crate::buf::clear_gpu_buffer(device, queue, &self.flags_buffer).await;
-        crate::buf::clear_gpu_buffer(device, queue, &self.output_buffer).await;
+    pub fn clear_buffers(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        // Batch clears into a single submission, avoid per-clear polling
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("FilterBuffersClearEncoder"),
+        });
+
+        encoder.clear_buffer(&self.flags_buffer, 0, None);
+        encoder.clear_buffer(&self.output_buffer, 0, None);
+
+        queue.submit(Some(encoder.finish()));
     }
 }

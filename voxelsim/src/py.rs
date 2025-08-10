@@ -12,11 +12,11 @@ use numpy::ndarray::ShapeError;
 use crate::{
     Cell, Coord,
     agent::{
-        Action, Agent, MoveCommand, MoveDir,
+        Action, Agent, MAX_ACTIONS, MoveCommand, MoveDir,
         viewport::{CameraProjection, CameraView},
     },
     chase::{ChaseTarget, FixedLookaheadChaser, TrajectoryChaser},
-    env::VoxelGrid,
+    env::{DenseSnapshot, VoxelGrid},
     network::RendererClient,
     viewport::CameraOrientation,
 };
@@ -34,6 +34,7 @@ pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FixedLookaheadChaser>()?;
     m.add_class::<ChaseTarget>()?;
     m.add_class::<CameraOrientation>()?;
+    m.add_class::<DenseSnapshot>()?;
     Ok(())
 }
 
@@ -112,6 +113,17 @@ impl VoxelGrid {
 
         Ok((coords_arr, vals_arr))
     }
+
+    pub fn collisions_py(&self, centre: [f64; 3], dims: [f64; 3]) -> Vec<([i32; 3], Cell)> {
+        self.collisions(centre.into(), dims.into())
+            .into_iter()
+            .map(|(coord, cell)| (coord.into(), cell))
+            .collect()
+    }
+
+    pub fn dense_snapshot_py(&self, centre: [i32; 3], dims: [i32; 3]) -> DenseSnapshot {
+        self.dense_snapshot(centre.into(), dims.into())
+    }
 }
 
 #[pymethods]
@@ -162,6 +174,14 @@ impl Agent {
 
     pub fn get_pos(&self) -> [f64; 3] {
         self.pos.into()
+    }
+
+    pub fn get_voxel_coord(&self) -> [i32; 3] {
+        self.pos.map(|x| x.round() as i32).into()
+    }
+
+    pub fn max_command_count(&self) -> usize {
+        MAX_ACTIONS
     }
 }
 
@@ -230,6 +250,12 @@ impl Action {
 
 #[pymethods]
 impl MoveDir {
+    #[staticmethod]
+    pub fn from_code_py(code: i32) -> PyResult<Self> {
+        Self::try_from(code)
+            .map_err(|e| PyException::new_err(format!("Failed to parse code: {}", e)))
+    }
+
     /// Create a None/stationary direction
     #[classmethod]
     pub fn none(_cls: &Bound<'_, pyo3::types::PyType>) -> Self {
@@ -349,6 +375,11 @@ impl RendererClient {
         )
     }
 
+    #[staticmethod]
+    pub fn default_localhost_py() -> Self {
+        Self::new("127.0.0.1", 8080, 8081, 8090, 9090)
+    }
+
     fn connect_py(&mut self, pov_count: u16) -> PyResult<()> {
         self.connect(pov_count)
             .map_err(|e| PyException::new_err(e.to_string()))
@@ -397,5 +428,17 @@ impl CameraOrientation {
     #[staticmethod]
     pub fn vertical_tilt_py(tilt: f64) -> Self {
         Self::vertical_tilt(tilt)
+    }
+}
+
+#[pymethods]
+impl DenseSnapshot {
+    pub fn data_py(&self) -> Vec<i32> {
+        // Safety:
+        // Since the underlying type of the Cell is 32 bit, should be fine.
+        let data = self.data().to_vec();
+        let transmuted_data = unsafe { std::mem::transmute_copy(&data) };
+        std::mem::forget(data);
+        transmuted_data
     }
 }

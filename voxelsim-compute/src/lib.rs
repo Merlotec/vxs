@@ -6,13 +6,13 @@ pub mod rasterizer;
 #[cfg(feature = "python")]
 pub mod py;
 
-use nalgebra::{Matrix4, Vector2};
+use nalgebra::{Matrix4, Vector2, Vector3};
 use pipeline::State;
 use std::ops::{Deref, DerefMut};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
-use voxelsim::viewport::{CameraOrientation, CameraProjection, VirtualGrid};
-use voxelsim::{PovDataRef, RendererClient, VoxelGrid};
+use voxelsim::viewport::{CameraOrientation, CameraProjection};
+use voxelsim::{Coord, DenseSnapshot, PovDataRef, RendererClient, VoxelGrid};
 
 use crate::rasterizer::noise::NoiseParams;
 use crate::{pipeline::WorldChangeset, rasterizer::camera::CameraMatrix};
@@ -25,20 +25,23 @@ mod ffi {
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
     use std::ops::Deref;
     use std::sync::{Arc, Mutex};
-    use voxelsim::agent::viewport::{VirtualCell, VirtualGrid};
+    use voxelsim::agent::viewport::{VirtualCell, VoxelGrid};
     use voxelsim::env::VoxelGrid;
 
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn vxs_render_borrowed(
         camera_view_proj: Matrix4<f64>,
-        filter_world: *mut VirtualGrid,
+        filter_world: *mut VoxelGrid,
         render_state: *mut State,
     ) {
         let render_state: &mut State = std::mem::transmute(render_state);
-        let filter_world: &mut VirtualGrid = std::mem::transmute(filter_world);
+        let filter_world: &mut VoxelGrid = std::mem::transmute(filter_world);
         let camera_matrix = CameraMatrix::from_view_proj(camera_view_proj);
-        let change =
-            futures::executor::block_on(render_state.run(&camera_matrix, &filter_world)).unwrap();
+        let change = futures::executor::block_on(render_state.run(
+            &camera_matrix,
+            pipeline::FilterInput::VoxelGrid(&filter_world),
+        ))
+        .unwrap();
 
         change.to_insert.into_par_iter().for_each(|(coord, cell)| {
             filter_world.cells().insert(
@@ -57,14 +60,15 @@ mod ffi {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn vxs_render_shared(
         camera_view_proj: Matrix4<f64>,
-        filter_world: Arc<Mutex<VirtualGrid>>,
+        filter_world: Arc<Mutex<VoxelGrid>>,
         render_state: *mut State,
     ) {
         let render_state: &mut State = std::mem::transmute(render_state);
         let camera_matrix = CameraMatrix::from_view_proj(camera_view_proj);
-        let change = futures::executor::block_on(
-            render_state.run(&camera_matrix, filter_world.lock().unwrap().deref()),
-        )
+        let change = futures::executor::block_on(render_state.run(
+            &camera_matrix,
+            pipeline::FilterInput::VoxelGrid(filter_world.lock().unwrap().deref()),
+        ))
         .unwrap();
 
         let filter_world = filter_world.lock().unwrap();
@@ -105,15 +109,17 @@ pub struct RenderFrameId(u64);
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct FilterWorld {
-    world: Arc<Mutex<VirtualGrid>>,
+    world: Arc<Mutex<VoxelGrid>>,
     frames: Arc<Mutex<Vec<f64>>>,
+    timestamp: Arc<Mutex<Option<f64>>>,
 }
 
 impl Default for FilterWorld {
     fn default() -> Self {
         Self {
-            world: Arc::new(Mutex::new(VirtualGrid::with_capacity(1000))),
+            world: Arc::new(Mutex::new(VoxelGrid::with_capacity(1000))),
             frames: Arc::new(Mutex::new(Vec::new())),
+            timestamp: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -145,6 +151,12 @@ impl FilterWorld {
             },
         )
     }
+
+    /// Generates a cuboidal dense voxelgrid by sampling the filter world around the centre.
+    /// The dimensions of this grid are half_dims * 2 + 1 (to acount for the centre being part of the grid).
+    pub fn dense_snapshot(&self, centre: Coord, half_dims: Vector3<i32>) -> DenseSnapshot {
+        self.world.lock().unwrap().dense_snapshot(centre, half_dims)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -158,8 +170,9 @@ pub enum RenderCommand {
     Render {
         view: Matrix4<f64>,
         proj: Matrix4<f64>,
-        filter_world: Arc<Mutex<VirtualGrid>>,
+        filter_world: Arc<Mutex<VoxelGrid>>,
         sender: SyncSender<WorldChangeset>,
+        timestamp: f64,
     },
 }
 
@@ -185,11 +198,16 @@ impl AgentVisionRenderer {
                     proj,
                     filter_world,
                     sender,
+                    timestamp,
                 } => {
                     let camera_matrix = CameraMatrix::from_view_proj(view.cast(), proj.cast());
                     // let camera_matrix = CameraMatrix::default();
                     if let Ok(changeset) = state
-                        .run(&camera_matrix, filter_world.lock().unwrap().deref())
+                        .run(
+                            &camera_matrix,
+                            filter_world.lock().unwrap().deref(),
+                            timestamp,
+                        )
                         .await
                     {
                         sender.send(changeset).unwrap();
@@ -207,21 +225,33 @@ impl AgentVisionRenderer {
         timestamp: f64,
         on_update: F,
     ) where
-        F: FnOnce(&FilterWorld) + Send + 'static,
+        F: FnOnce(&FilterWorld, f64) + Send + 'static,
     {
         filter_world.frames.lock().unwrap().push(timestamp);
-        let rx = self.render(view, proj, filter_world.world.clone());
+        let rx = self.render(view, proj, filter_world.world.clone(), timestamp);
         std::thread::spawn(move || {
             if let Ok(change) = rx.recv() {
-                let mut vgrid = filter_world.world.lock().unwrap();
-                change.update_world(vgrid.deref_mut());
-                filter_world
-                    .frames
-                    .lock()
-                    .unwrap()
-                    .retain(|x| *x != timestamp);
+                change.update_filter_world(&filter_world);
+                on_update(&filter_world, timestamp);
+            }
+        });
+    }
 
-                on_update(&filter_world);
+    pub fn render_changeset<F>(
+        &self,
+        view: Matrix4<f64>,
+        proj: Matrix4<f64>,
+        filter_world: FilterWorld,
+        timestamp: f64,
+        on_complete: F,
+    ) where
+        F: FnOnce(WorldChangeset) + Send + 'static,
+    {
+        filter_world.frames.lock().unwrap().push(timestamp);
+        let rx = self.render(view, proj, filter_world.world.clone(), timestamp);
+        std::thread::spawn(move || {
+            if let Ok(change) = rx.recv() {
+                on_complete(change);
             }
         });
     }
@@ -230,9 +260,10 @@ impl AgentVisionRenderer {
         &self,
         view: Matrix4<f64>,
         proj: Matrix4<f64>,
-        filter_world: Arc<Mutex<VirtualGrid>>,
+        filter_world: Arc<Mutex<VoxelGrid>>,
+        timestamp: f64,
     ) {
-        let rx = self.render(view, proj, filter_world.clone());
+        let rx = self.render(view, proj, filter_world.clone(), timestamp);
         std::thread::spawn(move || {
             if let Ok(change) = rx.recv() {
                 let mut vgrid = filter_world.lock().unwrap();
@@ -245,7 +276,8 @@ impl AgentVisionRenderer {
         &self,
         view: Matrix4<f64>,
         proj: Matrix4<f64>,
-        filter_world: Arc<Mutex<VirtualGrid>>,
+        filter_world: Arc<Mutex<VoxelGrid>>,
+        timestamp: f64,
     ) -> Receiver<WorldChangeset> {
         let (tx, rx) = mpsc::sync_channel(1000);
         self.sender
@@ -254,6 +286,7 @@ impl AgentVisionRenderer {
                 proj,
                 filter_world,
                 sender: tx,
+                timestamp,
             })
             .unwrap();
         rx

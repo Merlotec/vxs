@@ -287,7 +287,7 @@ impl Trajectory {
     pub fn sample_urgencies(&self, t: f64) -> Option<f64> {
         if let Some(floor) = self.urgencies.get(t.floor() as usize) {
             if let Some(ceil) = self.urgencies.get(t.ceil() as usize) {
-                let w = t - floor;
+                let w = t - t.floor();
                 let weighted_urgency = floor * w + ceil * (1.0 - w);
                 Some(weighted_urgency)
             } else {

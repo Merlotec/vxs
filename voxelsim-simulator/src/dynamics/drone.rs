@@ -33,10 +33,10 @@ pub struct RatePIDState {
 impl Default for PosPIDParams {
     fn default() -> Self {
         PosPIDParams {
-            // ArduPilot default gains for position P: 1.0, I: 0.0, D: 0.5
-            kp: Vector3::new(1.0, 1.0, 1.0),
+            // Safer defaults to reduce aggressive reversal acceleration
+            kp: Vector3::new(0.6, 0.6, 0.6),
             ki: Vector3::new(0.0, 0.0, 0.0),
-            kd: Vector3::new(0.5, 0.5, 0.5),
+            kd: Vector3::new(0.2, 0.2, 0.2),
         }
     }
 }
@@ -44,10 +44,10 @@ impl Default for PosPIDParams {
 impl PosPIDParams {
     pub fn default_moving() -> Self {
         PosPIDParams {
-            // ArduPilot default gains for position P: 1.0, I: 0.0, D: 0.5
-            kp: Vector3::new(2.5, 2.5, 2.5),
-            ki: Vector3::new(0.015, 0.015, 0.015),
-            kd: Vector3::new(5.0, 5.0, 5.0),
+            // More conservative moving gains to avoid "shoot away" on direction flips
+            kp: Vector3::new(1.2, 1.2, 1.2),
+            ki: Vector3::new(0.01, 0.01, 0.01),
+            kd: Vector3::new(0.6, 0.6, 0.6),
         }
     }
 }
@@ -64,17 +64,15 @@ impl Default for PosPIDState {
 impl Default for RatePIDParams {
     fn default() -> Self {
         RatePIDParams {
-            // roughly half of the ArduPilot defaults
-            kp: Vector3::new(2.0, 2.0, 4.0),
-            // quarter the I‐gain to slow down windup
-            ki: Vector3::new(0.05, 0.05, 0.02),
-            // bump up D slightly to help damp any residual oscillation
+            // Slightly softer attitude rate gains for smoother response
+            kp: Vector3::new(1.5, 1.5, 3.0),
+            ki: Vector3::new(0.04, 0.04, 0.02),
             kd: Vector3::new(0.02, 0.02, 0.01),
 
-            // clamp torques to a realistic small‐quad range
+            // Clamp torques to a realistic, conservative range
             max_torque: Vector3::new(0.1, 0.1, 0.2),
 
-            // prevent the integral term from growing unbounded
+            // Prevent integral windup
             max_integral: Vector3::new(0.2, 0.2, 0.1),
         }
     }
@@ -83,18 +81,16 @@ impl Default for RatePIDParams {
 impl RatePIDParams {
     pub fn default_moving() -> Self {
         RatePIDParams {
-            // roughly half of the ArduPilot defaults
-            kp: Vector3::new(3.0, 3.0, 6.0),
-            // quarter the I‐gain to slow down windup
-            ki: Vector3::new(0.075, 0.075, 0.03),
-            // bump up D slightly to help damp any residual oscillation
-            kd: Vector3::new(0.03, 0.03, 0.015),
+            // Softer moving gains for stability during aggressive maneuvers
+            kp: Vector3::new(2.0, 2.0, 4.0),
+            ki: Vector3::new(0.06, 0.06, 0.03),
+            kd: Vector3::new(0.025, 0.025, 0.012),
 
-            // clamp torques to a realistic small‐quad range
-            max_torque: Vector3::new(0.15, 0.15, 0.3),
+            // Slightly higher torque limits for moving, still conservative
+            max_torque: Vector3::new(0.12, 0.12, 0.24),
 
-            // prevent the integral term from growing unbounded
-            max_integral: Vector3::new(0.3, 0.3, 0.15),
+            // Integral clamp for moving case
+            max_integral: Vector3::new(0.25, 0.25, 0.12),
         }
     }
 }

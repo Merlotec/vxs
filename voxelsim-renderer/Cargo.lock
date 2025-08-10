@@ -4837,6 +4837,7 @@ dependencies = [
  "nalgebra 0.33.2",
  "ndarray",
  "noise",
+ "num_enum",
  "numpy",
  "rand 0.9.1",
  "rayon",

@@ -4,17 +4,14 @@ use voxelsim::chase::ChaseTarget;
 use voxelsim::py::PyCoord;
 use voxelsim::{Agent, VoxelGrid};
 
-use crate::dynamics::quad::QuadDynamics;
+use crate::dynamics::quad::{QuadDynamics, QuadParams};
 use crate::dynamics::{AgentDynamics, EnvState};
-use crate::{
-    sim::Collision,
-    terrain::{TerrainConfig, TerrainGenerator},
-};
+use crate::terrain::{TerrainConfig, TerrainGenerator};
 
 #[pymodule]
 pub fn voxelsim_simulator(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<Collision>()?;
     m.add_class::<QuadDynamics>()?;
+    m.add_class::<QuadParams>()?;
     m.add_class::<TerrainGenerator>()?;
     m.add_class::<TerrainConfig>()?;
     m.add_class::<EnvState>()?;
@@ -22,10 +19,18 @@ pub fn voxelsim_simulator(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 #[pymethods]
-impl QuadDynamics {
+impl QuadParams {
     #[staticmethod]
     pub fn default_py() -> Self {
         Self::default()
+    }
+}
+
+#[pymethods]
+impl QuadDynamics {
+    #[new]
+    pub fn new_py(params: QuadParams) -> Self {
+        Self::new(params)
     }
     pub fn update_agent_dynamics_py(
         &mut self,
@@ -39,20 +44,6 @@ impl QuadDynamics {
 }
 
 #[pymethods]
-impl Collision {
-    pub fn agent_id(&self) -> usize {
-        self.agent_id
-    }
-
-    pub fn shell_coords(&self) -> Vec<PyCoord> {
-        self.shell
-            .iter()
-            .map(|(coord, _)| (*coord).into())
-            .collect()
-    }
-}
-
-#[pymethods]
 impl EnvState {
     #[staticmethod]
     pub fn default_py() -> Self {
@@ -62,6 +53,14 @@ impl EnvState {
 
 #[pymethods]
 impl TerrainConfig {
+    #[new]
+    pub fn new_py(seed: u32) -> Self {
+        Self {
+            seed,
+            ..Default::default()
+        }
+    }
+
     #[staticmethod]
     pub fn default_py() -> Self {
         Self::default()
