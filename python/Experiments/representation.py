@@ -14,12 +14,12 @@ from typing import Dict, List, Tuple, Optional, Callable, Union
 from abc import ABC, abstractmethod
 import voxelsim
 from collections import defaultdict
-from losses import make_recon_loss
+
 from torch.utils.data import DataLoader, IterableDataset
 import os
-from scipy.spatial import KDTree
 
-
+from losses import make_recon_loss, make_aux_loss
+from scipy.ndimage import distance_transform_edt as edt
 import time, collections
 
 # ============== Data Structures ==============
@@ -249,6 +249,24 @@ class UNet3DDecoder(EmbeddingDecoder, nn.Module):
     # ----------------------------------------------------------------------
 
 # ============== Loss Heads ==============
+class AuxFnHead(LossHead):
+    """Wraps a function from losses.make_aux_loss to behave like a LossHead."""
+    variable_length_target: bool = False  # set True if the fn needs lists (e.g. chamfer)
+
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+
+    def forward(self, embedding, logits=None):
+        # We just pass logits through; compute_loss will call the fn with logits + targets
+        if logits is None and self.logits_fn is not None:
+            logits = self.logits_fn(embedding)
+        return logits
+
+    def compute_loss(self, prediction, targets):
+        # prediction == logits (from forward)
+        return self.fn(prediction, targets)
+    
 class ContourHead(LossHead, nn.Module):
     """Predicts max altitude contour map from top-down view"""
     def __init__(self, embedding_dim=128, map_size=32):
@@ -418,26 +436,41 @@ class EmbeddingTrainer:
             logits, recon_targets,
             extra={"class_weights": weights}
         )
-            
-        # Auxiliary head losses, currently not in use
+
         # inside EmbeddingTrainer.train_step, for aux heads loop
+
+        merged_targets = {}
+        if len(target_batch) > 0:
+            keys = set().union(*[t.keys() for t in target_batch])
+            for k in keys:
+                if k == "points":
+                    merged_targets[k] = [t[k] for t in target_batch if k in t]
+                else:
+                    merged_targets[k] = torch.stack(
+                        [t[k] for t in target_batch if k in t], dim=0
+                    ).to(self.device)
+
+        # ---- auxiliary heads ----
         for name, head in self.loss_heads.items():
-            if name not in loss_weights: 
+            if name not in loss_weights:
                 continue
+
+            # Function-based aux heads (use merged_targets, skip name check)
+            if isinstance(head, AuxFnHead):
+                preds = head(embedding, logits=logits)  # logits reused from recon
+                losses[name] = head.compute_loss(preds, merged_targets)
+                continue
+
+            # Legacy per-head targets (keep old key check)
             if not all(name in tb for tb in target_batch):
                 continue
-
-            # reuse decoder output once
             preds = head(embedding, logits=logits)
-
             if getattr(head, "variable_length_target", False):
-                # e.g. Chamfer/RDP lists of points per sample
-                t_for_head = [tb[name] for tb in target_batch]   # list (no stack)
+                t_for_head = [tb[name] for tb in target_batch]
             else:
                 t_for_head = torch.stack([tb[name] for tb in target_batch], dim=0)
-
             losses[name] = head.compute_loss(preds, t_for_head)
-                
+
         # Total loss
         total_loss = sum(loss_weights.get(name, 0) * loss for name, loss in losses.items())
         losses["total"] = total_loss
@@ -474,16 +507,24 @@ class EmbeddingTrainer:
 # ============== Data Generation ==============
 class TerrainBatch(IterableDataset):
     """Infinite generator of full cubic worlds (no sub-volume)."""
-    def __init__(self, world_size: int = 120):
+    def __init__(self, world_size: int = 120,
+                 build_dt: bool = True,
+                 build_low: bool = True,
+                 low_scale: int = 4,
+                 build_com: bool = True,
+                 build_points: bool = True):
         self.world_size = int(world_size)
+        self.build_dt   = bool(build_dt)
+        self.build_low  = bool(build_low)
+        self.low_scale  = int(low_scale)
+        self.build_com  = bool(build_com)
+        self.build_pts  = bool(build_points)
 
-    # ---------- helper: fast Rust → NumPy → Torch ------------------------
     @staticmethod
     def world_to_voxeldata_np(world: voxelsim.VoxelGrid, side: int) -> VoxelData:
-        coords_np, vals_np = world.as_numpy()                 # (N,3) in (x,z,y)
-        coords = torch.from_numpy(coords_np)  
+        coords_np, vals_np = world.as_numpy()  # (N,3) in (x,z,y) per your lib note; you already treat as (x,y,z)
+        coords = torch.from_numpy(coords_np)
         vals   = torch.from_numpy(vals_np)
-
         return VoxelData(
             occupied_coords = coords,
             values          = vals,
@@ -491,59 +532,125 @@ class TerrainBatch(IterableDataset):
             drone_pos       = torch.tensor([side//2]*3, dtype=torch.float32),
         )
 
-    # ---------- iterator -------------------------------------------------
     def __iter__(self):
         side = self.world_size
         while True:
-            # build world in Rust
             g   = voxelsim.TerrainGenerator()
             cfg = voxelsim.TerrainConfig.default_py()
-            cfg.set_seed_py(int(np.random.randint(0, 2**31)))
+            # cfg.set_seed_py(int(np.random.randint(0, 2**31)))
+            cfg.set_seed_py(42)
             cfg.set_world_size_py(side)
             g.generate_terrain_py(cfg)
             world = g.generate_world_py()
 
             voxel_data = self.world_to_voxeldata_np(world, side)
-            targets = self._generate_targets(voxel_data)
-            yield voxel_data, targets          # empty target dict for now
-            
+            targets = self._generate_targets(voxel_data)  # fast path
+            yield voxel_data, targets
+
+    # ---------- helpers ----------
+    @staticmethod
+    def _block_mean_3d(x: np.ndarray, scale: int) -> np.ndarray:
+        """Average pool by integer factor `scale` in 3D."""
+        if scale <= 1:
+            return x
+        D, H, W = x.shape
+        assert D % scale == 0 and H % scale == 0 and W % scale == 0, "low_scale must divide each dim"
+        x = x.reshape(D//scale, scale, H//scale, scale, W//scale, scale)
+        return x.mean(axis=(1,3,5))
+
     def _generate_targets(self, voxel_data: VoxelData) -> Dict[str, torch.Tensor]:
-        """Generate ground truth targets for loss heads"""
-        targets = {}
-        
-        # Contour map (max height projection)
-        if voxel_data.occupied_coords.shape[0] > 0:
-            coords = voxel_data.occupied_coords
-            map_size = 32
-            contour = torch.zeros(map_size, map_size)
-            
-            # Project to 2D and find max heights
-            coords_2d = (coords[:, [0, 2]] / voxel_data.bounds[[0, 2]] * (map_size - 1)).long()
-            for i, (x, z) in enumerate(coords_2d):
-                if 0 <= x < map_size and 0 <= z < map_size:
-                    contour[x, z] = max(contour[x, z], coords[i, 1])
-            
-            targets["contour"] = contour / voxel_data.bounds[1]  # Normalize
-            
-            # Relative offsets to K nearest obstacles
-            k_nearest = 5
-            drone_pos_np = voxel_data.drone_pos.cpu().numpy()
-            coords_np = voxel_data.occupied_coords.cpu().numpy()
-            
-            if coords_np.shape[0] >= k_nearest:
-                # Build KDTree for efficient nearest neighbor search
-                tree = KDTree(coords_np)
-                distances, indices = tree.query(drone_pos_np, k=min(k_nearest, coords_np.shape[0]))
-                indices = np.atleast_1d(indices)
-                
-                # Compute relative offsets
-                nearest_coords = coords_np[indices]
-                offsets = nearest_coords - drone_pos_np
-                targets["relative_offset"] = torch.tensor(offsets, dtype=torch.float32)
+        """
+        Builds:
+          - labels   : Long [D,H,W] {0 empty, 1 sparse, 2 filled}
+          - occ_dense: Float [D,H,W] in [0,1] (filled=1.0, sparse=0.5)
+          - occ_low  : Float [D/s,H/s,W/s] (if build_low)
+          - dt       : Float [D,H,W] distance-to-boundary normalized (if build_dt)
+          - com      : Float [3] center of mass (x,y,z) (if build_com)
+          - points   : Tensor [N,3] GT occupied coords (if build_points; variable length)
+        All returned on CPU (dataloader workers), moved to device later by your trainer.
+        """
+        side = int(voxel_data.bounds[0].item())
+        D = H = W = side
+
+        # ---- dense labels (vectorized) ----
+        labels_np = np.zeros((D, H, W), dtype=np.uint8)  # 0 empty
+        if voxel_data.occupied_coords.numel() > 0:
+            coords = voxel_data.occupied_coords.cpu().numpy().astype(np.int64)  # [N,3] (x,y,z)
+            vals   = voxel_data.values.cpu().numpy().astype(np.float32)
+
+            # clamp just in case
+            np.clip(coords, 0, side-1, out=coords)
+
+            filled_mask = vals >= 0.8
+            sparse_mask = (~filled_mask) & (vals >= 0.5)
+
+            if filled_mask.any():
+                xyz = coords[filled_mask]
+                labels_np[xyz[:,0], xyz[:,1], xyz[:,2]] = 2
+            if sparse_mask.any():
+                xyz = coords[sparse_mask]
+                labels_np[xyz[:,0], xyz[:,1], xyz[:,2]] = 1
+
+        # ---- occupancy float (0, 0.5, 1.0) ----
+        occ_np = (labels_np == 2).astype(np.float32) + 0.5 * (labels_np == 1).astype(np.float32)
+
+        # ---- low-res occupancy by avg pooling ----
+        if self.build_low:
+            occ_low_np = self._block_mean_3d(occ_np, self.low_scale)
+        else:
+            occ_low_np = None
+
+        # ---- distance transform to boundary (0 at boundary/occupied) ----
+        if self.build_dt:
+            # edt returns distance to zero; build both sides and take min for boundary distance
+            occ_bool = occ_np > 0
+            dt_to_empty = edt(occ_bool.astype(np.uint8))      # distance to empty (zeros)
+            dt_to_occ   = edt((~occ_bool).astype(np.uint8))   # distance to occ (zeros where occ_bool=1)
+            dt_bound    = np.minimum(dt_to_empty, dt_to_occ)
+            # normalize (avoid div by zero)
+            mx = float(dt_bound.max()) if dt_bound.size else 1.0
+            dt_np = (dt_bound / (mx + 1e-6)).astype(np.float32)
+        else:
+            dt_np = None
+
+        # ---- center of mass (weighted by occ_np) ----
+        if self.build_com:
+            mass = occ_np.sum()
+            if mass > 1e-6:
+                xs = np.arange(W, dtype=np.float32)
+                ys = np.arange(H, dtype=np.float32)
+                zs = np.arange(D, dtype=np.float32)
+
+                # sum over planes
+                sum_x = (occ_np.sum(axis=(0,1)) * xs).sum()
+                sum_y = (occ_np.sum(axis=(0,2)) * ys).sum()
+                sum_z = (occ_np.sum(axis=(1,2)) * zs).sum()
+
+                com_np = np.array([sum_x/mass, sum_y/mass, sum_z/mass], dtype=np.float32)
             else:
-                # Not enough points, pad with zeros
-                targets["relative_offset"] = torch.zeros(k_nearest, 3)
-        
+                com_np = np.array([W/2.0, H/2.0, D/2.0], dtype=np.float32)  # fallback
+        else:
+            com_np = None
+
+        # ---- points (variable length) ----
+        if self.build_pts and voxel_data.occupied_coords.numel() > 0:
+            pts_t = voxel_data.occupied_coords.clone().detach()  # [N,3] torch (CPU)
+        else:
+            pts_t = torch.zeros((0,3), dtype=torch.float32)
+
+        # ---- pack to torch tensors (CPU) ----
+        targets: Dict[str, torch.Tensor] = {
+            "labels"   : torch.from_numpy(labels_np.astype(np.int64)),   # Long
+            "occ_dense": torch.from_numpy(occ_np),                       # Float
+        }
+        if occ_low_np is not None:
+            targets["occ_low"] = torch.from_numpy(occ_low_np)            # Float
+        if dt_np is not None:
+            targets["dt"] = torch.from_numpy(dt_np)                      # Float
+        if com_np is not None:
+            targets["com"] = torch.from_numpy(com_np)                    # Float [3]
+        if self.build_pts:
+            targets["points"] = pts_t.float()                            # Float [N,3]
         return targets
     
 
@@ -640,11 +747,15 @@ def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embeddi
             # Train step
             with Timer() as t_model:
                 loss_weights = {
-                    "reconstruction": 1.0,
-                    "contour": 0.5,
-                    "relative_offset": 0.3,
-                }
-                
+                "reconstruction": 1.0,
+                "soft_iou": 0.5,
+                "tv": 0.05,
+                "boundary": 0.5,
+                "com": 0.2,
+                "class_balance": 0.05,
+                "ms_occ": 0.3,
+                "chamfer": 0.2,
+            }
                 losses = trainer.train_step(voxel_batch, target_batch, loss_weights)
 
             stats["fetch"].append(t_fetch.dt)
@@ -686,7 +797,7 @@ def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embeddi
 
             if viz_sample is not None:
                 # Show input (before)
-                # show_voxels(viz_sample[0], client_input)
+                show_voxels(viz_sample[0], client_input)
                 with Timer() as t_disp:
                     # Generate reconstruction (after)
                     with torch.no_grad():
@@ -705,7 +816,7 @@ def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embeddi
                     
                     # Show output (after)
            
-                    # show_voxels(logits, client_output)
+                    show_voxels(logits, client_output)
                     
                 print(
                     f"Visualization updated  –  "
@@ -725,51 +836,6 @@ class Timer:
     def __exit__(self, *exc):
         self.dt = time.perf_counter()-self.t0
 
-
-
-
-
-
-# def show_voxels(voxel_data: Union[VoxelData, torch.Tensor], 
-#                 client: voxelsim.RendererClient) -> None:
-#     """Send voxel data to the renderer"""
-    
-#     cell_dict = {}
-    
-#     if hasattr(voxel_data, 'occupied_coords'):
-#         coords = voxel_data.occupied_coords.long().cpu().numpy()
-#         values = voxel_data.values.cpu().numpy()
-        
-#         for i in range(coords.shape[0]):
-#             coord_tuple = (int(coords[i, 0]), int(coords[i, 1]), int(coords[i, 2]))
-#             # Use values to determine cell type
-#             if values[i] > 0.8:
-#                 cell_dict[coord_tuple] = voxelsim.Cell.filled()
-#             else:
-#                 cell_dict[coord_tuple] = voxelsim.Cell.sparse()
-#     else:
-#         # Handle dense tensor
-#         dense = voxel_data
-#         if dense.dim() == 5:  # [B, C, D, H, W]
-#             dense = dense[0, 0]
-#         elif dense.dim() == 4:  # [C, D, H, W]
-#             dense = dense[0]
-        
-#         voxel_array = dense.cpu().numpy()
-#         occupied = np.where(voxel_array > 0.5)
-        
-#         for i in range(len(occupied[0])):
-#             coord_tuple = (int(occupied[0][i]), int(occupied[1][i]), int(occupied[2][i]))
-#             value = voxel_array[occupied[0][i], occupied[1][i], occupied[2][i]]
-            
-#             if value > 0.8:
-#                 cell_dict[coord_tuple] = voxelsim.Cell.filled()
-#             else:
-#                 cell_dict[coord_tuple] = voxelsim.Cell.sparse()
-    
-#     # Create world from dictionary
-#     world = voxelsim.VoxelGrid.from_dict_py(cell_dict)
-#     client.send_world_py(world)
 
 
 def show_voxels(sample, client):
@@ -870,11 +936,18 @@ if __name__ == "__main__":
     print("Testing CNN Autoencoder...")
     print("CUDA available:", torch.cuda.is_available())
     print("CUDA device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
+        
     loss_heads = {
-        # "contour": ContourHead(),
-        # "relative_offset": RelativeOffsetHead(),
-        # "cover_mask": CoverMaskHead()  # Disabled until we have semantic labels
+        # # function losses wrapped as heads
+        # "soft_iou":      AuxFnHead(make_aux_loss("soft_iou")),
+        # "tv":            AuxFnHead(make_aux_loss("tv")),
+        # "boundary":      AuxFnHead(make_aux_loss("boundary")),
+        # "com":           AuxFnHead(make_aux_loss("com")),
+        # "class_balance": AuxFnHead(make_aux_loss("class_balance")),
+        # "ms_occ":        AuxFnHead(make_aux_loss("ms_occ", scale=4)),
+        # "chamfer":       AuxFnHead(make_aux_loss("chamfer", topk=2048)),
     }
+    # loss_heads["chamfer"].variable_length_target = True
     recon_loss = make_recon_loss("ce") 
     torch.cuda.empty_cache()
     # dims = [128, 256, 512, 1024]          # sweep list
@@ -889,10 +962,10 @@ if __name__ == "__main__":
     #                    ckpt_every=50)
     run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, loss_heads,
                        embedding_dim=512,
-                       num_epochs=500,            # shorter for quick sweep
+                       num_epochs=5000,            # shorter for quick sweep
                        recon_loss=recon_loss,
                        batch_size=1,
-                       visualize_every=10,
+                       visualize_every=50,
                        size=48,
                        ckpt_every=50)
 
@@ -901,31 +974,3 @@ if __name__ == "__main__":
     # Simple test: Generate terrain, extract subvolume, and visualize
 
 
-
-    # print("Testing terrain generation and visualization...")
-    
-    # # Initialize renderer client
-    # client = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
-    # client.connect_py(0)
-    
-    # # Set up camera
-    # agent = voxelsim.Agent(0)
-    # agent.set_pos([50, 40.0, 50])  # Position above center of 48x48x48 volume
-    # client.send_agents_py({0: agent})
-    
-    # # Generate terrain sample
-    # dataset = TerrainBatch(world_size=100, sub_volume_size=100)
-    # voxel_data, targets = dataset.generate_terrain_sample()
-    
-    # print(f"Generated voxel data with {len(voxel_data.occupied_coords)} voxels")
-    # print(f"Bounds: {voxel_data.bounds}")
-    # print(f"Drone position: {voxel_data.drone_pos}")
-    
-    # # Visualize the extracted subvolume
-    # show_voxels(voxel_data, client)
-    # print("Visualization sent to renderer on port 8090")
-    
-    # # Keep the program running to view the visualization
-    # input("Press Enter to exit...")
-    
-    
