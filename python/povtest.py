@@ -6,7 +6,7 @@ agent = voxelsim.Agent(0)
 agent.set_pos([50.0, 50.0, 20.0])
 
 fw = voxelsim.FilterWorld()
-dynamics = voxelsim.QuadDynamics.default_py()
+dynamics = voxelsim.QuadDynamics(voxelsim.QuadParams.default_py())
 
 chaser = voxelsim.FixedLookaheadChaser.default_py()
 
