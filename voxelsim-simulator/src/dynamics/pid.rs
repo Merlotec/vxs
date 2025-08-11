@@ -31,9 +31,10 @@ impl Default for Px4PosVelParams {
             vel_p: Vector3::new(2.0, 2.0, 2.0),
             vel_i: Vector3::new(0.3, 0.3, 0.4),
             vel_d: Vector3::new(0.3, 0.3, 0.2),
+            // Reduce vertical accel to better match achievable horizontal acceleration (tilt-limited)
             acc_hor_max: 6.0,
-            acc_up_max: 6.0,
-            acc_down_max: 6.0,
+            acc_up_max: 4.0,
+            acc_down_max: 4.0,
             i_limit: Vector3::new(2.0, 2.0, 2.0),
         }
     }
@@ -47,9 +48,10 @@ impl Px4PosVelParams {
             vel_p: Vector3::new(2.4, 2.4, 2.0),
             vel_i: Vector3::new(0.0, 0.0, 0.2),
             vel_d: Vector3::new(0.7, 0.7, 0.25),
+            // Reduce vertical accel in motion to match horizontal responsiveness
             acc_hor_max: 6.0,
-            acc_up_max: 6.0,
-            acc_down_max: 6.0,
+            acc_up_max: 4.0,
+            acc_down_max: 4.0,
             i_limit: Vector3::new(1.5, 1.5, 2.0),
         }
     }

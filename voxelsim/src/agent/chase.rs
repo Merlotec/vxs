@@ -42,7 +42,7 @@ impl Default for FixedLookaheadChaser {
     fn default() -> Self {
         Self {
             v_max_base: 6.0,
-            s_lookahead_base: 0.12,
+            s_lookahead_base: 0.4,
             min_step: 1.0,
         }
     }
@@ -72,7 +72,7 @@ impl TrajectoryChaser for FixedLookaheadChaser {
 
                 // Check if drone is close enough to the trajectory to advance progress
                 let pos_at_s_star = action.trajectory.position(s_star);
-                let distance_threshold = 0.5; // meters - adjust as needed
+                let distance_threshold = 1.0; // meters - adjust as needed
 
                 let can_advance = if let Some(traj_pos) = pos_at_s_star {
                     (x_act - traj_pos).norm() < distance_threshold
@@ -87,8 +87,8 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                         action.trajectory.position(s_end),
                         action.trajectory.velocity(s_end),
                     ) {
-                        let ahead_along_tangent = v_end.norm() > 1e-6
-                            && (x_act - p_end).dot(&v_end) > 0.0;
+                        let ahead_along_tangent =
+                            v_end.norm() > 1e-6 && (x_act - p_end).dot(&v_end) > 0.0;
                         let very_close_to_end = (x_act - p_end).norm() < distance_threshold;
                         overshot_end = ahead_along_tangent || very_close_to_end;
                     }
@@ -107,9 +107,9 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                     action.trajectory.velocity(s_tgt),
                     action.trajectory.acceleration(s_tgt),
                 ) {
-                    // 6) Scale velocity and accel targets by urgency
+                    // 6) Scale velocity and accel targets by urgency uniformly
                     let v_tgt = v_tgt_nominal * urgency;
-                    let a_tgt = a_tgt_nominal * urgency;
+                    let a_tgt = a_tgt_nominal * 0.4 * urgency;
                     // Only enforce minimum step when we are allowed to advance
                     let s_next = if can_advance {
                         s_updated.max(s_cur + ds_min)

@@ -1,5 +1,5 @@
 use bspline::BSpline;
-use nalgebra::Vector3;
+use nalgebra::{Unit, Vector3};
 
 use crate::Coord;
 
@@ -234,18 +234,35 @@ impl Trajectory {
 
     #[inline(always)]
     pub fn velocity(&self, t: f64) -> Option<Vector3<f64>> {
-        let h = 1e-3;
-        let t_lo = (t - h).max(0.0);
-        let t_hi = (t + h).min(1.0);
-        Some((self.position(t_hi)? - self.position(t_lo)?) * (1.0 / (t_hi - t_lo)))
+        let h = 1e-2;
+        let mut t_lo = (t - h).max(0.0);
+        let mut t_hi = (t + h).min(1.0);
+
+        t_lo = t_lo.min(t_hi - 2.0 * h);
+        t_hi = t_hi.max(t_lo + 2.0 * h);
+        let pdiff = self.position(t_hi)? - self.position(t_lo)?;
+        println!("tlo: {}, thi: {}", t_lo, t_hi);
+        if pdiff.norm() > std::f64::EPSILON {
+            Some(pdiff.normalize())
+        } else {
+            Some(Vector3::zeros())
+        }
     }
 
     #[inline(always)]
     pub fn acceleration(&self, t: f64) -> Option<Vector3<f64>> {
-        let h = 1e-3;
-        let t_lo = (t - h).max(0.0);
-        let t_hi = (t + h).min(1.0);
-        Some((self.velocity(t_hi)? - self.velocity(t_lo)?) * (1.0 / (t_hi - t_lo)))
+        let h = 1e-2;
+        let mut t_lo = (t - h).max(0.0);
+        let mut t_hi = (t + h).min(1.0);
+
+        t_lo = t_lo.min(t_hi - 2.0 * h);
+        t_hi = t_hi.max(t_lo + 2.0 * h);
+        let vdiff = self.velocity(t_hi)? - self.velocity(t_lo)?;
+        if vdiff.norm() > std::f64::EPSILON {
+            Some(vdiff.normalize())
+        } else {
+            Some(Vector3::zeros())
+        }
     }
 
     /// Returns (position, t) of the waypoint.
