@@ -168,7 +168,7 @@ class MeinEncoder(EmbeddingEncoder, nn.Module):
         # 3D CNN encoder
         self.conv1 = nn.Conv3d(1, 32, kernel_size=5, stride=2, padding=2)
         self.conv2 = nn.Conv3d(32, 64, kernel_size=3, stride=2, padding=1)
-        self.conv3 = nn.Conv3d(64, 128, kernel_size=3, stride=2, padding=1)
+        self.conv3 = nn.Conv3d(64, 128, kernel_size=3, stride=1, padding=1)
         
         # Calculate flattened size
         self.flat_size = 128 * (voxel_size // 8) ** 3
@@ -338,7 +338,7 @@ class _ResBlock3D_GN(nn.Module):
         self.gn2   = _GN3d(c)
     def forward(self, x):
         return self.act(x + self.gn2(self.conv2(self.act(self.gn1(self.conv1(x))))))
-
+    
 class ResNet3DEncoder(EmbeddingEncoder, nn.Module):
     """48/96/etc → 24 → 12 → 6; GAP → latent. No skips."""
     def __init__(self, voxel_size=48, embedding_dim=1024, widths=(32, 64, 128)):
@@ -379,6 +379,7 @@ class ResNet3DEncoder(EmbeddingEncoder, nn.Module):
 
     def get_embedding_dim(self) -> int:
         return self.embedding_dim
+
 
 class ResNet3DDecoder(EmbeddingDecoder, nn.Module):
     """latent → 1/8 grid → 1/4 → 1/2 → full; 3-class logits."""
@@ -1413,12 +1414,12 @@ class RunLogger:
 
 def make_aux_heads(embedding_dim):
     heads = {
-        "soft_iou":      AuxFnHead(make_aux_loss("soft_iou")),
+        # "soft_iou":      AuxFnHead(make_aux_loss("soft_iou")), # For now
         # "tv":            AuxFnHead(make_aux_loss("tv")),
-        "boundary":      AuxFnHead(make_aux_loss("boundary")),
-        "com":           AuxFnHead(make_aux_loss("com")),
+        # "boundary":      AuxFnHead(make_aux_loss("boundary")), # For now 
+        # "com":           AuxFnHead(make_aux_loss("com")), # For now
         # "class_balance": AuxFnHead(make_aux_loss("class_balance")),
-        "ms_occ":        AuxFnHead(make_aux_loss("ms_occ", scale=4)),
+        # "ms_occ":        AuxFnHead(make_aux_loss("ms_occ", scale=4)), # For now
         # "chamfer":       AuxFnHead(make_aux_loss("chamfer", topk=2048)),
         # Add navigation heads with correct dim:
         # "topdown":       TopDownHeightHead(embedding_dim=embedding_dim),
@@ -1432,10 +1433,10 @@ def sweep():
     recon_loss = make_recon_loss("ce")
 
     encoder_decoder_pairs = [
-        # (SimpleCNNEncoder,        SimpleCNNDecoder),
-        # (UNet3DEncoder,           UNet3DDecoder),
-        # (ResNet3DEncoder,         ResNet3DDecoder),
-        (CrossAttnTokensEncoder,  ImplicitFourierDecoder),
+        (SimpleCNNEncoder,        SimpleCNNDecoder),
+        (UNet3DEncoder,           UNet3DDecoder),
+        (ResNet3DEncoder,         ResNet3DDecoder),
+        # (CrossAttnTokensEncoder,  ImplicitFourierDecoder),
         # (PointMLPEncoder,         ImplicitFourierDecoder),   # sparse-in / implicit-out
     ]
 
@@ -1460,7 +1461,7 @@ def sweep():
                     loss_heads=loss_heads,
                     recon_loss=recon_loss,
                     embedding_dim=d,
-                    num_epochs=2000,
+                    num_epochs=5000,
                     batch_size=2,
                     visualize_every=100,
                     size=size,
