@@ -29,13 +29,15 @@ impl Default for Px4PosVelParams {
             // Typical PX4-ish defaults (tuned for sim):
             pos_p: Vector3::new(1.0, 1.0, 1.0),
             vel_p: Vector3::new(2.0, 2.0, 2.0),
-            vel_i: Vector3::new(0.3, 0.3, 0.4),
-            vel_d: Vector3::new(0.3, 0.3, 0.2),
-            // Reduce vertical accel to better match achievable horizontal acceleration (tilt-limited)
-            acc_hor_max: 6.0,
-            acc_up_max: 4.0,
-            acc_down_max: 4.0,
-            i_limit: Vector3::new(2.0, 2.0, 2.0),
+            // Hover profile: very small I, higher D to avoid drift/wobble at rest
+            vel_i: Vector3::new(0.05, 0.05, 0.10),
+            vel_d: Vector3::new(0.40, 0.40, 0.30),
+            // Conservative accel limits in hover to reduce excitation
+            acc_hor_max: 4.0,
+            acc_up_max: 3.5,
+            acc_down_max: 3.5,
+            // Tighter I clamp at hover
+            i_limit: Vector3::new(0.5, 0.5, 0.5),
         }
     }
 }
@@ -83,9 +85,16 @@ pub fn px4_accel_sp(
 ) -> (Vector3<f64>, bool) {
     let pos_err = p_sp - p_act;
     let v_sp = v_ff + params.pos_p.component_mul(&pos_err);
-    let vel_err = v_sp - v_act;
+    let mut vel_err = v_sp - v_act;
+
+    // Apply small deadband on velocity error per axis to avoid self-excitation near hover
+    let vel_db = Vector3::new(0.05, 0.05, 0.05);
+    if vel_err.x.abs() < vel_db.x { vel_err.x = 0.0; }
+    if vel_err.y.abs() < vel_db.y { vel_err.y = 0.0; }
+    if vel_err.z.abs() < vel_db.z { vel_err.z = 0.0; }
 
     // PI-D on velocity error
+    // Only integrate when error is outside deadband
     state.vel_integral += vel_err * dt;
     // clamp integrator
     state.vel_integral.x = state
@@ -225,19 +234,19 @@ impl Default for PosPIDState {
 impl Default for RatePIDParams {
     fn default() -> Self {
         RatePIDParams {
-            // Base attitude rate gains: more damping on roll/pitch, reduced I to avoid sway
-            kp: Vector3::new(2.4, 2.4, 3.6),
-            ki: Vector3::new(0.02, 0.02, 0.02),
-            kd: Vector3::new(0.08, 0.08, 0.02),
+            // Hover profile: lower P, higher D, reduced I for stability at rest
+            kp: Vector3::new(1.8, 1.8, 2.4),
+            ki: Vector3::new(0.01, 0.01, 0.01),
+            kd: Vector3::new(0.14, 0.14, 0.06),
 
-            // Clamp torques to a realistic, conservative range
-            max_torque: Vector3::new(0.22, 0.22, 0.46),
+            // Torques moderated in hover to reduce blow-ups
+            max_torque: Vector3::new(0.20, 0.20, 0.35),
 
-            // Prevent integral windup
-            max_integral: Vector3::new(0.28, 0.28, 0.14),
+            // Prevent integral windup (tighter in hover)
+            max_integral: Vector3::new(0.20, 0.20, 0.10),
 
-            // Derivative filter cutoff
-            d_lpf_hz: 30.0,
+            // Derivative filter cutoff (lower for more damping at rest)
+            d_lpf_hz: 12.0,
         }
     }
 }
@@ -246,9 +255,9 @@ impl RatePIDParams {
     pub fn default_moving() -> Self {
         RatePIDParams {
             // Moving gains: strong roll/pitch damping, very low I to prevent lateral sway
-            kp: Vector3::new(3.0, 3.0, 5.0),
+            kp: Vector3::new(2.6, 2.6, 4.2),
             ki: Vector3::new(0.015, 0.015, 0.03),
-            kd: Vector3::new(0.12, 0.12, 0.03),
+            kd: Vector3::new(0.16, 0.16, 0.045),
 
             // Slightly higher torque limits for moving, still conservative
             max_torque: Vector3::new(0.28, 0.28, 0.50),
@@ -256,7 +265,7 @@ impl RatePIDParams {
             // Integral clamp for moving case
             max_integral: Vector3::new(0.36, 0.36, 0.18),
 
-            d_lpf_hz: 30.0,
+            d_lpf_hz: 15.0,
         }
     }
 }
