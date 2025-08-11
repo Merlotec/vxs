@@ -245,10 +245,7 @@ impl Trajectory {
         let h = 1e-3;
         let t_lo = (t - h).max(0.0);
         let t_hi = (t + h).min(1.0);
-        Some(
-            (self.position(t_hi)? - 2.0 * self.position(t)? + self.position(t_lo)?)
-                * (1.0 / (h * h)),
-        )
+        Some((self.velocity(t_hi)? - self.velocity(t_lo)?) * (1.0 / (t_hi - t_lo)))
     }
 
     /// Returns (position, t) of the waypoint.

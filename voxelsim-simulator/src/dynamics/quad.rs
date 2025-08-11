@@ -123,7 +123,7 @@ impl AgentDynamics for QuadDynamics {
                 (
                     chaser.pos,
                     chaser.vel,
-                    Vector3::zeros(),
+                    chaser.acc,
                     self.params.moving_pos_params,
                     self.params.moving_rate_params,
                 )
@@ -148,11 +148,11 @@ impl AgentDynamics for QuadDynamics {
         };
         // Apply control axis sign mapping to setpoints (PX4 uses NED; external may be ENU)
         // We flip relative directions by applying sign to deltas for position and directly to vel/acc.
-        let sign = self.params.control_sign;
-        t_pos = self.quad.position.cast::<f64>()
-            + sign.component_mul(&(t_pos - self.quad.position.cast::<f64>()));
-        t_vel = sign.component_mul(&t_vel);
-        t_acc = sign.component_mul(&t_acc);
+        // let sign = self.params.control_sign;
+        // t_pos = self.quad.position.cast::<f64>()
+        //     + sign.component_mul(&(t_pos - self.quad.position.cast::<f64>()));
+        // t_vel = sign.component_mul(&t_vel);
+        // t_acc = sign.component_mul(&t_acc);
         self.quad.position = agent.pos.cast::<f32>();
         self.quad.velocity = agent.vel.cast::<f32>();
 
