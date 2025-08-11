@@ -283,7 +283,6 @@ class GridWorldEnv(gym.Env):
 
         urgency = 0.2 * (urgency_idx + 1)
         yaw = math.pi * 0.25 * yaw_idx
-        yaw = 0
         if cmd == 6:
             # flush/no-op -> return whatever is in the action buffer
             return self._take_action_buffer()

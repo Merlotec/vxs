@@ -186,10 +186,31 @@ impl AgentDynamics for QuadDynamics {
 
         // PX4 AttitudeControl equivalent: attitude error -> body rate setpoint
         let r_act = self.quad.orientation.to_rotation_matrix().cast::<f64>();
-        // Interpret chaser.yaw as absolute target yaw (world Z), decoupled from tilt
-        let r_cmd = Rotation3::from_matrix_unchecked(pid::build_body_rotation(&z_b_cmd, chaser.yaw));
+        // Slew-limit the yaw setpoint change to avoid large steps causing instability.
+        // Compute current world yaw from body X axis.
+        let x_b_world = r_act.matrix().column(0);
+        let yaw_current = x_b_world[1].atan2(x_b_world[0]);
+        // Wrap difference to [-pi, pi]
+        let mut yaw_diff = chaser.yaw - yaw_current;
+        while yaw_diff > std::f64::consts::PI {
+            yaw_diff -= 2.0 * std::f64::consts::PI;
+        }
+        while yaw_diff < -std::f64::consts::PI {
+            yaw_diff += 2.0 * std::f64::consts::PI;
+        }
+        // Limit per-step yaw change
+        let yaw_slew_rate = 2.0; // rad/s max slew (reduced further)
+        let max_step = yaw_slew_rate * delta;
+        let yaw_step = yaw_diff.clamp(-max_step, max_step);
+        let yaw_sp = yaw_current + yaw_step;
+
+        // Build attitude setpoint with limited yaw step; yaw is absolute target
+        let r_cmd = Rotation3::from_matrix_unchecked(pid::build_body_rotation(&z_b_cmd, yaw_sp));
         let yaw_rate_ff = 0.0; // no yaw feedforward; yaw is an absolute setpoint
-        let rate_sp = pid::attitude_to_bodyrate(&r_cmd, &r_act, yaw_rate_ff, &self.params.att_p.p);
+        let mut rate_sp = pid::attitude_to_bodyrate(&r_cmd, &r_act, yaw_rate_ff, &self.params.att_p.p);
+        // Clamp yaw body-rate to avoid torque saturation stealing authority
+        let yaw_rate_limit = 3.0; // rad/s (reduced further)
+        rate_sp.z = rate_sp.z.clamp(-yaw_rate_limit, yaw_rate_limit);
         // PX4 RateControl equivalent: PID on body rates
         // PX4-like RateControl with simple per-axis anti-windup (freeze on same-direction saturation)
         let rate_error = rate_sp - self.quad.angular_velocity.cast::<f64>();

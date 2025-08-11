@@ -231,7 +231,7 @@ impl Default for RatePIDParams {
             kd: Vector3::new(0.08, 0.08, 0.02),
 
             // Clamp torques to a realistic, conservative range
-            max_torque: Vector3::new(0.22, 0.22, 0.32),
+            max_torque: Vector3::new(0.22, 0.22, 0.46),
 
             // Prevent integral windup
             max_integral: Vector3::new(0.28, 0.28, 0.14),
@@ -251,7 +251,7 @@ impl RatePIDParams {
             kd: Vector3::new(0.12, 0.12, 0.03),
 
             // Slightly higher torque limits for moving, still conservative
-            max_torque: Vector3::new(0.28, 0.28, 0.36),
+            max_torque: Vector3::new(0.28, 0.28, 0.50),
 
             // Integral clamp for moving case
             max_integral: Vector3::new(0.36, 0.36, 0.18),
