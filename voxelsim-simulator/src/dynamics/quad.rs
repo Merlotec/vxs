@@ -116,10 +116,10 @@ impl AgentDynamics for QuadDynamics {
                 if let Some(action) = &mut agent.action {
                     action.trajectory.progress = p;
                 }
-                // println!(
-                //     "t_pos: {}, t_vel: {}, t_acc:{}",
-                //     chaser.pos, chaser.vel, chaser.acc
-                // );
+                println!(
+                    "t_pos: {}, t_vel: {}, t_acc:{}",
+                    chaser.pos, chaser.vel, chaser.acc
+                );
                 (
                     chaser.pos,
                     chaser.vel,

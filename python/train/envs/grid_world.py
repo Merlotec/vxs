@@ -99,7 +99,7 @@ class GridWorldEnv(gym.Env):
         start_pos: Tuple[int, int, int] = (0, 0, 0),
         renderer_view_size: Tuple[int, int] = (150, 100),
         noise: vxs.NoiseParams = vxs.NoiseParams.default_with_seed_py([0, 0, 0]),
-        delta_time: float = 0.01,
+        delta_time: float = 0.05,
         client: Optional[vxs.RendererClient] = None,
         reward_fn: Optional[RewardFunction] = None,
     ):
@@ -284,6 +284,7 @@ class GridWorldEnv(gym.Env):
         urgency = 0.2 * (urgency_idx + 1)
         yaw = math.pi * 0.25 * yaw_idx
 
+        yaw = 0
         if cmd == 6:
             # flush/no-op -> return whatever is in the action buffer
             return self._take_action_buffer()
