@@ -56,7 +56,7 @@ model = PPO(
     gamma=0.99,
     gae_lambda=0.95,
     clip_range=0.2,
-    # device="mps",
+    device="mps",
 )
 
 model.learn(total_timesteps=1_000_000, callback=[ckpt_cb])
