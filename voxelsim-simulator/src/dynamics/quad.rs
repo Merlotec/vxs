@@ -7,7 +7,7 @@ use voxelsim::{
 
 use crate::dynamics::{
     AgentDynamics,
-    pid::{self, AttitudePParams, Px4PosVelParams, PosVelState, RatePIDParams, RatePIDState},
+    pid::{self, AttitudePParams, PosVelState, Px4PosVelParams, RatePIDParams, RatePIDState},
 };
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -97,7 +97,8 @@ impl QuadParams {
             att_p: AttitudePParams::default(),
             thrust_min: 0.05,
             thrust_max: 2.5,
-            control_sign: Vector3::new(-1.0, -1.0, -1.0),
+            // Use ENU (X-east, Y-north, Z-up) throughout; no inversion by default
+            control_sign: Vector3::new(1.0, 1.0, 1.0),
         }
     }
 }
@@ -115,10 +116,14 @@ impl AgentDynamics for QuadDynamics {
                 if let Some(action) = &mut agent.action {
                     action.trajectory.progress = p;
                 }
+                // println!(
+                //     "t_pos: {}, t_vel: {}, t_acc:{}",
+                //     chaser.pos, chaser.vel, chaser.acc
+                // );
                 (
                     chaser.pos,
                     chaser.vel,
-                    chaser.acc,
+                    Vector3::zeros(),
                     self.params.moving_pos_params,
                     self.params.moving_rate_params,
                 )
@@ -167,8 +172,10 @@ impl AgentDynamics for QuadDynamics {
         let mass = self.params.mass;
         let hover_thrust = mass * self.params.gravity;
         let thrust_ideal = mass * a_total.norm();
-        let thrust = thrust_ideal
-            .clamp(self.params.thrust_min * hover_thrust, self.params.thrust_max * hover_thrust);
+        let thrust = thrust_ideal.clamp(
+            self.params.thrust_min * hover_thrust,
+            self.params.thrust_max * hover_thrust,
+        );
 
         let norm = a_total.norm();
         let z_b_cmd = if norm > 1e-6 {
@@ -178,7 +185,8 @@ impl AgentDynamics for QuadDynamics {
         };
 
         // PX4 AttitudeControl equivalent: attitude error -> body rate setpoint
-        let r_cmd = Rotation3::from_matrix_unchecked(pid::build_body_rotation(&z_b_cmd, chaser.yaw));
+        let r_cmd =
+            Rotation3::from_matrix_unchecked(pid::build_body_rotation(&z_b_cmd, chaser.yaw));
         let rate_sp = pid::attitude_to_bodyrate(
             &r_cmd,
             &self.quad.orientation.to_rotation_matrix().cast::<f64>(),

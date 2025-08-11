@@ -244,7 +244,7 @@ impl Trajectory {
     pub fn acceleration(&self, t: f64) -> Option<Vector3<f64>> {
         let h = 1e-3;
         let t_lo = (t - h).max(0.0);
-        let t_hi = (t + h).min(0.0);
+        let t_hi = (t + h).min(1.0);
         Some(
             (self.position(t_hi)? - 2.0 * self.position(t)? + self.position(t_lo)?)
                 * (1.0 / (h * h)),
@@ -285,29 +285,33 @@ impl Trajectory {
     }
 
     pub fn sample_urgencies(&self, t: f64) -> Option<f64> {
-        if let Some(floor) = self.urgencies.get(t.floor() as usize) {
-            if let Some(ceil) = self.urgencies.get(t.ceil() as usize) {
-                let w = t - t.floor();
-                let weighted_urgency = floor * w + ceil * (1.0 - w);
-                Some(weighted_urgency)
-            } else {
-                Some(*floor)
-            }
-        } else {
-            None
+        if self.urgencies.is_empty() {
+            return None;
         }
+        let len = self.urgencies.len();
+        // Clamp t into valid index range [0, len-1]
+        let t_clamped = t.max(0.0).min((len - 1) as f64);
+        let i0 = t_clamped.floor() as usize;
+        let i1 = (t_clamped.ceil() as usize).min(len - 1);
+        let w = t_clamped - t_clamped.floor();
+        let u0 = self.urgencies[i0];
+        let u1 = self.urgencies[i1];
+        // Linear interpolation between neighboring samples
+        Some(u0 * (1.0 - w) + u1 * w)
     }
 
     pub fn sample_yaw(&self, t: f64) -> Option<f64> {
-        if let Some(floor) = self.yaw_seq.get(t.floor() as usize) {
-            if let Some(ceil) = self.yaw_seq.get(t.ceil() as usize) {
-                Some(*ceil)
-            } else {
-                Some(*floor)
-            }
-        } else {
-            None
+        if self.yaw_seq.is_empty() {
+            return None;
         }
+        let len = self.yaw_seq.len();
+        let t_clamped = t.max(0.0).min((len - 1) as f64);
+        let i0 = t_clamped.floor() as usize;
+        let i1 = (t_clamped.ceil() as usize).min(len - 1);
+        let w = t_clamped - t_clamped.floor();
+        let y0 = self.yaw_seq[i0];
+        let y1 = self.yaw_seq[i1];
+        Some(y0 * (1.0 - w) + y1 * w)
     }
 
     pub fn sample_spline(&self, t: f64) -> Option<Vector3<f64>> {
