@@ -26,6 +26,9 @@ pub struct QuadParams {
     att_p: AttitudePParams,
     thrust_min: f64,
     thrust_max: f64,
+    // Control axis sign mapping: multiply setpoints by this before control
+    // Use (-1,-1,-1) to invert FB/LR/UD to match external input convention
+    control_sign: Vector3<f64>,
 }
 
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
@@ -94,6 +97,7 @@ impl QuadParams {
             att_p: AttitudePParams::default(),
             thrust_min: 0.05,
             thrust_max: 2.5,
+            control_sign: Vector3::new(-1.0, -1.0, -1.0),
         }
     }
 }
@@ -106,7 +110,7 @@ impl AgentDynamics for QuadDynamics {
         chaser: &ChaseTarget,
         delta: f64,
     ) {
-        let (t_pos, t_vel, t_acc, pos_params, rate_params) = match chaser.progress {
+        let (mut t_pos, mut t_vel, mut t_acc, pos_params, rate_params) = match chaser.progress {
             ActionProgress::ProgressTo(p) => {
                 if let Some(action) = &mut agent.action {
                     action.trajectory.progress = p;
@@ -137,6 +141,13 @@ impl AgentDynamics for QuadDynamics {
                 self.params.rate_params,
             ),
         };
+        // Apply control axis sign mapping to setpoints (PX4 uses NED; external may be ENU)
+        // We flip relative directions by applying sign to deltas for position and directly to vel/acc.
+        let sign = self.params.control_sign;
+        t_pos = self.quad.position.cast::<f64>()
+            + sign.component_mul(&(t_pos - self.quad.position.cast::<f64>()));
+        t_vel = sign.component_mul(&t_vel);
+        t_acc = sign.component_mul(&t_acc);
         self.quad.position = agent.pos.cast::<f32>();
         self.quad.velocity = agent.vel.cast::<f32>();
 
