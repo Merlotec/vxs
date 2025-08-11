@@ -87,7 +87,6 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                 };
 
                 let s_tgt = (s_updated + s_lookahead).min(s_end);
-                println!("tgt: {}, {}, {}, {}", s_tgt, s_updated, s_star, s_cur);
                 if let (Some(p_tgt), Some(v_tgt_nominal), Some(a_tgt_nominal)) = (
                     action.trajectory.position(s_tgt),
                     action.trajectory.velocity(s_tgt),
