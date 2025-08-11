@@ -7,12 +7,52 @@
 
 import time, numpy as np, torch
 import voxelsim                                # your Rust bindings
-from representation import VoxelData, show_voxels   # reuse helpers
+from representation import VoxelData
 import matplotlib.pyplot as plt
+
+
 
 class Timer:
     def __enter__(self):  self.t0 = time.perf_counter(); return self
     def __exit__(self,*_): self.dt = time.perf_counter() - self.t0
+
+
+def show_voxels(sample, client):
+    """
+    sample: either
+      - VoxelData (GT sparse coords), or
+      - torch.Tensor logits with shape [B, 3, D, H, W] or [3, D, H, W]
+    """
+    cell_dict = {}
+
+    # ---------- Ground truth case ----------
+    if isinstance(sample, VoxelData):
+        coords = sample.occupied_coords.long().cpu().numpy()
+        vals   = sample.values.cpu().numpy()  # 0.5 sparse, 1.0 filled
+        for (x,y,z), v in zip(coords, vals):
+            cell_dict[(int(x), int(y), int(z))] = (
+                voxelsim.Cell.filled() if v > 0.9 else voxelsim.Cell.sparse()
+            )
+
+    # ---------- Prediction case ----------
+    else:
+        logits = sample
+        if logits.dim() == 5:   # [B,3,D,H,W]
+            logits = logits[0]
+        # logits now [3,D,H,W]
+        pred_class = logits.argmax(0).cpu().numpy()  # 0 empty, 1 sparse, 2 filled
+
+        filled = np.argwhere(pred_class == 2)
+        sparse = np.argwhere(pred_class == 1)
+
+        for x,y,z in filled:
+            cell_dict[(int(x),int(y),int(z))] = voxelsim.Cell.filled()
+        for x,y,z in sparse:
+            cell_dict[(int(x),int(y),int(z))] = voxelsim.Cell.sparse()
+
+    world = voxelsim.VoxelGrid.from_dict_py(cell_dict)
+    client.send_world_py(world)
+
 
 def build_world(side=48):
     g   = voxelsim.TerrainGenerator()
@@ -69,33 +109,7 @@ def test1():
     print(f"🖼  render     {t_show.dt*1e3:7.2f} ms")
     print("Done – open port 8090 to view.")
 
-def test2():
-    sizes       = list(range(50, 201, 10))    # 50..200 inclusive
-    gen_times   = []
-    conv_times  = []
 
-    for side in sizes:
-        gen_acc, conv_acc = 0.0, 0.0
-        for _ in range(3):                    # three runs per size
-            with Timer() as t_gen:
-                world = build_world(side)
-            with Timer() as t_conv:
-                _ = world_to_voxeldata_np(world, side)
-            gen_acc  += t_gen.dt
-            conv_acc += t_conv.dt
-        gen_times.append(gen_acc  / 3.0)      # average
-        conv_times.append(conv_acc / 3.0)
-
-    # ───────────────────────── plot results ─────────────────────────────────
-    plt.figure(figsize=(7,4))
-    plt.plot(sizes, np.array(gen_times) * 1e3, label="generate")
-    plt.plot(sizes, np.array(conv_times) * 1e3, label="convert (NumPy)")
-    plt.xlabel("World side length (voxels)")
-    plt.ylabel("Average time (ms)  – 3 runs")
-    plt.title("Voxel-world build & conversion speed")
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
 
 
 test1()
