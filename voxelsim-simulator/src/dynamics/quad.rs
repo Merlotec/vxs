@@ -91,7 +91,7 @@ impl QuadParams {
             inertia_matrix,
             bounding_box: bounding_box,
             pos_params: Px4PosVelParams::default(),
-            moving_pos_params: Px4PosVelParams::default(),
+            moving_pos_params: Px4PosVelParams::default_moving(),
             rate_params: Default::default(),
             moving_rate_params: RatePIDParams::default_moving(),
             att_p: AttitudePParams::default(),
@@ -186,18 +186,64 @@ impl AgentDynamics for QuadDynamics {
             &self.params.att_p.p,
         );
         // PX4 RateControl equivalent: PID on body rates
+        // PX4-like RateControl with simple per-axis anti-windup (freeze on same-direction saturation)
         let rate_error = rate_sp - self.quad.angular_velocity.cast::<f64>();
-        let raw_torque = pid::control_torque(rate_error, &mut self.rate_state, &rate_params, delta);
+        let p_term = Vector3::new(
+            rate_params.kp.x * rate_error.x,
+            rate_params.kp.y * rate_error.y,
+            rate_params.kp.z * rate_error.z,
+        );
+        // Derivative with simple low-pass filtering to reduce oscillation (approx PX4 gyro filter)
+        let raw_d = (rate_error - self.rate_state.last_error) / delta;
+        let fc = rate_params.d_lpf_hz.max(0.1);
+        let tau = 1.0 / (2.0 * std::f64::consts::PI * fc);
+        let alpha = tau / (tau + delta);
+        self.rate_state.d_filt = self.rate_state.d_filt * alpha + raw_d * (1.0 - alpha);
+        let d_err = self.rate_state.d_filt;
+        let d_term = Vector3::new(
+            rate_params.kd.x * d_err.x,
+            rate_params.kd.y * d_err.y,
+            rate_params.kd.z * d_err.z,
+        );
+        let integral_candidate = self.rate_state.integral + rate_error * delta;
+        let i_term_candidate = Vector3::new(
+            rate_params.ki.x * integral_candidate.x,
+            rate_params.ki.y * integral_candidate.y,
+            rate_params.ki.z * integral_candidate.z,
+        );
+        let raw_candidate = p_term + i_term_candidate + d_term;
+        let mt_active = rate_params.max_torque;
+        // Anti-windup masks per axis
+        let allow_x = !((raw_candidate.x > mt_active.x && rate_error.x > 0.0)
+            || (raw_candidate.x < -mt_active.x && rate_error.x < 0.0));
+        let allow_y = !((raw_candidate.y > mt_active.y && rate_error.y > 0.0)
+            || (raw_candidate.y < -mt_active.y && rate_error.y < 0.0));
+        let allow_z = !((raw_candidate.z > mt_active.z && rate_error.z > 0.0)
+            || (raw_candidate.z < -mt_active.z && rate_error.z < 0.0));
+        if allow_x {
+            self.rate_state.integral.x = integral_candidate.x;
+        }
+        if allow_y {
+            self.rate_state.integral.y = integral_candidate.y;
+        }
+        if allow_z {
+            self.rate_state.integral.z = integral_candidate.z;
+        }
         let mi_active = rate_params.max_integral;
         self.rate_state.integral.x = self.rate_state.integral.x.clamp(-mi_active.x, mi_active.x);
         self.rate_state.integral.y = self.rate_state.integral.y.clamp(-mi_active.y, mi_active.y);
         self.rate_state.integral.z = self.rate_state.integral.z.clamp(-mi_active.z, mi_active.z);
-        let mt_active = rate_params.max_torque;
+        let raw_torque = Vector3::new(
+            p_term.x + rate_params.ki.x * self.rate_state.integral.x + d_term.x,
+            p_term.y + rate_params.ki.y * self.rate_state.integral.y + d_term.y,
+            p_term.z + rate_params.ki.z * self.rate_state.integral.z + d_term.z,
+        );
         let torque = Vector3::new(
             raw_torque.x.clamp(-mt_active.x, mt_active.x),
             raw_torque.y.clamp(-mt_active.y, mt_active.y),
             raw_torque.z.clamp(-mt_active.z, mt_active.z),
         );
+        self.rate_state.last_error = rate_error;
         self.quad.time_step = delta as f32;
 
         self.quad

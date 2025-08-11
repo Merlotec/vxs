@@ -39,6 +39,22 @@ impl Default for Px4PosVelParams {
     }
 }
 
+impl Px4PosVelParams {
+    pub fn default_moving() -> Self {
+        // Moving profile: more damping in XY, lower I to avoid sway
+        Self {
+            pos_p: Vector3::new(1.0, 1.0, 1.0),
+            vel_p: Vector3::new(2.4, 2.4, 2.0),
+            vel_i: Vector3::new(0.0, 0.0, 0.2),
+            vel_d: Vector3::new(0.7, 0.7, 0.25),
+            acc_hor_max: 6.0,
+            acc_up_max: 6.0,
+            acc_down_max: 6.0,
+            i_limit: Vector3::new(1.5, 1.5, 2.0),
+        }
+    }
+}
+
 impl Default for PosVelState {
     fn default() -> Self {
         Self {
@@ -146,12 +162,15 @@ pub struct RatePIDParams {
     pub kd: Vector3<f64>,
     pub max_torque: Vector3<f64>,
     pub max_integral: Vector3<f64>,
+    // Derivative term low-pass cutoff (Hz), approximates PX4 gyro filtering influence
+    pub d_lpf_hz: f64,
 }
 
 /// Holds integrals and previous errors for PID
 pub struct RatePIDState {
     pub integral: Vector3<f64>,
     pub last_error: Vector3<f64>,
+    pub d_filt: Vector3<f64>,
 }
 
 /// Attitude P gains to convert attitude error (axis-angle)
@@ -204,16 +223,19 @@ impl Default for PosPIDState {
 impl Default for RatePIDParams {
     fn default() -> Self {
         RatePIDParams {
-            // Slightly softer attitude rate gains for smoother response
-            kp: Vector3::new(2.5, 2.5, 4.0),
-            ki: Vector3::new(0.06, 0.06, 0.03),
-            kd: Vector3::new(0.03, 0.03, 0.015),
+            // Base attitude rate gains: more damping on roll/pitch, reduced I to avoid sway
+            kp: Vector3::new(2.4, 2.4, 3.6),
+            ki: Vector3::new(0.02, 0.02, 0.02),
+            kd: Vector3::new(0.08, 0.08, 0.02),
 
             // Clamp torques to a realistic, conservative range
             max_torque: Vector3::new(0.22, 0.22, 0.32),
 
             // Prevent integral windup
             max_integral: Vector3::new(0.28, 0.28, 0.14),
+
+            // Derivative filter cutoff
+            d_lpf_hz: 30.0,
         }
     }
 }
@@ -221,17 +243,18 @@ impl Default for RatePIDParams {
 impl RatePIDParams {
     pub fn default_moving() -> Self {
         RatePIDParams {
-            // Softer moving gains for stability during aggressive maneuvers
-            // Increase moving gains to better realize acceleration commands
-            kp: Vector3::new(3.6, 3.6, 5.5),
-            ki: Vector3::new(0.09, 0.09, 0.045),
-            kd: Vector3::new(0.035, 0.035, 0.017),
+            // Moving gains: strong roll/pitch damping, very low I to prevent lateral sway
+            kp: Vector3::new(3.0, 3.0, 5.0),
+            ki: Vector3::new(0.015, 0.015, 0.03),
+            kd: Vector3::new(0.12, 0.12, 0.03),
 
             // Slightly higher torque limits for moving, still conservative
             max_torque: Vector3::new(0.28, 0.28, 0.36),
 
             // Integral clamp for moving case
             max_integral: Vector3::new(0.36, 0.36, 0.18),
+
+            d_lpf_hz: 30.0,
         }
     }
 }
@@ -241,6 +264,7 @@ impl Default for RatePIDState {
         RatePIDState {
             integral: Vector3::zeros(),
             last_error: Vector3::zeros(),
+            d_filt: Vector3::zeros(),
         }
     }
 }
