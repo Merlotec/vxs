@@ -1,5 +1,129 @@
 use nalgebra::{Matrix3, Rotation3, UnitQuaternion, Vector3};
 
+// PX4-like Position/Velocity controller parameters
+// Maps conceptually to PX4 params:
+// - pos_p:   MPC_XY_P (x,y), MPC_Z_P (z)
+// - vel_p/i/d: MPC_XY_VEL_{P,I,D} and MPC_Z_VEL_{P,I,D}
+// - acc limits: MPC_ACC_HOR_MAX, MPC_ACC_UP_MAX, MPC_ACC_DOWN_MAX
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct Px4PosVelParams {
+    pub pos_p: Vector3<f64>,
+    pub vel_p: Vector3<f64>,
+    pub vel_i: Vector3<f64>,
+    pub vel_d: Vector3<f64>,
+    pub acc_hor_max: f64,
+    pub acc_up_max: f64,
+    pub acc_down_max: f64,
+    pub i_limit: Vector3<f64>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct PosVelState {
+    pub vel_integral: Vector3<f64>,
+    pub last_vel_error: Vector3<f64>,
+}
+
+impl Default for Px4PosVelParams {
+    fn default() -> Self {
+        Self {
+            // Typical PX4-ish defaults (tuned for sim):
+            pos_p: Vector3::new(1.0, 1.0, 1.0),
+            vel_p: Vector3::new(2.0, 2.0, 2.0),
+            vel_i: Vector3::new(0.3, 0.3, 0.4),
+            vel_d: Vector3::new(0.3, 0.3, 0.2),
+            acc_hor_max: 6.0,
+            acc_up_max: 6.0,
+            acc_down_max: 6.0,
+            i_limit: Vector3::new(2.0, 2.0, 2.0),
+        }
+    }
+}
+
+impl Default for PosVelState {
+    fn default() -> Self {
+        Self {
+            vel_integral: Vector3::zeros(),
+            last_vel_error: Vector3::zeros(),
+        }
+    }
+}
+
+// PX4 Position->Velocity->Acceleration cascade with accel limits and simple anti-windup.
+// Equivalent flow:
+// vel_sp = v_ff + MPC_*_P * (pos_sp - pos)
+// a_sp = MPC_*_VEL_P * (vel_sp - vel) + I + MPC_*_VEL_D * d/dt(vel_err) + a_ff
+// limit a_sp by XY/Z limits (tilt/collective priority)
+pub fn px4_accel_sp(
+    p_act: Vector3<f64>,
+    v_act: Vector3<f64>,
+    p_sp: Vector3<f64>,
+    v_ff: Vector3<f64>,
+    a_ff: Vector3<f64>,
+    params: &Px4PosVelParams,
+    state: &mut PosVelState,
+    dt: f64,
+) -> (Vector3<f64>, bool) {
+    let pos_err = p_sp - p_act;
+    let v_sp = v_ff + params.pos_p.component_mul(&pos_err);
+    let vel_err = v_sp - v_act;
+
+    // PI-D on velocity error
+    state.vel_integral += vel_err * dt;
+    // clamp integrator
+    state.vel_integral.x = state
+        .vel_integral
+        .x
+        .clamp(-params.i_limit.x, params.i_limit.x);
+    state.vel_integral.y = state
+        .vel_integral
+        .y
+        .clamp(-params.i_limit.y, params.i_limit.y);
+    state.vel_integral.z = state
+        .vel_integral
+        .z
+        .clamp(-params.i_limit.z, params.i_limit.z);
+
+    let d_err = if dt > 0.0 {
+        (vel_err - state.last_vel_error) / dt
+    } else {
+        Vector3::zeros()
+    };
+
+    let p_term = params.vel_p.component_mul(&vel_err);
+    let i_term = params.vel_i.component_mul(&state.vel_integral);
+    let d_term = params.vel_d.component_mul(&d_err);
+    let mut a_sp = p_term + i_term + d_term + a_ff;
+    state.last_vel_error = vel_err;
+
+    // Acceleration limits (PX4: MPC_ACC_HOR_MAX, MPC_ACC_UP/DOWN_MAX)
+    let mut saturated = false;
+    // Clamp vertical
+    if a_sp.z > params.acc_up_max {
+        a_sp.z = params.acc_up_max;
+        saturated = true;
+    }
+    if a_sp.z < -params.acc_down_max {
+        a_sp.z = -params.acc_down_max;
+        saturated = true;
+    }
+    // Clamp horizontal magnitude
+    let a_xy = Vector3::new(a_sp.x, a_sp.y, 0.0);
+    let a_xy_norm = a_xy.norm();
+    if a_xy_norm > params.acc_hor_max {
+        let scale = params.acc_hor_max / a_xy_norm;
+        a_sp.x *= scale;
+        a_sp.y *= scale;
+        saturated = true;
+    }
+
+    // Basic anti-windup: freeze integrator if saturated
+    if saturated {
+        state.vel_integral -= vel_err * dt; // revert last step
+    }
+
+    (a_sp, saturated)
+}
+
 /// PID parameters for position controller
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct PosPIDParams {
