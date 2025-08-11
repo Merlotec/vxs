@@ -185,14 +185,11 @@ impl AgentDynamics for QuadDynamics {
         };
 
         // PX4 AttitudeControl equivalent: attitude error -> body rate setpoint
-        let r_cmd =
-            Rotation3::from_matrix_unchecked(pid::build_body_rotation(&z_b_cmd, chaser.yaw));
-        let rate_sp = pid::attitude_to_bodyrate(
-            &r_cmd,
-            &self.quad.orientation.to_rotation_matrix().cast::<f64>(),
-            0.0, // no yaw FF
-            &self.params.att_p.p,
-        );
+        let r_act = self.quad.orientation.to_rotation_matrix().cast::<f64>();
+        // Interpret chaser.yaw as absolute target yaw (world Z), decoupled from tilt
+        let r_cmd = Rotation3::from_matrix_unchecked(pid::build_body_rotation(&z_b_cmd, chaser.yaw));
+        let yaw_rate_ff = 0.0; // no yaw feedforward; yaw is an absolute setpoint
+        let rate_sp = pid::attitude_to_bodyrate(&r_cmd, &r_act, yaw_rate_ff, &self.params.att_p.p);
         // PX4 RateControl equivalent: PID on body rates
         // PX4-like RateControl with simple per-axis anti-windup (freeze on same-direction saturation)
         let rate_error = rate_sp - self.quad.angular_velocity.cast::<f64>();

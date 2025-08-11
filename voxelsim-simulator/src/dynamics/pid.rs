@@ -360,3 +360,45 @@ pub fn build_body_rotation(z_b_cmd: &Vector3<f64>, yaw: f64) -> Matrix3<f64> {
     // 5) Build rotation matrix: columns are Xb, Yb, Zb
     Matrix3::from_columns(&[x_b, y_b, z_b])
 }
+
+/// Build desired body rotation where yaw is applied relative to the current attitude,
+/// rotating around the desired Z axis (z_b_cmd).
+/// This interprets `yaw_delta` as an incremental rotation about z_b_cmd, starting from
+/// the current body X axis projected onto the plane orthogonal to z_b_cmd.
+pub fn build_body_rotation_with_yaw_delta(
+    z_b_cmd: &Vector3<f64>,
+    yaw_delta: f64,
+    r_act: &Rotation3<f64>,
+) -> Matrix3<f64> {
+    use nalgebra::{Rotation3 as R3, Unit, Vector3 as V3};
+    // Desired thrust axis as a unit vector
+    let z_unit: Unit<V3<f64>> = Unit::new_normalize(*z_b_cmd);
+    let z_b: V3<f64> = z_unit.as_ref().clone();
+
+    // Start from current body X, projected onto plane orthogonal to z_b
+    let x_act = r_act.matrix().column(0).into_owned();
+    let x_proj = x_act - z_b * x_act.dot(&z_b);
+
+    // If degenerate (near parallel), fall back to body Y projected
+    let x_base = if x_proj.norm() > 1e-6 {
+        x_proj.normalize()
+    } else {
+        let y_act = r_act.matrix().column(1).into_owned();
+        let y_proj = y_act - z_b * y_act.dot(&z_b);
+        if y_proj.norm() > 1e-6 {
+            y_proj.normalize()
+        } else {
+            // Final fallback: construct any orthonormal X on the plane
+            // pick a world axis not aligned with z_b
+            let aux = if z_b.x.abs() < 0.9 { V3::x() } else { V3::y() };
+            let aux_proj = (aux - z_b * aux.dot(&z_b)).normalize();
+            aux_proj
+        }
+    };
+
+    // Rotate x_base around z_b by yaw_delta
+    let rot_about_z = R3::from_axis_angle(&z_unit, yaw_delta);
+    let x_b = (rot_about_z * x_base).normalize();
+    let y_b = z_b.cross(&x_b).normalize();
+    Matrix3::from_columns(&[x_b, y_b, z_b])
+}
