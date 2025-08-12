@@ -1362,9 +1362,8 @@ def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embeddi
     trainer = EmbeddingTrainer(encoder, decoder, loss_heads, recon_loss=recon_loss)
     
     # Initialize renderer clients for before/after visualization
-    client_input = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
-    client_output = voxelsim.RendererClient("127.0.0.1", 8082, 8083, 8090, 9090)  
-    # Replace with "sampo" in 127.0.0.1 for fun
+    client_input = voxelsim.RendererClient("sampo", 8080, 8081, 8090, 9090)
+    client_output = voxelsim.RendererClient("sampo", 8082, 8083, 8090, 9090)  
     client_input.connect_py(0)
     client_output.connect_py(0)
     
