@@ -84,6 +84,8 @@ def world_update(world, timestamp):
     dtime = time.time() - upd_start
     print(f"upd_time: {dtime}")
 
+YAW_STEP = 0.3  # radians per key press (about 17°)
+
 while listener.running:
     t0 = time.time()
     view_delta = t0 - last_view_time
@@ -107,12 +109,21 @@ while listener.running:
     if action:
         commands = action.get_commands()
     commands_cl = list(commands)
-    if 'w' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Forward, 0.8, 0.0))
-    if 's' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Back, 0.8, 0.0))
-    if 'a' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Left, 0.8, 0.0))
-    if 'd' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Right, 0.8, 0.0))
-    if 'space' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Up, 0.8, 0.0))
-    if 'shift' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Down, 0.8, 0.0))
+
+    # Compute yaw delta from input this frame; Q = left (negative), E = right (positive)
+    yaw_delta = 0.0
+    if 'q' in just_pressed:
+        yaw_delta -= YAW_STEP
+    if 'e' in just_pressed:
+        yaw_delta += YAW_STEP
+
+    # Apply yaw_delta to any move commands created this frame
+    if 'w' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Forward, 0.8, yaw_delta))
+    if 's' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Back, 0.8, yaw_delta))
+    if 'a' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Left, 0.8, -3.14))
+    if 'd' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Right, 0.8, 3.14))
+    if 'space' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Up, 0.8, yaw_delta))
+    if 'shift' in just_pressed: commands.append(voxelsim.MoveCommand(voxelsim.MoveDir.Down, 0.8, yaw_delta))
     if not action or commands != commands_cl:
         if len(commands) > 0:
             agent.perform_sequence_py(commands)
