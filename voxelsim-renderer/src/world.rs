@@ -14,7 +14,7 @@ use crate::render::{
     self, ActionCell, AgentComponent, AgentReceiver, CellAssets, CellComponent, FocusedAgent,
     OriginCell, QuitReceiver, WorldReceiver,
 };
-use voxelsim::{Agent, Cell, VoxelGrid};
+use voxelsim::{Agent, Cell, MoveDir, VoxelGrid};
 
 use crate::convert::*;
 
@@ -186,7 +186,6 @@ fn synchronise_world(
         // add new cells with Y-up swap
         for rm in world.cells().iter() {
             let (coord, cell_val) = rm.pair();
-            let client = Vector3::new(coord[0], coord[1], coord[2]);
             commands.spawn((
                 CellComponent {
                     coord: *coord,
@@ -194,7 +193,7 @@ fn synchronise_world(
                 },
                 Mesh3d(assets.cube_mesh.clone()),
                 MeshMaterial3d(assets.material_for_cell(cell_val)),
-                Transform::from_translation(client_to_bevy_i32(client)),
+                Transform::from_translation(client_to_bevy_i32(*coord)),
             ));
         }
     }
@@ -276,8 +275,9 @@ fn synchronise_world(
                     agent_comp.agent = net_agent.clone();
 
                     // forward‐vector gizmo
-                    let fwd_client = agent_comp.agent.attitude * Vector3::y_axis();
-                    let fwd_bevy = client_to_bevy_f32(fwd_client.cast::<f32>().into_inner());
+                    let fwd_client =
+                        agent_comp.agent.attitude * MoveDir::Forward.dir_vector().unwrap().cast();
+                    let fwd_bevy = client_to_bevy_f32(fwd_client.cast::<f32>());
                     gizmos.line(
                         bevy_pos,
                         bevy_pos + fwd_bevy * 5.0,

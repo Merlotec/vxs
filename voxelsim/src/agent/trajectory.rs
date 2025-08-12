@@ -241,7 +241,6 @@ impl Trajectory {
         t_lo = t_lo.min(t_hi - 2.0 * h);
         t_hi = t_hi.max(t_lo + 2.0 * h);
         let pdiff = self.position(t_hi)? - self.position(t_lo)?;
-        println!("tlo: {}, thi: {}", t_lo, t_hi);
         if pdiff.norm() > std::f64::EPSILON {
             Some(pdiff.normalize())
         } else {

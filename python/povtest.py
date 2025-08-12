@@ -3,7 +3,7 @@ import voxelsim, time
 
 # dynamics = voxelsim.AgentDynamics.default_drone()
 agent = voxelsim.Agent(0)
-agent.set_pos([50.0, 50.0, 20.0])
+agent.set_pos([50.0, 50.0, -20.0])
 
 fw = voxelsim.FilterWorld()
 dynamics = voxelsim.QuadDynamics(voxelsim.QuadParams.default_py())
@@ -17,7 +17,7 @@ proj = voxelsim.CameraProjection.default_py()
 env = voxelsim.EnvState.default_py()
 
 AGENT_CAMERA_TILT = -0.5
-camera_orientation = voxelsim.CameraOrientation.vertical_tilt_py(-0.5)
+camera_orientation = voxelsim.CameraOrientation.vertical_tilt_py(AGENT_CAMERA_TILT)
 # Renderer
 noise = voxelsim.NoiseParams.default_with_seed_py([0.0, 0.0, 0.0])
 renderer = voxelsim.AgentVisionRenderer(world, [200, 150], noise)
