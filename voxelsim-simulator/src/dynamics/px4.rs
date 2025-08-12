@@ -1,4 +1,32 @@
-use nalgebra::{Matrix3, UnitQuaternion, Vector2, Vector3};
+use nalgebra::{Matrix3, Quaternion, UnitQuaternion, Vector2, Vector3};
+
+pub struct AlphaFilter {
+    alpha: f64,
+    state: f64,
+}
+
+pub struct RateState {
+    pub lp_filters_d: [AlphaFilter; 3],
+    pub torque: Vector3<f64>,
+    rate_prev_filtered: Vector3<f64>,
+}
+
+impl AlphaFilter {
+    fn new(alpha: f64) -> Self {
+        Self { alpha, state: 0.0 }
+    }
+
+    fn apply(&mut self, input: f64) -> f64 {
+        self.state = self.alpha * input + (1.0 - self.alpha) * self.state;
+        self.state
+    }
+}
+
+impl RateState {
+    pub fn apply_filters(input: Vector3<f64>, filters: &mut [AlphaFilter; 3]) -> Vector3<f64> {
+        input.map_with_location(|i, _, v| filters[i].apply(v))
+    }
+}
 
 /// PX4 position controller, emulating the necessary parts of the PX4's `PositionControl` class.
 pub struct PositionControl {
@@ -19,6 +47,14 @@ pub struct PositionControl {
 
 pub struct AttitudeControl {
     proportional_gain: Vector3<f64>,
+    yaw_w: f64,
+    rate_limit: Vector3<f64>,
+}
+
+pub struct RateControl {
+    gain_p: Vector3<f64>,
+    gain_i: Vector3<f64>,
+    gain_d: Vector3<f64>,
 }
 
 pub struct CtrlConstraints {
@@ -167,12 +203,82 @@ impl PositionControl {
 }
 
 impl AttitudeControl {
-    pub fn update(&self, q: UnitQuaternion<f64>, qd: UnitQuaternion<f64>, yawspeed_ff: f64) {
+    pub fn update(
+        &self,
+        q: UnitQuaternion<f64>,
+        qd: UnitQuaternion<f64>,
+        yawspeed_ff: f64,
+    ) -> Vector3<f64> {
         let rm = q.to_rotation_matrix();
         let rm_d = qd.to_rotation_matrix();
 
+        let rm_inv = rm.inverse();
+
         let e_z: Vector3<f64> = rm.into_inner().column(2).into();
-        let e_z_d: Vector3<f64> = rm.into_inner().column(2).into();
+        let e_z_d: Vector3<f64> = rm_d.into_inner().column(2).into();
+
+        // QD is the rotation with the yaw stripped out.
+        let mut qd_red = UnitQuaternion::rotation_between(&e_z, &e_z_d).unwrap();
+
+        if qd_red[1].abs() > (1.0 - 1e-5) || qd_red[2].abs() > (1.0 - 1e-5) {
+            qd_red = qd;
+        } else {
+            qd_red *= q;
+        }
+
+        let mut q_mix = (qd_red.inverse() * qd).into_inner();
+        q_mix *= q_mix[0].signum();
+
+        q_mix[0] = q_mix[0].clamp(-1.0, 1.0);
+        q_mix[3] = q_mix[3].clamp(-1.0, 1.0);
+
+        let qd = UnitQuaternion::from_quaternion(
+            qd_red.into_inner()
+                * Quaternion::new(
+                    (self.yaw_w * q_mix[0].acos()).cos(),
+                    0.0,
+                    0.0,
+                    (self.yaw_w * q_mix[3].asin()).sin(),
+                ),
+        );
+
+        // Rotation from q to qd.
+        let qe = q.inverse() * qd;
+
+        let eq = 2.0 * qe[0].signum() * qe.imag();
+
+        let mut rate_setpoint = eq.component_mul(&self.proportional_gain);
+
+        let q_e_inv: Vector3<f64> = rm_inv.into_inner().column(2).into();
+
+        rate_setpoint += q_e_inv * yawspeed_ff;
+
+        // Limit rates.
+        for i in 0..3 {
+            rate_setpoint[i] = rate_setpoint[i].clamp(-self.rate_limit[i], self.rate_limit[i]);
+        }
+
+        rate_setpoint
+    }
+}
+
+impl RateControl {
+    pub fn update(
+        &self,
+        rate: Vector3<f64>,
+        rate_sp: Vector3<f64>,
+        mut state: RateState,
+        dt: f64,
+    ) -> RateState {
+        let rate_error = rate_sp - rate;
+
+        let rate_filtered = RateState::apply_filters(rate, &mut state.lp_filters_d);
+
+        let rate_d = if dt > std::f64::EPSILON {
+            (rate_filtered - state.rate_prev_filtered) / dt
+        } else {
+            Vector3::zeros()
+        };
     }
 }
 
