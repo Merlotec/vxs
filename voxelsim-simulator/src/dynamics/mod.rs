@@ -1,4 +1,4 @@
-pub mod drone;
+pub mod pid;
 pub mod quad;
 
 use nalgebra::Vector3;
