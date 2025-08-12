@@ -1,3 +1,5 @@
+use nalgebra::{Vector2, Vector3};
+
 /// PX4 position controller, emulating the necessary parts of the PX4's `PositionControl` class.
 pub struct PositionControl {
     /// Corresponds to _gain_pos_p.
