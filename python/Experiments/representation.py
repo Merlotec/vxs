@@ -873,7 +873,31 @@ class EmbeddingTrainer:
             # inv = 1.0 / (hist + 1e-6)
             # weights = (inv / inv.sum()) * 3.0
 
-            weights = torch.tensor([0.2, 1.0, 1.5], device=logits.device)
+            #weights = torch.tensor([0.2, 1.0, 1.5], device=logits.device)
+
+            # --- dynamic class weights (median-frequency + EMA) ---
+            num_classes = 3
+            counts = torch.bincount(recon_targets.view(-1), minlength=num_classes).float()
+            freq = counts / counts.sum().clamp_min(1)
+
+            # median-frequency balancing: w_c = median(freq)/freq_c
+            med = freq[freq > 0].median()
+            w = med / freq.clamp_min(1e-6)
+
+            # optional: clamp extremes so a missing class doesn't explode the loss
+            w = w.clamp(0.25, 4.0)
+
+            # smooth over time (create the buffers the first time)
+            if not hasattr(self, "class_weight_ema"):
+                self.class_weight_ema = w.to(logits.device)
+                self.class_weight_momentum = 0.9
+            else:
+                self.class_weight_ema = (
+                    self.class_weight_momentum * self.class_weight_ema
+                    + (1 - self.class_weight_momentum) * w.to(logits.device)
+                )
+
+            weights = self.class_weight_ema
 
             losses["reconstruction"] = self.recon_loss_fn(
             logits, recon_targets,
@@ -1133,8 +1157,8 @@ def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embeddi
     trainer = EmbeddingTrainer(encoder, decoder, loss_heads, recon_loss=recon_loss)
     
     # Initialize renderer clients for before/after visualization
-    client_input = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
-    client_output = voxelsim.RendererClient("127.0.0.1", 8082, 8083, 8090, 9090)  
+    client_input = voxelsim.RendererClient("sampo", 8080, 8081, 8090, 9090)
+    client_output = voxelsim.RendererClient("sampo", 8082, 8083, 8090, 9090)  
     client_input.connect_py(0)
     client_output.connect_py(0)
     
@@ -1434,8 +1458,8 @@ def sweep():
 
     encoder_decoder_pairs = [
         (SimpleCNNEncoder,        SimpleCNNDecoder),
-        (UNet3DEncoder,           UNet3DDecoder),
-        (ResNet3DEncoder,         ResNet3DDecoder),
+        # (UNet3DEncoder,           UNet3DDecoder),
+        # (ResNet3DEncoder,         ResNet3DDecoder),
         # (CrossAttnTokensEncoder,  ImplicitFourierDecoder),
         # (PointMLPEncoder,         ImplicitFourierDecoder),   # sparse-in / implicit-out
     ]
