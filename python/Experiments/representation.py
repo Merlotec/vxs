@@ -550,7 +550,7 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
         max_points: int = 8192,                 # cap raw N
         stages=((2048, 2.5), (512, 5.0), (128, 9.0)),  # (K, radius_in_voxels)
         nbrs_cap: int = 64,                     # max neighbors per center
-        fourier_feats: int = 8,                 # 0 disables Fourier(Δxyz)
+        fourier_feats: int = 0,                 # 0 disables Fourier(Δxyz)
         width: int = 128,                       # per-stage hidden (C)
         use_fps: bool = False                   # default voxel-grid subsample
     ):
@@ -618,19 +618,30 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
         Keep ≤1 point per coarse cell; choose cell size to hit ~target_k total.
         xyz_int: [N,3] int voxel coords in [0, side-1].
         """
-        N = xyz_int.size(0)
+        device = xyz_int.device
+        N = int(xyz_int.size(0))
+        if N == 0:
+            return torch.empty(0, dtype=torch.long, device=device)
         if N <= target_k:
-            return torch.arange(N, device=xyz_int.device, dtype=torch.long)
+            return torch.arange(N, device=device, dtype=torch.long)
+
         side = int(self.voxel_size)
         cell = max(1, int(np.ceil(side / (target_k ** (1/3)))))
         cells = (xyz_int // cell).to(torch.int64)  # [N,3]
-        # 3D hash → 1D
-        h = cells[:, 0] + cells[:, 1] * 73856093 + cells[:, 2] * 19349663
-        # keep first occurrence per hash
-        _, keep = torch.unique(h, return_index=True)
+
+        # 3D hash → 1D (int64 to avoid overflow)
+        h = (cells[:, 0]
+             + cells[:, 1] * 73856093
+             + cells[:, 2] * 19349663).to(torch.int64)
+
+        # keep one index per unique hash (stable-ish)
+        h_sorted, perm = torch.sort(h)
+        keep_mask = torch.ones_like(h_sorted, dtype=torch.bool)
+        keep_mask[1:] = h_sorted[1:] != h_sorted[:-1]
+        keep = perm[keep_mask]
+
         if keep.numel() > target_k:
-            perm = torch.randperm(keep.numel(), device=keep.device)
-            keep = keep[perm[:target_k]]
+            keep = keep[torch.randperm(keep.numel(), device=device)[:target_k]]
         return keep
 
     def _fourier(self, x: torch.Tensor):
@@ -651,6 +662,7 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
           centers_feat: [K,C]
         """
         device = src_xyz.device; C = self.width
+
         # choose centers
         if self.use_fps:
             idx = self._fps(base_xyz, K)
@@ -663,39 +675,54 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
         r2 = float(radius * radius)
         d2_masked = d2.clone()
         d2_masked[d2_masked > r2] = float('inf')
+
         k_take = min(self.nbrs_cap, src_xyz.size(0))
         vals, nn_idx = torch.topk(d2_masked, k=k_take, dim=1, largest=False)
-        # fallback to true NN where all inf
+
+        # ensure at least one finite neighbor per center
         none_mask = torch.isinf(vals[:, 0])
         if none_mask.any():
             fallback = d2.argmin(dim=1)
             nn_idx[none_mask, 0] = fallback[none_mask]
-            vals[none_mask, 0] = d2[none_mask, fallback[none_mask]]
+            vals[none_mask, 0]   = d2[none_mask, fallback[none_mask]]
 
-        nbr_xyz  = src_xyz[nn_idx]                           # [K,k,3]
+        # validity mask
+        valid   = torch.isfinite(vals)                         # [K,k]
+        valid_e = valid.unsqueeze(-1)                          # [K,k,1]
+
+        # gather neighbor info
+        nbr_xyz  = src_xyz[nn_idx]                             # [K,k,3]
         delta    = (nbr_xyz - centers_xyz.unsqueeze(1)) / max(radius, 1e-6)  # [-1,1]-ish
-        distn    = torch.sqrt(vals.clamp_min(0.0)).unsqueeze(-1) / max(radius, 1e-6)  # [K,k,1]
-        nbr_feat = src_feat[nn_idx]                          # [K,k, 1 or C]
+
+        # distances: clamp to avoid inf, then mask
+        distn = torch.sqrt(torch.clamp(vals, min=0.0, max=r2)).unsqueeze(-1) / max(radius, 1e-6)
+
+        nbr_feat = src_feat[nn_idx]                            # [K,k, 1 or C]
+
+        # *** CRUCIAL: zero-out invalid neighbors BEFORE the MLP ***
+        delta    = delta    * valid_e
+        distn    = distn    * valid_e
+        nbr_feat = nbr_feat * valid_e
 
         parts = [delta, distn, nbr_feat]
         if self.k_fourier > 0:
-            parts.append(self._fourier(delta))
-        x = torch.cat(parts, dim=-1)                        # [K,k,F_in]
+            parts.append(self._fourier(delta))                 # delta already masked
+        x = torch.cat(parts, dim=-1)                           # [K,k,F_in]
 
-        # per-neighbor MLP → [K,k,C]
+        # per-neighbor MLP → [K,k,C] (finite)
         Kk = x.shape[0] * x.shape[1]
-        x = self.stage_mlps[si](x.view(Kk, -1)).view(x.shape[0], x.shape[1], -1)
+        x  = self.stage_mlps[si](x.view(Kk, -1)).view(x.shape[0], x.shape[1], -1)
 
-        # masked mean + max
-        valid = ~torch.isinf(vals)                          # [K,k]
-        valid_f = valid.float().unsqueeze(-1)
-        counts = valid_f.sum(dim=1).clamp_min_(1.0)         # [K,1]
-        mean = (x * valid_f).sum(dim=1) / counts            # [K,C]
-        neg_big = torch.finfo(x.dtype).min
-        x_masked = torch.where(valid.unsqueeze(-1), x, neg_big)
-        mx, _ = x_masked.max(dim=1)                         # [K,C]
-        out = torch.cat([mean, mx], dim=-1)                 # [K,2C]
-        out = self.post_mlps[si](out)                       # [K,C]
+        # pooled features
+        counts = valid.float().sum(dim=1).clamp_min_(1.0).unsqueeze(-1)  # [K,1]
+        mean   = x.sum(dim=1) / counts                                   # [K,C]
+
+        neg_big  = torch.finfo(x.dtype).min
+        x_masked = torch.where(valid.unsqueeze(-1), x, x.new_full((), neg_big))
+        mx, _    = x_masked.max(dim=1)                                    # [K,C]
+
+        out = torch.cat([mean, mx], dim=-1)                               # [K,2C]
+        out = self.post_mlps[si](out)                                     # [K,C]
         return centers_xyz, out
 
     # -------- encode one sample --------
@@ -731,6 +758,8 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
 
     def encode(self, voxel_batch: List[VoxelData]) -> torch.Tensor:
         return torch.stack([self._encode_one(vd) for vd in voxel_batch], dim=0)
+
+
 
 
 
@@ -1362,8 +1391,8 @@ def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embeddi
     trainer = EmbeddingTrainer(encoder, decoder, loss_heads, recon_loss=recon_loss)
     
     # Initialize renderer clients for before/after visualization
-    client_input = voxelsim.RendererClient("sampo", 8080, 8081, 8090, 9090)
-    client_output = voxelsim.RendererClient("sampo", 8082, 8083, 8090, 9090)  
+    client_input = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
+    client_output = voxelsim.RendererClient("127.0.0.1", 8082, 8083, 8090, 9090)  
     client_input.connect_py(0)
     client_output.connect_py(0)
     
@@ -1663,13 +1692,13 @@ def sweep():
 
     encoder_decoder_pairs = [
         (SimpleCNNEncoder,        SimpleCNNDecoder),
-        (PointNetPPLiteFPEncoder,           ImplicitFourierDecoder),
+        # (PointNetPPLiteFPEncoder,           ImplicitFourierDecoder),
         # (ResNet3DEncoder,         ResNet3DDecoder),
         # (CrossAttnTokensEncoder,  ImplicitFourierDecoder),
         # (PointMLPEncoder,         ImplicitFourierDecoder),   # sparse-in / implicit-out
     ]
 
-    emb_dims = [512, 1024,2048,5120]
+    emb_dims = [128,192,256]
     size = 48
 
      # Regimes are factories now
