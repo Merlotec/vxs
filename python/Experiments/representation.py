@@ -6,6 +6,8 @@ A modular framework for testing various embedding approaches for drone navigatio
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import spconv.pytorch as spconv                           # v2.3+
+from spconv.pytorch import SparseConvTensor
 import csv, datetime
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
@@ -469,7 +471,7 @@ class PointMLPEncoder(EmbeddingEncoder, nn.Module):
     Robust at coarse grids; no dense voxel tensor needed.
     """
     def __init__(self, voxel_size=48, embedding_dim=512,
-                 fourier_feats: int = 0, max_points: int = 4096):
+                 fourier_feats: int = 0, max_points: int = 8192):
         super().__init__()
         self.voxel_size = voxel_size
         self.embedding_dim = embedding_dim
@@ -528,6 +530,209 @@ class PointMLPEncoder(EmbeddingEncoder, nn.Module):
             mx, _ = f.max(0)
             embs.append(self.head(torch.cat([mean, mx], dim=0)))
         return torch.stack(embs, dim=0)        # [B,E]
+
+
+class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
+    """
+    Hierarchical point-set encoder (PointNet++-lite) with FEATURE PROPAGATION.
+    Stages:
+      SA0: sample K0 centers from raw points; group from raw points; per-group MLP on [Δxyz, val, ||Δ||, Fourier(Δ)] → pool → C
+      SA1+: sample Ki from previous centers; group from previous centers; MLP on [Δxyz, ||Δ||, prev_center_feat, Fourier(Δ)] → pool → C
+    Final: global mean+max over last-stage tokens, linear head → embedding_dim.
+    Notes:
+      - Sampling is voxel-grid (fast, uniform-ish). Flip use_fps=True for FPS.
+      - Neighborhood query is brute-force (pairwise) with radius + top-k cap; fine at N≤~8k.
+    """
+    def __init__(
+        self,
+        voxel_size: int = 48,
+        embedding_dim: int = 512,
+        max_points: int = 8192,                 # cap raw N
+        stages=((2048, 2.5), (512, 5.0), (128, 9.0)),  # (K, radius_in_voxels)
+        nbrs_cap: int = 64,                     # max neighbors per center
+        fourier_feats: int = 8,                 # 0 disables Fourier(Δxyz)
+        width: int = 128,                       # per-stage hidden (C)
+        use_fps: bool = False                   # default voxel-grid subsample
+    ):
+        super().__init__()
+        self.voxel_size    = voxel_size
+        self.embedding_dim = embedding_dim
+        self.max_points    = max_points
+        self.stages        = list(stages)
+        self.nbrs_cap      = int(nbrs_cap)
+        self.k_fourier     = int(fourier_feats)
+        self.width         = int(width)
+        self.use_fps       = bool(use_fps)
+
+        # Stage-specific MLPs: SA0 sees val, later stages see prev feature (C)
+        in0 = 3 + 1 + 1 + (6*self.k_fourier if self.k_fourier > 0 else 0)          # Δxyz, val, ||Δ||, PE
+        inL = 3 + 1 + self.width + (6*self.k_fourier if self.k_fourier > 0 else 0) # Δxyz, ||Δ||, prev_feat, PE
+        self.stage_mlps = nn.ModuleList()
+        self.post_mlps  = nn.ModuleList()
+        for si in range(len(self.stages)):
+            ind = in0 if si == 0 else inL
+            self.stage_mlps.append(nn.Sequential(
+                nn.Linear(ind, self.width), nn.ReLU(True),
+                nn.Linear(self.width, self.width), nn.ReLU(True),
+            ))
+            self.post_mlps.append(nn.Sequential(
+                nn.Linear(2*self.width, self.width), nn.ReLU(True)  # after mean+max concat
+            ))
+
+        # Final head after global mean+max over tokens
+        self.head = nn.Linear(2*self.width, embedding_dim)
+
+        # Fourier bands
+        if self.k_fourier > 0:
+            bands = (2.0 ** torch.arange(self.k_fourier).float()) * np.pi
+            self.register_buffer("bands", bands, persistent=False)
+
+    def get_embedding_dim(self) -> int:
+        return self.embedding_dim
+
+    # -------- sampling helpers --------
+    @staticmethod
+    def _pairwise_dist2(a: torch.Tensor, b: torch.Tensor):
+        # a: [M,3], b: [N,3] -> [M,N]
+        a2 = (a**2).sum(1, keepdim=True)
+        b2 = (b**2).sum(1).unsqueeze(0)
+        return (a2 + b2 - 2.0 * (a @ b.t())).clamp_min_(0.0)
+
+    @staticmethod
+    def _fps(xyz: torch.Tensor, K: int):
+        N = xyz.size(0); K = min(K, N)
+        if K == N:
+            return torch.arange(N, device=xyz.device, dtype=torch.long)
+        sel = torch.empty(K, dtype=torch.long, device=xyz.device)
+        sel[0] = torch.randint(0, N, (1,), device=xyz.device)
+        dists = torch.full((N,), float('inf'), device=xyz.device)
+        for i in range(1, K):
+            p = xyz[sel[i-1]].unsqueeze(0)
+            d2 = ((xyz - p)**2).sum(1)
+            dists = torch.minimum(dists, d2)
+            sel[i] = torch.argmax(dists)
+        return sel
+
+    def _voxel_grid_subsample(self, xyz_int: torch.Tensor, target_k: int):
+        """
+        Keep ≤1 point per coarse cell; choose cell size to hit ~target_k total.
+        xyz_int: [N,3] int voxel coords in [0, side-1].
+        """
+        N = xyz_int.size(0)
+        if N <= target_k:
+            return torch.arange(N, device=xyz_int.device, dtype=torch.long)
+        side = int(self.voxel_size)
+        cell = max(1, int(np.ceil(side / (target_k ** (1/3)))))
+        cells = (xyz_int // cell).to(torch.int64)  # [N,3]
+        # 3D hash → 1D
+        h = cells[:, 0] + cells[:, 1] * 73856093 + cells[:, 2] * 19349663
+        # keep first occurrence per hash
+        _, keep = torch.unique(h, return_index=True)
+        if keep.numel() > target_k:
+            perm = torch.randperm(keep.numel(), device=keep.device)
+            keep = keep[perm[:target_k]]
+        return keep
+
+    def _fourier(self, x: torch.Tensor):
+        # x: [*,3] roughly in [-1,1]
+        ang = x.unsqueeze(-1) * self.bands  # [*,3,B]
+        s, c = torch.sin(ang), torch.cos(ang)
+        return torch.cat([s, c], dim=-1).reshape(*x.shape[:-1], -1)
+
+    # -------- one SA stage with feature propagation --------
+    def _stage(self, src_xyz: torch.Tensor, src_feat: torch.Tensor,
+               base_xyz: torch.Tensor, K: int, radius: float, si: int):
+        """
+        src_xyz:  [Ns,3] points to search neighbors from
+        src_feat: [Ns,1] (SA0) or [Ns,C] (SA1+)
+        base_xyz: [Nb,3] points to sample centers from (usually same as src_xyz)
+        Returns:
+          centers_xyz:  [K,3]
+          centers_feat: [K,C]
+        """
+        device = src_xyz.device; C = self.width
+        # choose centers
+        if self.use_fps:
+            idx = self._fps(base_xyz, K)
+        else:
+            idx = self._voxel_grid_subsample(base_xyz.long().to(torch.int64), K)
+        centers_xyz = base_xyz[idx]  # [K,3]
+
+        # neighbor gather
+        d2 = self._pairwise_dist2(centers_xyz, src_xyz)   # [K,Ns]
+        r2 = float(radius * radius)
+        d2_masked = d2.clone()
+        d2_masked[d2_masked > r2] = float('inf')
+        k_take = min(self.nbrs_cap, src_xyz.size(0))
+        vals, nn_idx = torch.topk(d2_masked, k=k_take, dim=1, largest=False)
+        # fallback to true NN where all inf
+        none_mask = torch.isinf(vals[:, 0])
+        if none_mask.any():
+            fallback = d2.argmin(dim=1)
+            nn_idx[none_mask, 0] = fallback[none_mask]
+            vals[none_mask, 0] = d2[none_mask, fallback[none_mask]]
+
+        nbr_xyz  = src_xyz[nn_idx]                           # [K,k,3]
+        delta    = (nbr_xyz - centers_xyz.unsqueeze(1)) / max(radius, 1e-6)  # [-1,1]-ish
+        distn    = torch.sqrt(vals.clamp_min(0.0)).unsqueeze(-1) / max(radius, 1e-6)  # [K,k,1]
+        nbr_feat = src_feat[nn_idx]                          # [K,k, 1 or C]
+
+        parts = [delta, distn, nbr_feat]
+        if self.k_fourier > 0:
+            parts.append(self._fourier(delta))
+        x = torch.cat(parts, dim=-1)                        # [K,k,F_in]
+
+        # per-neighbor MLP → [K,k,C]
+        Kk = x.shape[0] * x.shape[1]
+        x = self.stage_mlps[si](x.view(Kk, -1)).view(x.shape[0], x.shape[1], -1)
+
+        # masked mean + max
+        valid = ~torch.isinf(vals)                          # [K,k]
+        valid_f = valid.float().unsqueeze(-1)
+        counts = valid_f.sum(dim=1).clamp_min_(1.0)         # [K,1]
+        mean = (x * valid_f).sum(dim=1) / counts            # [K,C]
+        neg_big = torch.finfo(x.dtype).min
+        x_masked = torch.where(valid.unsqueeze(-1), x, neg_big)
+        mx, _ = x_masked.max(dim=1)                         # [K,C]
+        out = torch.cat([mean, mx], dim=-1)                 # [K,2C]
+        out = self.post_mlps[si](out)                       # [K,C]
+        return centers_xyz, out
+
+    # -------- encode one sample --------
+    def _encode_one(self, vd: VoxelData) -> torch.Tensor:
+        dev = self.head.weight.device
+        if vd.occupied_coords.numel() == 0:
+            return torch.zeros(self.embedding_dim, device=dev)
+
+        xyz = vd.occupied_coords.to(device=dev, dtype=torch.float32)        # [N,3] in voxel units
+        val = vd.values.to(device=dev, dtype=torch.float32).unsqueeze(1)    # [N,1]
+
+        # optional cap N
+        if xyz.size(0) > self.max_points:
+            keep = self._voxel_grid_subsample(xyz.long().to(torch.int64), self.max_points)
+            xyz, val = xyz[keep], val[keep]
+
+        # SA0: from raw points
+        K0, r0 = self.stages[0]
+        c_xyz, c_feat = self._stage(src_xyz=xyz, src_feat=val, base_xyz=xyz, K=K0, radius=r0, si=0)
+
+        # SA1..n: from previous centers (propagate features)
+        for si in range(1, len(self.stages)):
+            Ki, ri = self.stages[si]
+            c_xyz, c_feat = self._stage(
+                src_xyz=c_xyz, src_feat=c_feat, base_xyz=c_xyz,
+                K=Ki, radius=ri, si=si
+            )
+
+        # Global mean+max over tokens → embedding
+        mean = c_feat.mean(dim=0)
+        mx, _ = c_feat.max(dim=0)
+        return self.head(torch.cat([mean, mx], dim=0))
+
+    def encode(self, voxel_batch: List[VoxelData]) -> torch.Tensor:
+        return torch.stack([self._encode_one(vd) for vd in voxel_batch], dim=0)
+
+
 
 class CrossAttnTokensEncoder(EmbeddingEncoder, nn.Module):
     """
@@ -639,7 +844,7 @@ class ImplicitFourierDecoder(EmbeddingDecoder, nn.Module):
     Stronger implicit field: concat latent with multi-scale Fourier features of xyz.
     Returns dense logits [B,3,D,H,W]. Chunked to fit memory.
     """
-    def __init__(self, embedding_dim=512, voxel_size=48, fourier_bands=6, hidden=256, depth=4, chunk=65536):
+    def __init__(self, embedding_dim=512, voxel_size=48, fourier_bands=8, hidden=256, depth=4, chunk=65536):
         super().__init__()
         self.voxel_size = voxel_size
         self.chunk = chunk
@@ -1157,8 +1362,9 @@ def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embeddi
     trainer = EmbeddingTrainer(encoder, decoder, loss_heads, recon_loss=recon_loss)
     
     # Initialize renderer clients for before/after visualization
-    client_input = voxelsim.RendererClient("sampo", 8080, 8081, 8090, 9090)
-    client_output = voxelsim.RendererClient("sampo", 8082, 8083, 8090, 9090)  
+    client_input = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
+    client_output = voxelsim.RendererClient("127.0.0.1", 8082, 8083, 8090, 9090)  
+    # Replace with "sampo" in 127.0.0.1 for fun
     client_input.connect_py(0)
     client_output.connect_py(0)
     
@@ -1458,14 +1664,13 @@ def sweep():
 
     encoder_decoder_pairs = [
         (SimpleCNNEncoder,        SimpleCNNDecoder),
-        # (UNet3DEncoder,           UNet3DDecoder),
+        (PointNetPPLiteFPEncoder,           ImplicitFourierDecoder),
         # (ResNet3DEncoder,         ResNet3DDecoder),
         # (CrossAttnTokensEncoder,  ImplicitFourierDecoder),
         # (PointMLPEncoder,         ImplicitFourierDecoder),   # sparse-in / implicit-out
     ]
 
-    emb_dims = [128, 256, 512, 1024]
-    emb_dims = [5120]
+    emb_dims = [512, 1024,2048,5120]
     size = 48
 
      # Regimes are factories now
@@ -1486,10 +1691,10 @@ def sweep():
                     recon_loss=recon_loss,
                     embedding_dim=d,
                     num_epochs=5000,
-                    batch_size=2,
-                    visualize_every=100,
+                    batch_size=1,
+                    visualize_every=250,
                     size=size,
-                    ckpt_every=50,
+                    ckpt_every=500,
                 )
 
 if __name__ == "__main__":
