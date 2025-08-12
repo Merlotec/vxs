@@ -22,7 +22,7 @@ use bevy::app::AppExit;
 use bevy::prelude::*;
 pub fn run_world_server() {
     let (mut world_sub, world_receiver) = NetworkSubscriber::<VoxelGrid>::new(
-        std::env::var("VXS_WORLD_PORT").unwrap_or("172.0.0.1".to_string()),
+        std::env::var("VXS_WORLD_PORT").unwrap_or("127.0.0.1".to_string()),
         std::env::var("VXS_WORLD_PORT")
             .ok()
             .and_then(|x| x.parse::<u16>().ok())
@@ -30,7 +30,7 @@ pub fn run_world_server() {
     );
 
     let (mut agent_sub, agent_receiver) = NetworkSubscriber::<HashMap<usize, Agent>>::new(
-        std::env::var("VXS_AGENT_PORT").unwrap_or("172.0.0.1".to_string()),
+        std::env::var("VXS_AGENT_PORT").unwrap_or("127.0.0.1".to_string()),
         std::env::var("VXS_AGENT_PORT")
             .ok()
             .and_then(|x| x.parse::<u16>().ok())
