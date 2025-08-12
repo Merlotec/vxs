@@ -20,7 +20,11 @@ impl Default for CameraOrientation {
 
 impl CameraOrientation {
     pub fn vertical_tilt(tilt: f64) -> Self {
-        let quat = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), tilt);
+        let fwd_axis = Unit::new_normalize(MoveDir::Forward.dir_vector().unwrap().cast::<f64>());
+        let up_axis = Unit::new_normalize(MoveDir::Up.dir_vector().unwrap().cast::<f64>());
+        let rot_axis = Unit::new_normalize(fwd_axis.cross(&up_axis));
+
+        let quat = UnitQuaternion::from_axis_angle(&rot_axis, tilt);
         Self { quat }
     }
 }
@@ -85,12 +89,22 @@ impl CameraView {
         }
     }
 
+    pub fn base_forward() -> Unit<Vector3<f64>> {
+        Unit::new_normalize(MoveDir::Forward.dir_vector().unwrap().cast())
+    }
+
+    pub fn base_up() -> Unit<Vector3<f64>> {
+        Unit::new_normalize(MoveDir::Up.dir_vector().unwrap().cast())
+    }
+
+    pub fn base_right() -> Unit<Vector3<f64>> {
+        Unit::new_normalize(MoveDir::Right.dir_vector().unwrap().cast())
+    }
+
     pub fn from_pos_quat(pos: Vector3<f64>, orient: UnitQuaternion<f64>) -> Self {
-        // In a RH system we usually take:
-        //   forward = -Z, up = +Y, right = +X
-        let forward = orient * Vector3::y_axis();
-        let up = orient * Vector3::z_axis();
-        let right = orient * Vector3::x_axis();
+        let forward = orient * Self::base_forward();
+        let up = orient * Self::base_up();
+        let right = orient * Self::base_right();
 
         CameraView {
             camera_pos: pos,
@@ -119,12 +133,12 @@ impl CameraView {
 
 impl Default for CameraView {
     fn default() -> Self {
-        // looking along +Y, with +Z up, +X right
+        // NED coord system
         Self {
             camera_pos: Vector3::new(0.0, 0.0, 0.0),
-            camera_forward: Unit::new_normalize(Vector3::new(0.0, 1.0, 0.0)),
-            camera_up: Unit::new_normalize(Vector3::new(0.0, 0.0, 1.0)),
-            camera_right: Unit::new_normalize(Vector3::new(1.0, 0.0, 0.0)),
+            camera_forward: Self::base_forward(),
+            camera_up: Self::base_up(),
+            camera_right: Self::base_right(),
         }
     }
 }

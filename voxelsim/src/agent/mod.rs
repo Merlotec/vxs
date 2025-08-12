@@ -51,12 +51,12 @@ impl MoveDir {
     pub fn dir_vector(&self) -> Option<Coord> {
         match self {
             MoveDir::None => Some(Vector3::zeros()),
-            MoveDir::Up => Some(Vector3::new(0, 0, 1)),
-            MoveDir::Down => Some(Vector3::new(0, 0, -1)),
-            MoveDir::Left => Some(Vector3::new(-1, 0, 0)),
-            MoveDir::Right => Some(Vector3::new(1, 0, 0)),
-            MoveDir::Forward => Some(Vector3::new(0, 1, 0)),
-            MoveDir::Back => Some(Vector3::new(0, -1, 0)),
+            MoveDir::Up => Some(Vector3::new(0, 0, -1)),
+            MoveDir::Down => Some(Vector3::new(0, 0, 1)),
+            MoveDir::Left => Some(Vector3::new(0, -1, 0)),
+            MoveDir::Right => Some(Vector3::new(0, 1, 0)),
+            MoveDir::Forward => Some(Vector3::new(1, 0, 0)),
+            MoveDir::Back => Some(Vector3::new(-1, 0, 0)),
             MoveDir::Undecided => None,
         }
     }

@@ -134,12 +134,12 @@ impl TerrainGenerator {
         &self.cells
     }
 
-    // Performs a coordinate switch to make z vertical which is very important!
+    // Performs a coordinate switch to make z vertical (NED coords) which is very important!
     pub fn generate_world(self) -> VoxelGrid {
         VoxelGrid::from_cells(
             self.cells
                 .into_iter()
-                .map(|(k, v)| (Vector3::new(k.x, k.z, k.y), v))
+                .map(|(k, v)| (Vector3::new(k.x, k.z, -k.y), v))
                 .collect(),
         )
     }
