@@ -23,7 +23,7 @@ from representation import (
     # PointMLPEncoder, ImplicitFourierDecoder,
 )
 
-CKPT_PATH = "/home/box/drone/vxs/runs/2025-08-10T15-33-27-CrossAttnTokensEncoder_Factorised3DDecoder/checkpoints/epoch-5000.pt"
+CKPT_PATH = "/pool/advay/vxs/runs/2025-08-12T17-30-49-SimpleCNNEncoder_SimpleCNNDecoder/best_dim512.pt"
 EncClass  = CrossAttnTokensEncoder          # <-- swap if needed
 DecClass  = Factorised3DDecoder                   # <-- swap if needed
 
@@ -104,11 +104,12 @@ def test1():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     # two viewers: input on 8090, output on 8091
-    client_in  = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
-    client_out = voxelsim.RendererClient("127.0.0.1", 8082, 8083, 8090, 9090)
+    client_in  = voxelsim.RendererClient("sampo", 8080, 8081, 8090, 9090)
+    client_out = voxelsim.RendererClient("sampo", 8082, 8083, 8090, 9090)
 
-    client_in.connect_py(0); client_out.connect_py(0)
-
+    client_in.connect_py(0)
+    client_out.connect_py(0)
+    print("HI")
     # show input
     with Timer() as t_show_in:
         show_voxels(vd_np, client_in)
