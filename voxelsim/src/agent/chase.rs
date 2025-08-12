@@ -80,6 +80,8 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                     false
                 };
 
+                let can_advance = true;
+
                 // Detect if we've overshot the end of the trajectory along its tangent
                 let mut overshot_end = false;
                 if (s_end - s_star).abs() < 1e-6 {

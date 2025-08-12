@@ -12,7 +12,7 @@ use crate::render::{
     self, ActionCell, AgentComponent, AgentReceiver, CellAssets, CellComponent, FocusedAgent,
     OriginCell, PovReceiver, QuitReceiver, VirtualCellComponent, WorldReceiver,
 };
-use voxelsim::{Agent, PovData, VoxelGrid};
+use voxelsim::{Agent, MoveDir, PovData, VoxelGrid};
 
 use bevy::app::AppExit;
 use bevy::prelude::*;
@@ -109,7 +109,12 @@ pub fn begin_render(
         .add_systems(Startup, (render::setup, setup_pov_ui))
         .add_systems(
             Update,
-            (synchronise_world, centre_camera_system, update_pov_ui_text, quit_system),
+            (
+                synchronise_world,
+                centre_camera_system,
+                update_pov_ui_text,
+                quit_system,
+            ),
         )
         .insert_resource(PovReceiver(pov_receiver))
         .insert_resource(AgentReceiver(agent_receiver))
@@ -364,8 +369,9 @@ fn synchronise_world(
                     agent_comp.agent = net_a.clone();
 
                     // forward‐vector gizmo
-                    let fwd_client = agent_comp.agent.attitude * Vector3::y_axis();
-                    let fwd_bevy = client_to_bevy_f32(fwd_client.cast::<f32>().into_inner());
+                    let fwd_client =
+                        agent_comp.agent.attitude * MoveDir::Forward.dir_vector().unwrap().cast();
+                    let fwd_bevy = client_to_bevy_f32(fwd_client.cast::<f32>());
                     gizmos.line(
                         bevy_pos,
                         bevy_pos + fwd_bevy * 5.0,
@@ -392,7 +398,7 @@ fn synchronise_world(
             let start_f = net_a.pos.cast::<f32>();
             let bevy_start = client_to_bevy_f32(start_f);
             let transform = Transform::from_translation(bevy_start);
-            
+
             if let Some(ref drone_scene) = assets.drone_scene {
                 // Spawn GLTF scene
                 commands.spawn((
@@ -451,11 +457,7 @@ fn setup_pov_ui(mut commands: Commands) {
             BackgroundColor(Color::NONE),
         ))
         .with_children(|parent| {
-            parent.spawn((
-                Text::new(""),
-                TextColor(Color::WHITE),
-                TelemetryText,
-            ));
+            parent.spawn((Text::new(""), TextColor(Color::WHITE), TelemetryText));
         });
 }
 
@@ -478,7 +480,7 @@ fn update_pov_ui_text(
         focused.0
     };
     for a in agents_q.iter() {
-            // Prefer the POV stream's agent id; fallback to FocusedAgent for safety
+        // Prefer the POV stream's agent id; fallback to FocusedAgent for safety
         if a.agent.id == target_id {
             let p = a.agent.pos;
             let v = a.agent.vel;
