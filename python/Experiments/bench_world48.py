@@ -82,6 +82,9 @@ def world_to_voxeldata_np(world, side=48) -> VoxelData:
     coords = torch.from_numpy(coords_np)         # (N,3) float32 – zero copy
     vals   = torch.from_numpy(vals_np)           # (N,)  float32
 
+
+    
+
     return VoxelData(
         occupied_coords=coords,
         values         =vals,
@@ -90,7 +93,7 @@ def world_to_voxeldata_np(world, side=48) -> VoxelData:
     )
 
 def test1():
-    side = 120
+    side = 48
     with Timer() as t_gen:
         world = build_world(side)
     print(f"🌍 generate   {t_gen.dt*1e3:7.2f} ms")

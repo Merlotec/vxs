@@ -1477,8 +1477,8 @@ def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embeddi
     agent_input = voxelsim.Agent(0)
     agent_output = voxelsim.Agent(0)
     # Position cameras above the voxel volume
-    agent_input.set_pos([size/2, size/2, size/2])  # Adjust based on sub_volume_size
-    agent_output.set_pos([size/2, size/2, size/2])
+    agent_input.set_pos([size/2, size/2, -size/2])  # Adjust based on sub_volume_size
+    agent_output.set_pos([size/2, size/2, -size/2])
     client_input.send_agents_py({0: agent_input})
     client_output.send_agents_py({0: agent_output})
 
@@ -1575,7 +1575,7 @@ def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embeddi
 
             if viz_sample is not None:
                 # Show input (before)
-                # show_voxels(viz_sample[0], client_input)
+                show_voxels(viz_sample[0], client_input)
                 with Timer() as t_disp:
                     # Generate reconstruction (after)
                     with torch.no_grad():
@@ -1594,7 +1594,7 @@ def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embeddi
                     
                     # Show output (after)
            
-                    # show_voxels(logits, client_output)
+                    show_voxels(logits, client_output)
                     
                 print(
                     f"Visualization updated  –  "
@@ -1778,7 +1778,7 @@ def sweep():
     emb_dims = [128,192,256]
     emb_dims=[5000]
     size = 48
-    emb_dims=512
+ 
      # Regimes are factories now
     regimes = [
         ("recon_only",    lambda dim: {}),
@@ -1798,7 +1798,7 @@ def sweep():
                     embedding_dim=d,
                     num_epochs=5000,
                     batch_size=1,
-                    visualize_every=500,
+                    visualize_every=100,
                     size=size,
                     ckpt_every=500,
                 )
