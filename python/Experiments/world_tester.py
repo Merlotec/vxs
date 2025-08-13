@@ -15,17 +15,17 @@ import matplotlib.pyplot as plt
 # --- add these near the top, after your imports ---
 from representation import (
     # pick the pair you trained; these defaults match your sweep example
-    CrossAttnTokensEncoder, Factorised3DDecoder,
+    # CrossAttnTokensEncoder, Factorised3DDecoder,
     # if you used others, import them instead:
-    # SimpleCNNEncoder, SimpleCNNDecoder,
+    SimpleCNNEncoder, SimpleCNNDecoder,
     # UNet3DEncoder, UNet3DDecoder,
     # ResNet3DEncoder, ResNet3DDecoder,
     # PointMLPEncoder, ImplicitFourierDecoder,
 )
 
-CKPT_PATH = "/pool/advay/vxs/runs/2025-08-12T17-30-49-SimpleCNNEncoder_SimpleCNNDecoder/best_dim512.pt"
-EncClass  = CrossAttnTokensEncoder          # <-- swap if needed
-DecClass  = Factorised3DDecoder                   # <-- swap if needed
+CKPT_PATH = "/pool/advay/vxs/python/Experiments/best_dim512.pt"
+EncClass  = SimpleCNNDecoder         # <-- swap if needed
+DecClass  = SimpleCNNDecoder                   # <-- swap if needed
 
 def _infer_emb_dim(enc_sd, dec_sd):
     for k in ("fc.weight", "proj.weight", "head.weight"):

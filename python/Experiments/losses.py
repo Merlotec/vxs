@@ -2,35 +2,57 @@
 import torch
 import torch.nn.functional as F
 from monai.losses import DiceLoss, TverskyLoss, FocalLoss
-
 def make_recon_loss(name: str, **kwargs):
     name = name.lower()
     
     if name == "ce":
+        # knobs (can be overridden per-call via extra)
+        label_smoothing = float(kwargs.get("label_smoothing", 0.05))  # small but helpful
+        default_gamma   = kwargs.get("focal_gamma", None)             # e.g. 1.0–2.0 or None
+        ignore_index    = kwargs.get("ignore_index", -100)            # only used if you pass such labels
+
         def f(logits, target, extra=None):
-            w = extra.get("class_weights") if extra else None
-            return F.cross_entropy(logits, target, weight=w)
+            """
+            logits: [B,C,...], target: [...], int64
+            extra:
+              - class_weights: Tensor[C]
+              - mask: optional bool/float tensor broadcastable to target (ignored voxels = 0)
+              - focal_gamma: optional float to enable focal modulation
+            """
+            extra = extra or {}
+            w     = extra.get("class_weights", None)
+            mask  = extra.get("mask", None)
+            gamma = extra.get("focal_gamma", default_gamma)
+
+            if w is not None:
+                w = w.to(logits.device, dtype=logits.dtype)
+
+            # compute per-element CE so we can apply focal/mask safely
+            ce = F.cross_entropy(
+                logits, target,
+                weight=w,
+                label_smoothing=label_smoothing,
+                ignore_index=ignore_index,
+                reduction="none",
+            )
+
+            # optional focal modulation on top of weighted CE
+            if gamma is not None and gamma > 0:
+                with torch.no_grad():
+                    # p_t = softmax(logits)[range, target]
+                    pt = logits.softmax(dim=1).gather(
+                        1, target.unsqueeze(1)
+                    ).squeeze(1).clamp_min(1e-6)
+                ce = ((1.0 - pt) ** float(gamma)) * ce
+
+            # optional mask (e.g., to ignore unlabeled voxels)
+            if mask is not None:
+                m = mask.to(logits.device, dtype=ce.dtype)
+                return (ce * m).sum() / m.sum().clamp_min(1.0)
+            else:
+                return ce.mean()
+
         return f
-
-    if name == "dice":
-        dice = DiceLoss(include_background=True, softmax=True, to_onehot_y=True, **kwargs)
-        return lambda logits, target, extra=None: dice(logits, target)
-
-    if name == "tversky":
-        tv = TverskyLoss(include_background=True, softmax=True, to_onehot_y=True, **kwargs)
-        return lambda logits, target, extra=None: tv(logits, target)
-
-    if name == "focal":
-        focal = FocalLoss(gamma=kwargs.get("gamma", 2.0), to_onehot_y=True, softmax=True)
-        return lambda logits, target, extra=None: focal(logits, target)
-
-    if name == "ce+dice":
-        ce_fn = make_recon_loss("ce")
-        dice_fn = make_recon_loss("dice", **kwargs)
-        lam = kwargs.get("lam", 0.5)
-        return lambda logits, target, extra=None: lam*ce_fn(logits, target, extra) + (1-lam)*dice_fn(logits, target)
-
-    raise ValueError(f"Unknown loss name: {name}")
 
 
 # ===================== helpers =====================
