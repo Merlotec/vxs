@@ -11,6 +11,7 @@ use crate::dynamics::{
         position::{PIDState, PositionControl},
         rate::{RateControl, RateState, SaturationFlags},
     },
+    run_simulation_tick_rk4,
 };
 
 pub mod attitude;
@@ -38,7 +39,7 @@ impl Default for PX4Dynamics {
         let quad = peng_quad::Quadrotor::new(
             0.01,
             0.3,
-            -9.81,
+            9.81,
             0.01,
             [0.0347563, 0.0, 0.0, 0.0, 0.0458929, 0.0, 0.0, 0.0, 0.0977],
         )
@@ -147,21 +148,7 @@ impl AgentDynamics for PX4Dynamics {
         );
 
         // Now enter RX4 inputs.
-        self.quad.position = agent.pos.cast();
-        self.quad.velocity = agent.vel.cast();
-        self.quad.orientation = agent.attitude.cast();
-        self.quad.angular_velocity = agent.rate.cast();
-
-        self.quad.time_step = delta as f32;
-
-        // Due to NED, we enter negative control thrust along the vertical (z) axis to represent forward movement.
-        self.quad
-            .update_dynamics_with_controls_rk4(control_thrust as f32, &control_torque.cast());
-
-        agent.pos = self.quad.position.cast();
-        agent.vel = self.quad.velocity.cast();
-        agent.attitude = self.quad.orientation.cast();
-        agent.rate = self.quad.angular_velocity.cast();
+        run_simulation_tick_rk4(agent, &mut self.quad, control_thrust, control_torque, delta);
     }
 
     fn bounding_box(&self) -> Vector3<f64> {
