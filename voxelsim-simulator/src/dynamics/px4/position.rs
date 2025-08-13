@@ -1,6 +1,7 @@
 use nalgebra::{Vector2, Vector3};
 
 /// PX4 position controller, emulating the necessary parts of the PX4's `PositionControl` class.
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct PositionControl {
     /// Corresponds to _gain_pos_p.
     gain_pos_p: Vector3<f64>,
@@ -17,6 +18,7 @@ pub struct PositionControl {
     lim_thr_max: f64,
 }
 
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct CtrlConstraints {
     speed_up: f64,
     speed_down: f64,
@@ -24,16 +26,56 @@ pub struct CtrlConstraints {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct PositionTarget {
     pos_sp: Vector3<f64>,
     vel_sp: Vector3<f64>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct PIDState {
     pub thr_int: Vector3<f64>,
     pub vel_dot: Vector3<f64>,
     pub thr_sp: Vector3<f64>,
+}
+
+impl Default for CtrlConstraints {
+    fn default() -> Self {
+        // Typical PX4-ish vertical speeds and tilt limit (~35 deg)
+        Self {
+            speed_up: 3.0,
+            speed_down: 2.0,
+            tilt: 35_f64.to_radians(),
+        }
+    }
+}
+
+impl Default for PIDState {
+    fn default() -> Self {
+        Self {
+            thr_int: Vector3::zeros(),
+            vel_dot: Vector3::zeros(),
+            thr_sp: Vector3::zeros(),
+        }
+    }
+}
+
+impl Default for PositionControl {
+    fn default() -> Self {
+        // Reasonable defaults approximating PX4 tuning for small quads
+        Self {
+            gain_pos_p: Vector3::new(1.0, 1.0, 1.0),
+            gain_vel_p: Vector3::new(3.0, 3.0, 3.0),
+            gain_vel_i: Vector3::new(0.6, 0.6, 1.2),
+            gain_vel_d: Vector3::new(0.05, 0.05, 0.08),
+            lim_vel_horizontal: 6.0,
+            hover_thrust: 0.8,
+            constraints: CtrlConstraints::default(),
+            lim_thr_min: 0.1,
+            lim_thr_max: 5.0,
+        }
+    }
 }
 
 impl PositionControl {
@@ -122,6 +164,8 @@ impl PositionControl {
             pid.thr_int.z = pid.thr_int.z.abs().min(self.lim_thr_max) * pid.thr_int.z.signum();
         }
 
+        pid.thr_sp.z = thrust_desired_d.clamp(u_min, u_max);
+
         if pid.thr_sp.x.is_finite() && pid.thr_sp.y.is_finite() {
             let thr_xy_max = pid.thr_sp.z * self.constraints.tilt.tan();
             pid.thr_sp.x *= thr_xy_max;
@@ -137,10 +181,8 @@ impl PositionControl {
 
             // Maximum allowed thrust.
             let thrust_max_ne_tilt: f64 = pid.thr_sp.z * self.constraints.tilt.tan();
-            let mut thrust_max_ne: f64 =
-                (self.lim_thr_max * self.lim_thr_max - pid.thr_sp.z * pid.thr_sp.z).sqrt();
-
-            thrust_max_ne = thrust_max_ne_tilt.min(thrust_max_ne);
+            let arg = (self.lim_thr_max * self.lim_thr_max) - (pid.thr_sp.z * pid.thr_sp.z);
+            let mut thrust_max_ne = arg.max(0.0).sqrt();
 
             pid.thr_sp.x = thrust_desired_ne.x;
             pid.thr_sp.y = thrust_desired_ne.y;
@@ -166,6 +208,7 @@ impl PositionControl {
         pid
     }
 }
+
 fn constrain_xy(v0: Vector2<f64>, v1: Vector2<f64>, max: f64) -> Vector2<f64> {
     const EPS: f64 = 1e-3;
 

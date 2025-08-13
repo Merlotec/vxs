@@ -3,9 +3,13 @@ use crate::FilterWorld;
 use crate::WorldChangeset;
 use crate::rasterizer::noise::NoiseParams;
 
+use numpy::ndarray::Array2;
+use numpy::ndarray::ShapeError;
+use numpy::{IntoPyArray, PyArray1, PyArray2};
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use std::ops::Deref;
+use voxelsim::Cell;
 use voxelsim::RendererClient;
 use voxelsim::env::{DenseSnapshot, VoxelGrid};
 use voxelsim::viewport::CameraOrientation;
@@ -45,6 +49,40 @@ impl FilterWorld {
 
     pub fn dense_snapshot_py(&self, centre: [i32; 3], half_dims: [i32; 3]) -> DenseSnapshot {
         self.dense_snapshot(centre.into(), half_dims.into())
+    }
+
+    pub fn as_numpy<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Py<PyArray2<f32>>, Py<PyArray1<f32>>)> {
+        let world = self.world.lock().unwrap();
+        let n = world.cells().len();
+        let mut coords = Vec::<f32>::with_capacity(n * 3);
+        let mut vals = Vec::<f32>::with_capacity(n);
+
+        for e in world.cells().iter() {
+            let (c, cell) = (*e.key(), *e.value());
+            coords.extend_from_slice(&[c.x as f32, c.y as f32, c.z as f32]);
+            vals.push(if cell.contains(Cell::FILLED) {
+                1.0
+            } else if cell.contains(Cell::SPARSE) {
+                0.5
+            } else {
+                0.0
+            });
+        }
+
+        // -------- coords: ndarray -> PyArray, then Bound -> Py -------------
+        let coords_arr: Py<PyArray2<f32>> = Array2::from_shape_vec((n, 3), coords)
+            .map_err(|e: ShapeError| PyException::new_err(e.to_string()))? // <-- map
+            .into_pyarray(py)
+            .into();
+        // Py<PyArray2<…>>
+
+        // -------- values: PyArray1 returned directly; just convert Bound -> Py
+        let vals_arr: Py<PyArray1<f32>> = PyArray1::from_vec(py, vals).into();
+
+        Ok((coords_arr, vals_arr))
     }
 
     pub fn timestamp_py(&self) -> Option<f64> {
