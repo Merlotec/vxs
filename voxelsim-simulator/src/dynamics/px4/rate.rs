@@ -1,10 +1,12 @@
 use nalgebra::Vector3;
 
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct AlphaFilter {
     alpha: f64,
     state: f64,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct RateState {
     pub lp_filters_d: [AlphaFilter; 3],
     pub torque: Vector3<f64>,
@@ -12,6 +14,7 @@ pub struct RateState {
     rate_int: Vector3<f64>,
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct SaturationFlags {
     pos: Vector3<bool>, // Roll, pitch yaw.
     neg: Vector3<bool>,
@@ -74,7 +77,7 @@ impl RateControl {
         (torque, state)
     }
 
-    pub fn update_integral(
+    fn update_integral(
         &self,
         mut state: RateState,
         mut rate_error: Vector3<f64>,

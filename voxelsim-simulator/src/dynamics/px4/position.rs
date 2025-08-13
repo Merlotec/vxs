@@ -31,18 +31,23 @@ pub struct PositionTarget {
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct PIDState {
-    thr_int: Vector3<f64>,
-    vel_dot: Vector3<f64>,
-    thr_sp: Vector3<f64>,
+    pub thr_int: Vector3<f64>,
+    pub vel_dot: Vector3<f64>,
+    pub thr_sp: Vector3<f64>,
 }
 
 impl PositionControl {
-    pub fn position_controller(&self, pos: Vector3<f64>, target: PositionTarget) -> Vector3<f64> {
+    pub fn position_controller(
+        &self,
+        pos: Vector3<f64>,
+        pos_sp: Vector3<f64>,
+        vel_sp: Vector3<f64>,
+    ) -> Vector3<f64> {
         // const Vector3f vel_sp_position = (_pos_sp - _pos).emult(_gain_pos_p);
-        let vel_sp_position = (target.pos_sp - pos).component_mul(&self.gain_pos_p);
+        let vel_sp_position = (pos_sp - pos).component_mul(&self.gain_pos_p);
 
         // _vel_sp = vel_sp_position + _vel_sp;
-        let mut vel_sp = vel_sp_position + target.vel_sp;
+        let mut vel_sp = vel_sp_position + vel_sp;
 
         // const Vector2f vel_sp_xy = ControlMath::constrainXY(Vector2f(vel_sp_position), Vector2f(_vel_sp - vel_sp_position), _lim_vel_horizontal);
         let vel_sp_xy = constrain_xy(
