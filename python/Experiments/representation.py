@@ -108,9 +108,9 @@ class SimpleCNNEncoder(EmbeddingEncoder, nn.Module):
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
-        x = x.flatten(1)                                           # [B, F]
-        return self.fc(x) 
-    
+        # x = x.flatten(1)                                           # [B, F]
+        # return self.fc(x) 
+        return x
     def _sparse_to_dense(self, voxel_data: VoxelData) -> torch.Tensor:
         """Convert sparse voxel coordinates to dense grid"""
 
@@ -149,13 +149,24 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
         self.deconv3 = nn.ConvTranspose3d(32, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
         
     def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None) -> Dict[str, torch.Tensor]:
-        x = self.fc(embedding)
-        x = x.view(-1, 128, self.init_size, self.init_size, self.init_size)
-        
+        if embedding.dim() == 2:
+            # old (flat) path
+            print("HOUSTON WE AAVE")
+            x = self.fc(embedding)
+            x = x.view(-1, 128, self.init_size, self.init_size, self.init_size)
+        elif embedding.dim() == 5:
+            
+            # NEW: feature-map path
+            x = embedding
+            # (optional) sanity check on spatial size
+            assert x.shape[2:] == (self.init_size, self.init_size, self.init_size), \
+                f"Expected feature map [B,128,{self.init_size},{self.init_size},{self.init_size}], got {tuple(x.shape)}"
+        else:
+            raise ValueError(f"Decoder got unexpected tensor shape {embedding.shape}")
+
         x = F.relu(self.deconv1(x))
         x = F.relu(self.deconv2(x))
         logits = self.deconv3(x)
-        
         return {"logits": logits}
 
 
@@ -1196,8 +1207,8 @@ class EmbeddingTrainer:
             coords = coords.long().clamp(0, voxel_size - 1)
 
             # map your current values (1.0 filled, 0.5 sparse) to labels 2 / 1
-            filled_mask = voxel_data.values >= 0.8
-            sparse_mask = (~filled_mask) & (voxel_data.values >= 0.5)
+            filled_mask = voxel_data.values >= 0.6
+            sparse_mask = (~filled_mask) & (voxel_data.values >= 0.3)
 
             target[0, coords[filled_mask, 0], coords[filled_mask, 1], coords[filled_mask, 2]] = 2
             target[0, coords[sparse_mask, 0], coords[sparse_mask, 1], coords[sparse_mask, 2]] = 1
@@ -1282,8 +1293,8 @@ class TerrainBatch(IterableDataset):
             # clamp just in case
             np.clip(coords, 0, side-1, out=coords)
 
-            filled_mask = vals >= 0.8
-            sparse_mask = (~filled_mask) & (vals >= 0.5)
+            filled_mask = vals >= 0.6
+            sparse_mask = (~filled_mask) & (vals >= 0.3)
 
             if filled_mask.any():
                 xyz = coords[filled_mask]
@@ -1553,7 +1564,7 @@ def show_voxels(sample, client):
         vals   = sample.values.cpu().numpy()  # 0.5 sparse, 1.0 filled
         for (x,y,z), v in zip(coords, vals):
             cell_dict[(int(x), int(y), int(z))] = (
-                voxelsim.Cell.filled() if v > 0.9 else voxelsim.Cell.sparse()
+                voxelsim.Cell.filled() if v > 0.6 else voxelsim.Cell.sparse()
             )
 
     # ---------- Prediction case ----------
@@ -1699,6 +1710,7 @@ def sweep():
     ]
 
     emb_dims = [128,192,256]
+    emb_dims=[5000]
     size = 48
 
      # Regimes are factories now
@@ -1720,7 +1732,7 @@ def sweep():
                     embedding_dim=d,
                     num_epochs=5000,
                     batch_size=1,
-                    visualize_every=250,
+                    visualize_every=500,
                     size=size,
                     ckpt_every=500,
                 )
