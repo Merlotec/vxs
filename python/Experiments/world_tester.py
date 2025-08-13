@@ -10,12 +10,12 @@ import voxelsim                                # your Rust bindings
 import matplotlib.pyplot as plt
 
 # use the same datastructures + helpers from representation_parallel
-from representation_parallel import (
+from representation import (
     VoxelData, show_voxels, TerrainBatch,
     SimpleCNNEncoder, SimpleCNNDecoder,
 )
 
-CKPT_PATH = "/home/box/Desktop/best_dim512.pt"
+CKPT_PATH = "/home/box/drone/vxs/runs/2025-08-13T12-46-36-SimpleCNNEncoder_SimpleCNNDecoder/checkpoints/epoch-5000.pt"
 EncClass  = SimpleCNNEncoder          # <-- swap if needed
 DecClass  = SimpleCNNDecoder          # <-- swap if needed
 
@@ -66,8 +66,8 @@ class KeyPoller:
 
 # --- bench runner with live refresh ---
 def test1():
-    world_side = 48
-    model_side = 48
+    world_side = 150
+    model_side = 120
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     # data generator (no reordering here)

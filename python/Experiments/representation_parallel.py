@@ -1207,11 +1207,11 @@ class DistShard(IterableDataset):
 class TerrainBatch(IterableDataset):
     """Infinite generator of full cubic worlds (no sub-volume)."""
     def __init__(self, world_size: int = 120,
-                 build_dt: bool = True,
-                 build_low: bool = True,
+                 build_dt: bool = False,
+                 build_low: bool = False,
                  low_scale: int = 4,
-                 build_com: bool = True,
-                 build_points: bool = True):
+                 build_com: bool = False,
+                 build_points: bool = False):
         self.world_size = int(world_size)
         self.build_dt   = bool(build_dt)
         self.build_low  = bool(build_low)
@@ -1390,7 +1390,7 @@ def run_experiment(
         best_ckpt_path = os.path.join(logger.dir, f"best_dim{embedding_dim}.pt")
 
     # Create dataloader
-    dataset = TerrainBatch(world_size=size)
+    dataset    = TerrainBatch(world_size=size, build_dt=False, build_low=False, build_points=False,build_com=False)
     # If you want distinct data per rank/worker, wrap with DistShard:
     # dataset = DistShard(TerrainBatch(world_size=size))
 
@@ -1429,23 +1429,24 @@ def run_experiment(
                 viz_sample = (voxel_batch[0], target_batch[0])
 
             # Move to device
+            need_aux = (len(loss_heads) > 0)  # no heads → no aux
             with Timer() as t_move:
                 voxel_batch = [vd.to_device(trainer.device) for vd in voxel_batch]
-                target_batch = [
-                    {k: v.to(trainer.device) for k, v in t.items()} for t in target_batch
-                ]
-
+                if need_aux:
+                    target_batch = [{k: v.to(trainer.device) for k, v in t.items()} for t in target_batch]
+                else:
+                    target_batch = []  # nothing to move/merge
             # Train step
             with Timer() as t_model:
                 loss_weights = {
                     "reconstruction": 1.0,
-                    "soft_iou": 0.5,
-                    "tv": 0.05,
-                    "boundary": 0.5,
-                    "com": 0.2,
-                    "class_balance": 0.05,
-                    "ms_occ": 0.3,
-                    "chamfer": 0.2,
+                    # "soft_iou": 0.5,
+                    # "tv": 0.05,
+                    # "boundary": 0.5,
+                    # "com": 0.2,
+                    # "class_balance": 0.05,
+                    # "ms_occ": 0.3,
+                    # "chamfer": 0.2,
                 }
                 losses = trainer.train_step(voxel_batch, target_batch, loss_weights)
 

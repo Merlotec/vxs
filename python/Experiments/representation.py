@@ -112,23 +112,22 @@ class SimpleCNNEncoder(EmbeddingEncoder, nn.Module):
         # return self.fc(x) 
         return x
     def _sparse_to_dense(self, voxel_data: VoxelData) -> torch.Tensor:
-        """Convert sparse voxel coordinates to dense grid"""
+        side = self.voxel_size
+        grid = torch.zeros((1, 1, side, side, side),
+                        device=voxel_data.occupied_coords.device, dtype=torch.float32)
 
-        grid = torch.zeros((1, 1, self.voxel_size, self.voxel_size, self.voxel_size),
-                          device=voxel_data.occupied_coords.device, dtype=torch.float32)
-        
         if voxel_data.occupied_coords.shape[0] > 0:
-            # Normalize coordinates to grid size
-            coords = voxel_data.occupied_coords.float()
-            coords = coords / voxel_data.bounds.float() * (self.voxel_size - 1)
-            coords = coords.long().clamp(0, self.voxel_size - 1)
-            
-            # Fill grid
-            grid[0, 0, coords[:, 0], coords[:, 1], coords[:, 2]] = voxel_data.values
-     
+            coords = voxel_data.occupied_coords.clone()      # [N,3] world: z ∈ [-(side-1), 0]
+            coords[:, 2] = -coords[:, 2]                     # FLIP z → k_z
+            coords = coords.long()
+            coords[:, 0].clamp_(0, side - 1)                 # clamp x
+            coords[:, 1].clamp_(0, side - 1)                 # clamp y
+            coords[:, 2].clamp_(0, side - 1)                 # clamp z index
 
+            grid[0, 0, coords[:, 0], coords[:, 1], coords[:, 2]] = voxel_data.values
         return grid
-    
+
+        
     def get_embedding_dim(self) -> int:
         return self.embedding_dim
 
@@ -1197,6 +1196,8 @@ class EmbeddingTrainer:
 
             # optional: clamp extremes so a missing class doesn't explode the loss
             w = w.clamp(0.25, 4.0)
+            alpha = 1.35  # try 1.2–1.6
+            w * torch.tensor([1.0, 1.0/alpha, alpha], device=w.device)
 
             # smooth over time (create the buffers the first time)
             if not hasattr(self, "class_weight_ema"):
@@ -1260,27 +1261,23 @@ class EmbeddingTrainer:
         return {k: v.item() for k, v in losses.items()}
     
     def _create_reconstruction_target(self, voxel_data: VoxelData) -> torch.Tensor:
-        voxel_size = self.encoder.voxel_size if hasattr(self.encoder, 'voxel_size') else 64
-        # default empty = 0
-        target = torch.zeros(
-        (1, self.encoder.voxel_size, self.encoder.voxel_size, self.encoder.voxel_size),
-        device=self.device, dtype=torch.long
-        )
+        side = self.encoder.voxel_size
+        target = torch.zeros((1, side, side, side), device=self.device, dtype=torch.long)
 
         if voxel_data.occupied_coords.shape[0] > 0:
-            coords = voxel_data.occupied_coords.float()
-            coords = coords / voxel_data.bounds.float() * (voxel_size - 1)
-            coords = coords.long().clamp(0, voxel_size - 1)
+            coords = voxel_data.occupied_coords.clone()
+            coords[:, 2] = -coords[:, 2]                     # FLIP z
+            coords = coords.long()
+            coords[:, 0].clamp_(0, side - 1)
+            coords[:, 1].clamp_(0, side - 1)
+            coords[:, 2].clamp_(0, side - 1)
 
-            # map your current values (1.0 filled, 0.5 sparse) to labels 2 / 1
             filled_mask = voxel_data.values >= 0.6
             sparse_mask = (~filled_mask) & (voxel_data.values >= 0.3)
 
             target[0, coords[filled_mask, 0], coords[filled_mask, 1], coords[filled_mask, 2]] = 2
             target[0, coords[sparse_mask, 0], coords[sparse_mask, 1], coords[sparse_mask, 2]] = 1
-
         return target
-
 
 # ============== Data Generation ==============
 class TerrainBatch(IterableDataset):
@@ -1354,6 +1351,7 @@ class TerrainBatch(IterableDataset):
         labels_np = np.zeros((D, H, W), dtype=np.uint8)  # 0 empty
         if voxel_data.occupied_coords.numel() > 0:
             coords = voxel_data.occupied_coords.cpu().numpy().astype(np.int64)  # [N,3] (x,y,z)
+            coords[:, 2] = -coords[:, 2]          
             vals   = voxel_data.values.cpu().numpy().astype(np.float32)
 
             # clamp just in case
@@ -1485,7 +1483,7 @@ def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embeddi
 
 
     # Create dataloader
-    dataset    = TerrainBatch(world_size=size)
+    dataset    = TerrainBatch(world_size=size, build_dt=False, build_low=False, build_points=False,build_com=False)
     dataloader = DataLoader(
         dataset,
         batch_size          = batch_size,
@@ -1644,10 +1642,14 @@ def show_voxels(sample, client):
         filled = np.argwhere(pred_class == 2)
         sparse = np.argwhere(pred_class == 1)
 
-        for x,y,z in filled:
-            cell_dict[(int(x),int(y),int(z))] = voxelsim.Cell.filled()
-        for x,y,z in sparse:
-            cell_dict[(int(x),int(y),int(z))] = voxelsim.Cell.sparse()
+        
+        for x, y, kz in filled:
+            z = int(-kz)                                  # UNFLIP
+            cell_dict[(int(x), int(y), z)] = voxelsim.Cell.filled()
+
+        for x, y, kz in sparse:
+            z = int(-kz)
+            cell_dict[(int(x), int(y), z)] = voxelsim.Cell.sparse()
 
     world = voxelsim.VoxelGrid.from_dict_py(cell_dict)
     client.send_world_py(world)
@@ -1776,8 +1778,8 @@ def sweep():
     ]
 
     emb_dims = [128,192,256]
-    emb_dims=[5000]
-    size = 48
+    emb_dims=[1000]
+    size = 120
  
      # Regimes are factories now
     regimes = [
