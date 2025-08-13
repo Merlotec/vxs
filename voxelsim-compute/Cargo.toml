@@ -24,3 +24,4 @@ crossbeam-channel = "0.5.15"
 wgpu = "26.0.1"
 glsl-layout = "0.5.0"
 tokio = { version = "1.0", features = ["full"] }
+numpy = "0.25.0"

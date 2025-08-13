@@ -21,6 +21,8 @@ pub struct Agent {
     pub pos: Vector3<f64>,
     pub vel: Vector3<f64>,
     pub thrust: Vector3<f64>,
+    /// Angular velocity of rotation around own CoM.
+    pub rate: Vector3<f64>,
 
     pub attitude: UnitQuaternion<f64>,
 
@@ -132,6 +134,7 @@ impl Agent {
             pos: Vector3::zeros(),
             vel: Vector3::zeros(),
             thrust: Vector3::zeros(),
+            rate: Vector3::zeros(),
             action: None,
             attitude: UnitQuaternion::identity(),
         }

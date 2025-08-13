@@ -8847,6 +8847,7 @@ dependencies = [
  "glsl-layout",
  "nalgebra 0.33.2",
  "nalgebra-glm",
+ "numpy",
  "pollster",
  "pyo3",
  "rayon",
