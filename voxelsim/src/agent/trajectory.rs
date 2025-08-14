@@ -1,5 +1,5 @@
 use bspline::BSpline;
-use nalgebra::{Unit, Vector3};
+use nalgebra::Vector3;
 
 use crate::Coord;
 
@@ -176,8 +176,6 @@ pub fn generate_path_fit_spline(control_points: Vec<Vector3<f64>>) -> BSpline<Ve
 #[derive(Debug, Clone)]
 pub struct Trajectory {
     spline: BSpline<Vector3<f64>, f64>,
-    urgencies: Vec<f64>,
-    yaw_seq: Vec<f64>,
     pub progress: f64,
 }
 
@@ -185,26 +183,15 @@ impl Default for Trajectory {
     fn default() -> Self {
         Self {
             spline: BSpline::new(0, Vec::new(), Vec::new()),
-            urgencies: Vec::new(),
-            yaw_seq: Vec::new(),
             progress: 0.0,
         }
     }
 }
 
 impl Trajectory {
-    /// Generates a spline through the grid path for target times specified in the tuple (coord, time).
-    pub fn generate(origin: Vector3<i32>, cells: &[(Coord, f64, f64)]) -> Self {
-        let (xs, ys, zs) = (Vec::new(), Vec::new(), Vec::new());
-        let (mut cells, times, yaw_seq): (Vec<Coord>, Vec<f64>, Vec<f64>) =
-            cells
-                .into_iter()
-                .fold((xs, ys, zs), |(mut xs, mut ys, mut zs), (x, y, z)| {
-                    xs.push(*x);
-                    ys.push(*y);
-                    zs.push(*z);
-                    (xs, ys, zs)
-                });
+    /// Generates a spline through the grid path (positions only).
+    pub fn generate(origin: Vector3<i32>, cells: &[Coord]) -> Self {
+        let mut cells: Vec<Coord> = cells.to_vec();
         cells.insert(0, origin);
 
         let path = solve_constrained_smoothing(&cells, 20);
@@ -213,8 +200,6 @@ impl Trajectory {
 
         Self {
             spline,
-            urgencies: times,
-            yaw_seq,
             progress: 0.0,
         }
     }
@@ -278,64 +263,18 @@ impl Trajectory {
             .collect()
     }
 
-    pub fn urgencies(&self) -> &[f64] {
-        &self.urgencies
-    }
-
-    pub fn yaw_seq(&self) -> &[f64] {
-        &self.yaw_seq
-    }
-
-    pub fn length(&self) -> f64 {
-        self.urgencies.len() as f64
-    }
-
     pub fn domain_t(&self, t: f64) -> Option<f64> {
         let (min, max) = self.spline.knot_domain();
-        let dom_t = min + (max - min) * (t / self.length());
-
-        if dom_t <= max { Some(dom_t) } else { None }
-    }
-
-    pub fn sample_urgencies(&self, t: f64) -> Option<f64> {
-        if self.urgencies.is_empty() {
-            return None;
-        }
-        let len = self.urgencies.len();
-        // Clamp t into valid index range [0, len-1]
-        let t_clamped = t.max(0.0).min((len - 1) as f64);
-        let i0 = t_clamped.floor() as usize;
-        let i1 = (t_clamped.ceil() as usize).min(len - 1);
-        let w = t_clamped - t_clamped.floor();
-        let u0 = self.urgencies[i0];
-        let u1 = self.urgencies[i1];
-        // Linear interpolation between neighboring samples
-        Some(u0 * (1.0 - w) + u1 * w)
-    }
-
-    pub fn sample_yaw(&self, t: f64) -> Option<f64> {
-        if self.yaw_seq.is_empty() {
-            return None;
-        }
-        let len = self.yaw_seq.len();
-        let t_clamped = t.max(0.0).min((len - 1) as f64);
-        let i0 = t_clamped.floor() as usize;
-        let i1 = (t_clamped.ceil() as usize).min(len - 1);
-        let w = t_clamped - t_clamped.floor();
-        let y0 = self.yaw_seq[i0];
-        let y1 = self.yaw_seq[i1];
-        Some(y0 * (1.0 - w) + y1 * w)
+        let t01 = t.clamp(0.0, 1.0);
+        let dom_t = min + (max - min) * t01;
+        Some(dom_t)
     }
 
     pub fn sample_spline(&self, t: f64) -> Option<Vector3<f64>> {
         let dom_t = self.domain_t(t)?;
         Some(self.spline.point(dom_t))
     }
-    pub fn sample(&self, t: f64) -> Option<(Vector3<f64>, f64)> {
-        let p = self.inner().point(t);
-        let u = self.sample_urgencies(t)?;
-        Some((p, u))
-    }
+    // No urgency/yaw sampling; trajectory outputs position/velocity/acceleration only.
 
     pub fn find_nearest_param_in_range(
         &self,
@@ -390,9 +329,6 @@ struct SplineData {
     knots: Vec<f64>,
     ctrl_pts: Vec<[f64; 3]>,
     // In knot domain.
-    urgencies: Vec<f64>,
-    yaw_seq: Vec<f64>,
-    // In knot domain.
     progress: f64,
 }
 
@@ -418,8 +354,6 @@ impl Serialize for Trajectory {
             degree,
             knots,
             ctrl_pts,
-            urgencies: self.urgencies.clone(),
-            yaw_seq: self.yaw_seq.clone(),
             progress: self.progress,
         };
         data.serialize(serializer)
@@ -446,8 +380,6 @@ impl<'de> Deserialize<'de> for Trajectory {
         }
         Ok(Trajectory {
             spline: BSpline::new(data.degree, cps, data.knots),
-            urgencies: data.urgencies,
-            yaw_seq: data.yaw_seq,
             progress: data.progress,
         })
     }

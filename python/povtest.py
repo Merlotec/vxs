@@ -9,7 +9,7 @@ fw = vxs.FilterWorld()
 dynamics = vxs.px4.Px4Dynamics.default_py()
 
 chaser = vxs.FixedLookaheadChaser.default_py()
-
+planner = vxs.AStarActionPlanner(1)
 generator = vxs.TerrainGenerator()
 generator.generate_terrain_py(vxs.TerrainConfig.default_py())
 world = generator.generate_world_py()
@@ -107,7 +107,7 @@ while listener.running:
     action = agent.get_action()
     commands = []
     if action:
-        commands = action.get_commands()
+        commands = action.get_intent().get_move_sequence()
     commands_cl = list(commands)
 
     # Compute yaw delta from input this frame; Q = left (negative), E = right (positive)
@@ -116,17 +116,18 @@ while listener.running:
         yaw_delta -= YAW_STEP
     if 'e' in just_pressed:
         yaw_delta += YAW_STEP
-
+        
     # Apply yaw_delta to any move commands created this frame
-    if 'w' in just_pressed: commands.append(vxs.MoveCommand(vxs.MoveDir.Forward, 0.8, yaw_delta))
-    if 's' in just_pressed: commands.append(vxs.MoveCommand(vxs.MoveDir.Back, 0.8, yaw_delta))
-    if 'a' in just_pressed: commands.append(vxs.MoveCommand(vxs.MoveDir.Left, 0.8, -3.14))
-    if 'd' in just_pressed: commands.append(vxs.MoveCommand(vxs.MoveDir.Right, 0.8, 3.14))
-    if 'space' in just_pressed: commands.append(vxs.MoveCommand(vxs.MoveDir.Up, 0.8, yaw_delta))
-    if 'shift' in just_pressed: commands.append(vxs.MoveCommand(vxs.MoveDir.Down, 0.8, yaw_delta))
+    if 'w' in just_pressed: commands.append(vxs.MoveDir.Forward)
+    if 's' in just_pressed: commands.append(vxs.MoveDir.Back)
+    if 'a' in just_pressed: commands.append(vxs.MoveDir.Left)
+    if 'd' in just_pressed: commands.append(vxs.MoveDir.Right)
+    if 'space' in just_pressed: commands.append(vxs.MoveDir.Up)
+    if 'shift' in just_pressed: commands.append(vxs.MoveDir.Down)
     if not action or commands != commands_cl:
         if len(commands) > 0:
-            agent.perform_sequence_py(commands)
+            intent = vxs.ActionIntent(0.8, 0.0, commands)
+            agent.perform_py(intent)
 
     # The point in space that the drone should be chasing.
     chase_target = chaser.step_chase_py(agent, delta)

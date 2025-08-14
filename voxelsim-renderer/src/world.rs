@@ -206,8 +206,8 @@ fn synchronise_world(
             if let Some(action) = &agent.action {
                 origin_cells.push(action.origin);
                 let mut p = action.origin;
-                for cmd in &action.cmd_sequence {
-                    if let Some(dir) = cmd.dir.dir_vector() {
+                for cmd in &action.intent.move_sequence {
+                    if let Some(dir) = cmd.dir_vector() {
                         p += dir;
                         action_cells.push(p);
                     }

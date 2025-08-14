@@ -1,11 +1,13 @@
 pub mod agent;
 pub mod env;
 pub mod network;
+pub mod planner;
 
 // Re-export core types for Rust consumers
 pub use agent::*;
 pub use env::*;
 pub use network::*;
+pub use planner::*;
 
 // Python bindings - only compile when python feature is enabled
 #[cfg(feature = "python")]

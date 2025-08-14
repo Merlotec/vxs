@@ -12,12 +12,13 @@ use numpy::ndarray::ShapeError;
 use crate::{
     Cell, Coord,
     agent::{
-        Action, Agent, MAX_ACTIONS, MoveCommand, MoveDir,
+        Action, ActionIntent, Agent, MAX_ACTIONS, MoveDir, MoveSequence,
         viewport::{CameraProjection, CameraView},
     },
     chase::{ChaseTarget, FixedLookaheadChaser, TrajectoryChaser},
     env::{DenseSnapshot, VoxelGrid},
     network::RendererClient,
+    planner::astar::AStarActionPlanner,
     viewport::CameraOrientation,
 };
 
@@ -28,13 +29,14 @@ pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Agent>()?;
     m.add_class::<MoveDir>()?;
     m.add_class::<Action>()?;
-    m.add_class::<MoveCommand>()?;
+    m.add_class::<ActionIntent>()?;
     m.add_class::<RendererClient>()?;
     m.add_class::<CameraProjection>()?;
     m.add_class::<FixedLookaheadChaser>()?;
     m.add_class::<ChaseTarget>()?;
     m.add_class::<CameraOrientation>()?;
     m.add_class::<DenseSnapshot>()?;
+    m.add_class::<AStarActionPlanner>()?;
     Ok(())
 }
 
@@ -155,8 +157,8 @@ impl Agent {
     }
 
     /// Python-friendly method to perform a sequence of move commands
-    pub fn perform_sequence_py(&mut self, commands: Vec<MoveCommand>) -> PyResult<()> {
-        self.perform_sequence(commands)
+    pub fn perform_py(&mut self, intent: ActionIntent) -> PyResult<()> {
+        self.perform(intent)
             .map_err(|e| PyException::new_err(format!("Could not perform sequence: {}", e)))
     }
 
@@ -176,33 +178,12 @@ impl Agent {
         self.pos.into()
     }
 
-    pub fn get_voxel_coord(&self) -> [i32; 3] {
-        self.pos.map(|x| x.round() as i32).into()
+    pub fn get_coord_py(&self) -> [i32; 3] {
+        self.get_coord().into()
     }
 
     pub fn max_command_count(&self) -> usize {
         MAX_ACTIONS
-    }
-}
-
-#[pymethods]
-impl MoveCommand {
-    #[new]
-    pub fn new(dir: MoveDir, urgency: f64, yaw_delta: f64) -> Self {
-        Self {
-            dir,
-            urgency,
-            yaw_delta,
-        }
-    }
-    /// Get the direction
-    pub fn get_direction(&self) -> MoveDir {
-        self.dir
-    }
-
-    /// Get the urgency value
-    pub fn get_urgency(&self) -> f64 {
-        self.urgency
     }
 }
 
@@ -218,23 +199,9 @@ impl Action {
     //     }
     // }
 
-    pub fn get_commands(&self) -> Vec<MoveCommand> {
-        self.cmd_sequence.clone().to_vec()
-    }
-
     /// Get the number of commands in the sequence
     pub fn len(&self) -> usize {
-        self.cmd_sequence.len()
-    }
-
-    /// Check if the action sequence is empty
-    pub fn is_empty(&self) -> bool {
-        self.cmd_sequence.is_empty()
-    }
-
-    /// Clear all commands from the sequence
-    pub fn clear(&mut self) {
-        self.cmd_sequence.clear();
+        self.intent.move_sequence.len()
     }
 
     /// Get the origin position as a tuple
@@ -245,6 +212,22 @@ impl Action {
     /// Set the origin position
     pub fn set_origin(&mut self, x: i32, y: i32, z: i32) {
         self.origin = Vector3::new(x, y, z);
+    }
+
+    pub fn get_intent(&self) -> ActionIntent {
+        self.intent.clone()
+    }
+}
+
+#[pymethods]
+impl ActionIntent {
+    #[new]
+    pub fn new_py(urgency: f64, yaw: f64, move_sequence: MoveSequence) -> Self {
+        Self::new(urgency, yaw, move_sequence)
+    }
+
+    pub fn get_move_sequence(&self) -> MoveSequence {
+        self.move_sequence.clone()
     }
 }
 
@@ -440,5 +423,13 @@ impl DenseSnapshot {
         let transmuted_data = unsafe { std::mem::transmute_copy(&data) };
         std::mem::forget(data);
         transmuted_data
+    }
+}
+
+#[pymethods]
+impl AStarActionPlanner {
+    #[new]
+    pub fn new_py(padding: i32) -> Self {
+        Self::new(padding)
     }
 }

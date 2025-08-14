@@ -23,7 +23,6 @@ pub struct Px4Dynamics {
 
 impl Default for Px4Dynamics {
     fn default() -> Self {
-        // Reasonable starting values; matches QuadParams::default-like settings
         let quad = peng_quad::Quadrotor::new(
             0.01,
             1.0,
@@ -32,7 +31,6 @@ impl Default for Px4Dynamics {
             [0.0347563, 0.0, 0.0, 0.0, 0.0458929, 0.0, 0.0, 0.0, 0.0977],
         )
         .unwrap();
-        // Build settings up-front and construct controller with them
         let mut settings = Px4McSettings::default();
         settings.dt = 0.01;
         settings.mass = quad.mass as f32;

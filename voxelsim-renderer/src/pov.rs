@@ -300,8 +300,8 @@ fn synchronise_world(
             if let Some(action) = &agent.action {
                 origin_cells.push(action.origin);
                 let mut p = action.origin;
-                for cmd in &action.cmd_sequence {
-                    if let Some(dir) = cmd.dir.dir_vector() {
+                for cmd in &action.intent.move_sequence {
+                    if let Some(dir) = cmd.dir_vector() {
                         p += dir;
                         action_cells.push(p);
                     }
@@ -489,7 +489,7 @@ fn update_pov_ui_text(
                 .agent
                 .action
                 .as_ref()
-                .map(|act| act.cmd_sequence.len())
+                .map(|act| act.intent.move_sequence.len())
                 .unwrap_or(0);
 
             display = format!(
