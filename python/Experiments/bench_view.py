@@ -256,9 +256,9 @@ print("Controls: WASD=move, Space=up, Shift=down, Q/E=rotate, ESC=quit")
 client.send_world_py(world)
 client.send_agents_py({0: agent})
 
-# Filter world client (belief map) - FULL MAP VIEW
-client_fw = vxs.RendererClient("127.0.0.1", 8084, 8085, 8090, 9090)
-client_fw.connect_py(0)
+# # Filter world client (belief map) - FULL MAP VIEW
+# client_fw = vxs.RendererClient("127.0.0.1", 8084, 8085, 8090, 9090)
+# client_fw.connect_py(0)
 
 # Prediction client (model output) - 120x120x120 centered view
 client_pred = vxs.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
