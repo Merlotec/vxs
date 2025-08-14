@@ -2,6 +2,8 @@
 
 #include <memory>
 #include <cstring>
+#include <cmath>
+
 
 #include <matrix/matrix/math.hpp>
 #include <uORB/topics/trajectory_setpoint.h>
@@ -10,6 +12,7 @@
 #include <modules/mc_att_control/AttitudeControl/AttitudeControl.hpp>
 #include <modules/mc_pos_control/PositionControl/PositionControl.hpp>
 #include <lib/rate_control/rate_control.hpp>
+
 
 // This wrapper aggregates PX4 controllers (position, attitude, rate)
 // and exposes a simple C interface. If PX4 sources are not compiled
@@ -49,6 +52,13 @@ struct Px4McImpl {
     matrix::Vector3f rate_d{0.001f, 0.001f, 0.0f};
     matrix::Vector3f rate_int_lim{0.3f, 0.3f, 0.2f};
 
+    // Scale normalized torque [-1,1] to physical [N*m]
+    matrix::Vector3f torque_scale_nm{0.8f, 0.8f, 0.3f};
+
+    // Simple velocity derivative estimator for PositionControl D term
+    matrix::Vector3f prev_vel{0.f, 0.f, 0.f};
+    bool prev_vel_valid{false};
+
     Px4McImpl(float dt_, float mass_) : dt(dt_), mass(mass_) {
         // Configure controllers with reasonable defaults
         att.setProportionalGain(att_p, att_yaw_weight);
@@ -70,6 +80,7 @@ struct Px4McImpl {
     void update(const Px4McInput& in, Px4McOutput& out) {
         using matrix::Vector3f; using matrix::Quatf; using matrix::Eulerf;
 
+        const float dt_local = (in.dt > 0.f) ? in.dt : dt;
         const Vector3f pos_xyz{in.pos[0], in.pos[1], in.pos[2]};
         const Vector3f vel_xyz{in.vel[0], in.vel[1], in.vel[2]};
         const Vector3f rates{in.rates[0], in.rates[1], in.rates[2]};
@@ -81,8 +92,14 @@ struct Px4McImpl {
         PositionControlStates st{};
         st.position = pos_xyz;
         st.velocity = vel_xyz;
-        // Provide a finite velocity derivative (acceleration) to satisfy input validation
-        st.acceleration = Vector3f{0.f, 0.f, 0.f};
+        // Provide velocity derivative (acceleration) for D term damping
+        Vector3f vel_dot{0.f, 0.f, 0.f};
+        if (prev_vel_valid && dt_local > 1e-6f) {
+            vel_dot = (vel_xyz - prev_vel) / dt_local;
+        }
+        prev_vel = vel_xyz;
+        prev_vel_valid = true;
+        st.acceleration = vel_dot;
         st.yaw = Eulerf(q).psi();
         pos.setState(st);
 
@@ -90,11 +107,12 @@ struct Px4McImpl {
         traj.position[0] = pos_sp(0); traj.position[1] = pos_sp(1); traj.position[2] = pos_sp(2);
         traj.velocity[0] = vel_sp(0); traj.velocity[1] = vel_sp(1); traj.velocity[2] = vel_sp(2);
         traj.acceleration[0] = NAN; traj.acceleration[1] = NAN; traj.acceleration[2] = NAN;
-        traj.yaw = st.yaw; // hold yaw
-        traj.yawspeed = 0.f;
+        // Yaw setpoint: use provided yaw/yawspeed if finite, otherwise hold current yaw and zero yawspeed
+        traj.yaw = std::isfinite(in.yaw_sp) ? in.yaw_sp : st.yaw;
+        traj.yawspeed = std::isfinite(in.yawspeed_sp) ? in.yawspeed_sp : 0.f;
         pos.setInputSetpoint(traj);
 
-        const bool ok = pos.update(dt);
+        const bool ok = pos.update(dt_local);
 
         vehicle_attitude_setpoint_s att_sp{};
         pos.getAttitudeSetpoint(att_sp);
@@ -110,7 +128,8 @@ struct Px4McImpl {
 
         // Rate control to torques
         // Rate control to torques using PX4 RateControl core library
-        const Vector3f torque = rate.update(rates, rates_sp, Vector3f{}, dt, false);
+        const Vector3f torque_norm = rate.update(rates, rates_sp, Vector3f{}, dt_local, false);
+        const Vector3f torque = torque_norm.emult(torque_scale_nm);
         out.torque[0] = torque(0);
         out.torque[1] = torque(1);
         out.torque[2] = torque(2);
@@ -128,9 +147,12 @@ extern "C" {
 
 struct Px4McOpaque { std::unique_ptr<Px4McImpl> inner; };
 
-Px4McOpaque* px4_mc_create(float dt, float mass) {
+Px4McOpaque* px4_mc_create(const Px4McSettings* s) {
     try {
-        auto handle = new Px4McOpaque{std::make_unique<Px4McImpl>(dt, mass)};
+        if (!s) return nullptr;
+        auto handle = new Px4McOpaque{std::make_unique<Px4McImpl>(s->dt, s->mass)};
+        // Apply full settings once constructed
+        px4_mc_apply_settings(handle, s);
         return handle;
     } catch (...) {
         return nullptr;
@@ -224,6 +246,36 @@ void px4_mc_set_dt(Px4McOpaque* ptr, float dt) {
 void px4_mc_set_mass(Px4McOpaque* ptr, float mass) {
     if (!ptr) return;
     ptr->inner->mass = mass;
+}
+
+void px4_mc_apply_settings(Px4McOpaque* ptr, const Px4McSettings* s) {
+    if (!ptr || !s) return;
+    // Basic
+    ptr->inner->dt = s->dt;
+    ptr->inner->mass = s->mass;
+    // Attitude
+    px4_mc_set_att_gains(ptr, s->att_p, s->att_yaw_weight);
+    px4_mc_set_att_rate_limit(ptr, s->att_rate_limit);
+    // Position/Velocity
+    px4_mc_set_pos_gains(ptr, s->pos_p);
+    px4_mc_set_vel_gains(ptr, s->vel_p, s->vel_i, s->vel_d);
+    px4_mc_set_vel_limits(ptr, s->vel_lim_xy, s->vel_up, s->vel_down);
+    px4_mc_set_thrust_limits(ptr, s->thr_min, s->thr_max);
+    px4_mc_set_thr_xy_margin(ptr, s->thr_xy_margin);
+    px4_mc_set_tilt_limit(ptr, s->tilt_max_rad);
+    px4_mc_set_hover_thrust(ptr, s->hover_thrust);
+    // Behavior toggles
+    ptr->inner->pos.decoupleHorizontalAndVecticalAcceleration(s->decouple_horiz_vert_accel != 0);
+    // Rate (PID)
+    ptr->inner->rate_p = to_vec3(s->rate_p);
+    ptr->inner->rate_i = to_vec3(s->rate_i);
+    ptr->inner->rate_d = to_vec3(s->rate_d);
+    ptr->inner->rate_int_lim = to_vec3(s->rate_int_lim);
+    ptr->inner->rate.setPidGains(ptr->inner->rate_p, ptr->inner->rate_i, ptr->inner->rate_d);
+    ptr->inner->rate.setIntegratorLimit(ptr->inner->rate_int_lim);
+
+    // Torque scaling
+    ptr->inner->torque_scale_nm = matrix::Vector3f{s->torque_scale_nm[0], s->torque_scale_nm[1], s->torque_scale_nm[2]};
 }
 
 }

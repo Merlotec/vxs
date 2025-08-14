@@ -5,36 +5,39 @@ use voxelsim::{
 };
 
 use crate::dynamics::{AgentDynamics, run_simulation_tick_rk4};
-use px4_mc::Px4McController;
+use px4_mc::{Px4McController, Px4McSettings};
 
 pub mod attitude;
 pub mod position;
 pub mod rate;
+#[cfg(feature = "python")]
+pub mod settings;
 
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
-pub struct PX4Dynamics {
+pub struct Px4Dynamics {
     controller: Px4McController,
     bounding_box: Vector3<f64>,
     quad: peng_quad::Quadrotor,
     hover_thrust: f32, // normalized [0,1] used by PX4 PositionControl
 }
 
-impl Default for PX4Dynamics {
+impl Default for Px4Dynamics {
     fn default() -> Self {
         // Reasonable starting values; matches QuadParams::default-like settings
         let quad = peng_quad::Quadrotor::new(
             0.01,
-            0.3,
+            1.0,
             9.8,
             0.01,
             [0.0347563, 0.0, 0.0, 0.0, 0.0458929, 0.0, 0.0, 0.0, 0.0977],
         )
         .unwrap();
-        let controller = Px4McController::new(0.01, quad.mass as f32);
-        let hover_thrust = 0.5_f32; // keep in sync with px4-mc default
-        // Configure controller hover thrust
-        let mut controller = controller;
-        controller.set_hover_thrust(hover_thrust);
+        // Build settings up-front and construct controller with them
+        let mut settings = Px4McSettings::default();
+        settings.dt = 0.01;
+        settings.mass = quad.mass as f32;
+        let hover_thrust = settings.hover_thrust;
+        let controller = Px4McController::new(&settings);
         Self {
             controller,
             bounding_box: Vector3::new(0.3, 0.3, 0.1),
@@ -44,7 +47,12 @@ impl Default for PX4Dynamics {
     }
 }
 
-impl PX4Dynamics {
+impl Px4Dynamics {
+    pub fn apply_px4_settings(&mut self, s: &Px4McSettings) {
+        self.hover_thrust = s.hover_thrust;
+        self.controller.apply_settings(s);
+    }
+
     pub fn next_body_rate_sp(
         &mut self,
         pos: Vector3<f64>,
@@ -71,11 +79,11 @@ impl PX4Dynamics {
 
         let (torque, thrust_norm_z) = self
             .controller
-            .update(&posf, &velf, &qf, &ratesf, &t_posf, &t_velf);
+            .update(&posf, &velf, &qf, &ratesf, &t_posf, &t_velf, dt as f32, t_yaw as f32, 0.0);
         // Map PX4 normalized thrust (FRD z-component, negative for lift) to Newtons magnitude for Peng quad
         // F = (-thr_z / hover_thrust) * m * g
-        let thrust_newtons = (-(thrust_norm_z) / self.hover_thrust) as f64
-            * (self.quad.mass as f64) * 9.81_f64;
+        let thrust_newtons =
+            (-(thrust_norm_z) / self.hover_thrust) as f64 * (self.quad.mass as f64) * 9.81_f64;
         (-thrust_newtons, torque.cast::<f64>())
     }
 
@@ -84,7 +92,7 @@ impl PX4Dynamics {
     }
 }
 
-impl AgentDynamics for PX4Dynamics {
+impl AgentDynamics for Px4Dynamics {
     fn update_agent_dynamics(
         &mut self,
         agent: &mut Agent,

@@ -6,6 +6,20 @@ fn main() {
     // via PX4_SRC_DIR env var. This gets forwarded to CMake.
     let mut cfg = cmake::Config::new("cpp/px4_mc");
 
+    // Rebuild triggers when environment or sources change
+    println!("cargo:rerun-if-env-changed=PX4_SRC_DIR");
+    println!("cargo:rerun-if-changed=cpp/px4_mc/CMakeLists.txt");
+    println!("cargo:rerun-if-changed=cpp/px4_mc/px4_sources.cmake");
+    println!("cargo:rerun-if-changed=cpp/px4_mc/src/px4_mc_wrapper.cpp");
+    println!("cargo:rerun-if-changed=cpp/px4_mc/include/px4_mc_wrapper.hpp");
+    println!("cargo:rerun-if-changed=cpp/px4_mc/include/px4_boardconfig.h");
+    println!("cargo:rerun-if-changed=cpp/px4_mc/include/matrix/math.hpp");
+    println!("cargo:rerun-if-changed=cpp/px4_mc/include/uORB/topics/trajectory_setpoint.h");
+    println!("cargo:rerun-if-changed=cpp/px4_mc/include/uORB/topics/vehicle_attitude_setpoint.h");
+    println!(
+        "cargo:rerun-if-changed=cpp/px4_mc/include/uORB/topics/vehicle_local_position_setpoint.h"
+    );
+    println!("cargo:rerun-if-changed=cpp/px4_mc/include/uORB/topics/rate_ctrl_status.h");
     if let Ok(px4_src) = env::var("PX4_SRC_DIR") {
         cfg.define("PX4_SRC_DIR", &px4_src);
     }
@@ -29,4 +43,3 @@ fn main() {
         println!("cargo:rustc-link-lib=stdc++");
     }
 }
-
