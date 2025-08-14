@@ -6,7 +6,10 @@ import torch
 import numpy as np
 
 # ============ IMPORTS FROM bench_world48.py ============
-from representation import (VoxelData, show_voxels, SimpleCNNEncoder, SimpleCNNDecoder,)
+from representation import (
+    VoxelData, show_voxels,
+    SimpleCNNEncoder, SimpleCNNDecoder,
+)
 
 # ============ MODEL CONFIG FROM bench_world48.py ============
 CKPT_PATH = "/home/box/drone/vxs/runs/2025-08-13T12-46-36-SimpleCNNEncoder_SimpleCNNDecoder/checkpoints/epoch-5000.pt"
@@ -49,6 +52,31 @@ def _load_models(ckpt_path, world_side, model_side, device):
     print(f"decoder: loaded {len(dec_sd)} keys, skipped {len(dropped_dec)} → {dropped_dec}")
     return enc, dec, 0.0
 
+# ============ FPS TRACKER CLASS ============
+class FPSTracker:
+    """Track framerate with rolling window"""
+    def __init__(self, window_size=30):
+        self.window_size = window_size
+        self.times = []
+        self.lock = threading.Lock()
+    
+    def tick(self):
+        with self.lock:
+            now = time.time()
+            self.times.append(now)
+            # Keep only recent times
+            cutoff = now - 3.0  # Look at last 3 seconds
+            self.times = [t for t in self.times if t > cutoff]
+    
+    def get_fps(self):
+        with self.lock:
+            if len(self.times) < 2:
+                return 0.0
+            time_span = self.times[-1] - self.times[0]
+            if time_span == 0:
+                return 0.0
+            return (len(self.times) - 1) / time_span
+
 # ============ SIMPLE QUEUE CLASS ============
 class LatestJob:
     """Single-slot queue that only keeps the latest item"""
@@ -67,6 +95,7 @@ class LatestJob:
             return data
 
 latest = LatestJob()
+model_fps = FPSTracker()
 
 # ============ MODEL SETUP ============
 MODEL_SIDE = 120  # or 64, depending on your model
@@ -76,20 +105,32 @@ encoder, decoder, t_load = _load_models(CKPT_PATH, MODEL_SIDE, MODEL_SIDE, devic
 print(f"📦 Models loaded in {t_load*1e3:.2f} ms")
 
 # ============ HELPER FUNCTIONS ============
-def send_sparse_coords(coords_np, vals_np, client):
-    """Send sparse coordinates to renderer client"""
+def send_sparse_coords(coords_np, vals_np, client, agent_pos=None):
+    """Send sparse coordinates to renderer client, optionally centered on agent"""
     # Filter out empty cells
     m = vals_np > 0.0
     if m.sum() == 0:
         return
     
+    coords_filtered = coords_np[m].copy()
+    
+    # Center on agent if position provided
+    if agent_pos is not None:
+        coords_filtered = coords_filtered - agent_pos + np.array([MODEL_SIDE//2, MODEL_SIDE//2, MODEL_SIDE//2])
+    
     # Build cell dictionary
     cell_dict = {}
-    for (x, y, z), v in zip(coords_np[m], vals_np[m]):
+    for (x, y, z), v in zip(coords_filtered, vals_np[m]):
         coord = (int(x), int(y), int(z))
+        # Skip out-of-bounds coordinates
+        if any(c < 0 or c >= MODEL_SIDE for c in coord):
+            continue
         # FILLED if > 0.75, else SPARSE
         cell = vxs.Cell.filled() if v > 0.75 else vxs.Cell.sparse()
         cell_dict[coord] = cell
+    
+    if not cell_dict:
+        return
     
     # Create and send world
     if hasattr(vxs.VoxelGrid, "from_dict_py"):
@@ -102,9 +143,8 @@ def send_sparse_coords(coords_np, vals_np, client):
     
     client.send_world_py(world)
 
-def make_voxeldata(coords_np, vals_np, side_hint):
-    """Convert sparse numpy arrays to VoxelData for model - matching bench_world48 structure"""
-    # Create VoxelData using the same structure as in representation.py
+def make_voxeldata_centered(coords_np, vals_np, agent_pos, side_hint):
+    """Convert sparse numpy arrays to VoxelData centered on agent position"""
     # Filter for occupied cells
     m = vals_np > 0.0
     if m.sum() == 0:
@@ -113,39 +153,54 @@ def make_voxeldata(coords_np, vals_np, side_hint):
             occupied_coords=torch.zeros((0, 3), dtype=torch.float32),
             values=torch.zeros(0, dtype=torch.float32),
             bounds=torch.tensor([side_hint, side_hint, side_hint], dtype=torch.float32),
-            drone_pos=torch.tensor([side_hint//2, side_hint//2, side_hint//2], dtype=torch.float32),
+            drone_pos=torch.tensor([side_hint//2, side_hint//2, -side_hint//2], dtype=torch.float32),
         )
     
+    # Get filtered coordinates and values
+    coords_filtered = coords_np[m].copy()
+    vals_filtered = vals_np[m]
+    
+    # Center coordinates on agent position
+    # This is important: we center in world space BEFORE the encoder flips Z
+    coords_centered = coords_filtered - agent_pos + np.array([side_hint//2, side_hint//2, -side_hint//2])
+    
+    # Note: The encoder will flip Z coordinate (coords[:, 2] = -coords[:, 2])
+    # So we use -side_hint//2 for Z to account for this
+    
     return VoxelData(
-        occupied_coords=torch.from_numpy(coords_np[m].astype(np.float32)),
-        values=torch.from_numpy(vals_np[m].astype(np.float32)),
+        occupied_coords=torch.from_numpy(coords_centered.astype(np.float32)),
+        values=torch.from_numpy(vals_filtered.astype(np.float32)),
         bounds=torch.tensor([side_hint, side_hint, side_hint], dtype=torch.float32),
-        drone_pos=torch.tensor([side_hint//2, side_hint//2, side_hint//2], dtype=torch.float32),
+        drone_pos=torch.tensor([side_hint//2, side_hint//2, -side_hint//2], dtype=torch.float32),
     )
 
 # ============ WORKER THREAD ============
 def worker_encode_decode():
     """Worker thread that processes belief maps without blocking sim"""
+    last_fps_print = time.time()
+    
     while not stop_worker.is_set():
         data = latest.get_and_clear()
         if data is None:
             time.sleep(0.01)
             continue
         
-        coords_np, vals_np, ts = data
+        coords_np, vals_np, agent_pos, ts = data
         
-        # 1. Send sparse overlay to filter world client
-        send_sparse_coords(coords_np, vals_np, client_fw)
+        # 1. Send FULL sparse overlay to filter world client (NOT centered)
+        send_sparse_coords(coords_np, vals_np, client_fw, agent_pos=None)  # Pass None to show full map
         
         # 2. Run model
         try:
-            # Create VoxelData
-            vd = make_voxeldata(coords_np, vals_np, MODEL_SIDE)
+            # Create VoxelData centered on agent for MODEL INPUT ONLY
+            vd = make_voxeldata_centered(coords_np, vals_np, agent_pos, MODEL_SIDE)
             
             # Run inference (matching bench_world48 approach)
             with torch.no_grad():
                 # Move to device and encode
+                
                 latent = encoder.encode([vd.to_device(device)])
+               
                 if isinstance(latent, tuple):
                     latent = latent[0]
                 
@@ -153,8 +208,19 @@ def worker_encode_decode():
                 out = decoder.decode(latent)
                 logits = out["logits"] if isinstance(out, dict) else out
             
-            # Visualize reconstruction
+            # Visualize reconstruction - this is already in model coordinates (120x120x120)
+            # The show_voxels function expects model-space coordinates, not world-space
             show_voxels(logits, client_pred)
+            
+            # Track FPS
+            model_fps.tick()
+            
+            # Print FPS every second
+            now = time.time()
+            if now - last_fps_print > 1.0:
+                fps = model_fps.get_fps()
+                print(f"🎯 Model FPS: {fps:.1f}")
+                last_fps_print = now
             
         except Exception as e:
             print(f"Model inference error: {e}")
@@ -166,7 +232,7 @@ agent = vxs.Agent(0)
 agent.set_pos([50.0, 50.0, -20.0])
 
 fw = vxs.FilterWorld()
-dynamics = vxs.px4.PX4Dynamics.default_py()
+dynamics = vxs.px4.Px4Dynamics.default_py()
 chaser = vxs.FixedLookaheadChaser.default_py()
 
 generator = vxs.TerrainGenerator()
@@ -185,16 +251,16 @@ renderer = vxs.AgentVisionRenderer(world, [200, 150], noise)
 # Main client
 client = vxs.RendererClient.default_localhost_py()
 client.connect_py(1)
-print("Controls: WASD=move, Space=up, Shift=down, ESC=quit")
+print("Controls: WASD=move, Space=up, Shift=down, Q/E=rotate, ESC=quit")
 
 client.send_world_py(world)
 client.send_agents_py({0: agent})
 
-# Filter world client (belief map)
+# Filter world client (belief map) - FULL MAP VIEW
 client_fw = vxs.RendererClient("127.0.0.1", 8084, 8085, 8090, 9090)
 client_fw.connect_py(0)
 
-# Prediction client (model output)
+# Prediction client (model output) - 120x120x120 centered view
 client_pred = vxs.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
 client_pred.connect_py(0)
 
@@ -244,16 +310,15 @@ upd_start = 0.0
 def world_update(fw_arg, timestamp):
     """Minimal callback - just queue the data and return"""
     dtime = time.time() - upd_start
-    print(f"upd_time: {dtime:.3f}s")
     
     # Get sparse numpy arrays
     coords, vals = fw.as_numpy()
     
     # Queue for worker thread (only if we have data)
     if coords.shape[0] > 0:
-        latest.set((coords.copy(), vals.copy(), timestamp))
-    
-    # That's it! Worker thread handles everything else
+        # Get agent position for centering
+        agent_pos = np.array(agent.get_pos(), dtype=np.float32)
+        latest.set((coords.copy(), vals.copy(), agent_pos.copy(), timestamp))
 
 # ============ MAIN LOOP ============
 delta = 0.01
@@ -263,9 +328,11 @@ YAW_STEP = 0.3
 
 print("\nStarting simulation...")
 print("Three renderer windows should open:")
-print("  1. Main view (default ports)")
-print("  2. Belief map (port 8084)")
-print("  3. Model reconstruction (port 8086)")
+print("  1. Main view (default ports) - Agent POV")
+print("  2. Belief map (port 8084) - FULL accumulated map")
+print("  3. Model reconstruction (port 8086) - 120x120x120 prediction")
+print("\nModel processes 120x120x120 region centered on agent")
+print("FPS counter will display every second\n")
 
 while listener.running:
     t0 = time.time()
