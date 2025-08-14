@@ -32,11 +32,6 @@ print("Controls: WASD=move, Space=up, Shift=down, ESC=quit")
 client.send_world_py(world)
 client.send_agents_py({0: agent})
 
-
-# Another client created for filter world output
-client_fw = vxs.RendererClient("127.0.0.1", 8084, 8085, 8092, 9092)
-client_fw.connect_py(0)
-
 pressed = set()
 just_pressed = set()
 
@@ -88,16 +83,6 @@ upd_start = 0.0
 def world_update(world, timestamp):
     dtime = time.time() - upd_start
     print(f"upd_time: {dtime}")
-
-    coords, vals = fw.as_numpy() 
-
-    # Sparse to dense
-
-    # Encode
-
-    # Decode
-
-    # Show
 
 YAW_STEP = 0.3  # radians per key press (about 17°)
 

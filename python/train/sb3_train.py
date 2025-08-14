@@ -4,7 +4,7 @@ from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
 import os
 
 from gymnasium.envs.registration import register
-from envs.grid_world import GridWorldEnv, BaselineReward
+from envs.grid_world_astar import GridWorldAStarEnv, SimpleReward
 import voxelsim as vxs;
 # register(
 #     id="gymnasium_env/GridWorld-v0",
@@ -16,10 +16,10 @@ client = vxs.RendererClient.default_localhost_py()
 # one agent
 client.connect_py(1)
 
-env = GridWorldEnv(
-    reward_fn =BaselineReward(),
-    client = client,
-    start_pos=[100, 100, 20]
+env = GridWorldAStarEnv(
+    reward =SimpleReward(),
+    render_client = client,
+    start_pos=[100, 100, -20] # NED coordinate system
 )
 
 
@@ -29,17 +29,17 @@ os.makedirs(logdir, exist_ok=True)
 train_env = Monitor(env)
 
 # Optional eval env (no rendering for speed)
-eval_env = Monitor(GridWorldEnv(reward_fn=BaselineReward(), start_pos = [100, 100, 20]))
+# eval_env = Monitor(GridWorldEnv(reward_fn=SimpleReqard(), start_pos = [100, 100, 20]))
 
-# Callbacks (periodic eval + checkpoints)
-eval_cb = EvalCallback(
-    eval_env,
-    best_model_save_path=os.path.join(logdir, "best"),
-    log_path=logdir,
-    eval_freq=10_000,
-    deterministic=True,
-    render=False,
-)
+# # Callbacks (periodic eval + checkpoints)
+# eval_cb = EvalCallback(
+#     eval_env,
+#     best_model_save_path=os.path.join(logdir, "best"),
+#     log_path=logdir,
+#     eval_freq=10_000,
+#     deterministic=True,
+#     render=False,
+# )
 ckpt_cb = CheckpointCallback(
     save_freq=50_000, save_path=os.path.join(logdir, "ckpts"), name_prefix="ppo_vox"
 )

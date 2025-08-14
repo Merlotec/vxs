@@ -18,6 +18,7 @@ use crate::{
     chase::{ChaseTarget, FixedLookaheadChaser, TrajectoryChaser},
     env::{DenseSnapshot, VoxelGrid},
     network::RendererClient,
+    planner::ActionPlanner,
     planner::astar::AStarActionPlanner,
     viewport::CameraOrientation,
 };
@@ -41,6 +42,11 @@ pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 pub type PyCoord = [i32; 3];
+
+#[pyclass]
+pub struct AStarPlanner {
+    padding: i32,
+}
 
 #[pymethods]
 impl VoxelGrid {
@@ -228,6 +234,10 @@ impl ActionIntent {
 
     pub fn get_move_sequence(&self) -> MoveSequence {
         self.move_sequence.clone()
+    }
+
+    pub fn len(&self) -> usize {
+        self.move_sequence.len()
     }
 }
 
@@ -431,5 +441,17 @@ impl AStarActionPlanner {
     #[new]
     pub fn new_py(padding: i32) -> Self {
         Self::new(padding)
+    }
+
+    pub fn plan_action_py(
+        &self,
+        world: &VoxelGrid,
+        origin: PyCoord,
+        dst: PyCoord,
+        yaw: f64,
+        urgency: f64,
+    ) -> PyResult<ActionIntent> {
+        self.plan_action(world, origin.into(), dst.into(), yaw, urgency)
+            .map_err(|e| PyException::new_err(format!("Failed to create action intent: {}", e)))
     }
 }

@@ -105,8 +105,17 @@ class GridWorldEnv(gym.Env):
     ):
         super().__init__()
 
-        # Action: [move(0..6), urgency(1..5), rotation(0..7)]
-        self.action_space = gym.spaces.MultiDiscrete([7, 5, 8])
+        # Action: [dx, dy, dz, urgency(0..1), yaw(-pi..pi), priority(0..1)]
+        self.max_offset = int(max_offset)
+        low = np.array(
+            [-self.max_offset, -self.max_offset, -self.max_offset, 0.0, -math.pi, 0.0],
+            dtype=np.float32,
+        )
+        high = np.array(
+            [self.max_offset, self.max_offset, self.max_offset, 1.0, math.pi, 1.0],
+            dtype=np.float32,
+        )
+        self.action_space = gym.spaces.Box(low=low, high=high, dtype=np.float32)
 
         # Save config
         self.agent_params = agent_params
@@ -131,9 +140,11 @@ class GridWorldEnv(gym.Env):
         self.current_step: int = 0
 
         # Buffers and snapshots
-        self.action_buffer: Optional[List[vxs.MoveCommand]] = None
-        self.action_buffer_codes: List[Tuple[int, int, int]] = []  # (cmd, urgency_idx, yaw_idx)
-        self.executing_actions_codes: List[Tuple[int, int, int]] = []
+        self.action_buffer_codes: List[int] = []
+        self.executing_actions_codes: List[int] = []
+        self.override_threshold = float(override_threshold)
+        self.astar = vxs.AStarPlanner(planner_padding)
+        self._last_action_vec: np.ndarray = np.zeros(6, dtype=np.float32)
         self.snapshot_grid: Optional[np.ndarray] = None  # int32 grid
 
         # Reward plugin
@@ -186,18 +197,25 @@ class GridWorldEnv(gym.Env):
             dtype=np.int32,
         )
 
-        # sequences as (cmd, urgency_idx, yaw_idx), padded with -1
-        seq_shape = (self.max_cmd_count, 3)
-        low = np.tile(np.array([-1, -1, -1], dtype=np.int32), (self.max_cmd_count, 1))
-        high = np.tile(np.array([6, 5, 7], dtype=np.int32), (self.max_cmd_count, 1))
+        # sequences as MoveDir codes (0..6), padded with -1
+        seq_shape = (self.max_cmd_count,)
+        low = -np.ones((self.max_cmd_count,), dtype=np.int32)
+        high = np.full((self.max_cmd_count,), 6, dtype=np.int32)
 
         seq_space = gym.spaces.Box(low=low, high=high, shape=seq_shape, dtype=np.int32)
+
+        last_action_space = gym.spaces.Box(
+            low=np.array([-self.max_offset, -self.max_offset, -self.max_offset, 0.0, -math.pi, 0.0], dtype=np.float32),
+            high=np.array([self.max_offset, self.max_offset, self.max_offset, 1.0, math.pi, 1.0], dtype=np.float32),
+            dtype=np.float32,
+        )
 
         self.observation_space = gym.spaces.Dict(
             {
                 "grid": grid_space,
                 "executing_actions": seq_space,
                 "planned_actions": seq_space,
+                "last_action": last_action_space,
             }
         )
 
@@ -225,12 +243,12 @@ class GridWorldEnv(gym.Env):
             lambda ch: self.update_callback(ch),
         )
 
-    def _pad_seq_codes(self, codes: List[Tuple[int, int, int]]) -> np.ndarray:
-        """Return (max_cmd_count,3) int32 array padded with -1."""
-        arr = np.full((self.max_cmd_count, 3), -1, dtype=np.int32)
+    def _pad_seq_codes(self, codes: List[int]) -> np.ndarray:
+        """Return (max_cmd_count,) int32 array padded with -1."""
+        arr = np.full((self.max_cmd_count,), -1, dtype=np.int32)
         n = min(len(codes), self.max_cmd_count)
         if n > 0:
-            arr[:n, :] = np.asarray(codes[:n], dtype=np.int32)
+            arr[:n] = np.asarray(codes[:n], dtype=np.int32)
         return arr
 
     def _encode_move_triplet(self, cmd: int, urgency_idx: int, yaw_idx: int) -> Tuple[int, int, int]:
@@ -255,6 +273,7 @@ class GridWorldEnv(gym.Env):
             "grid": grid,
             "executing_actions": self._pad_seq_codes(self.executing_actions_codes),
             "planned_actions": self._pad_seq_codes(self.action_buffer_codes),
+            "last_action": self._last_action_vec.copy(),
         }
 
     def _last_or_dummy_obs(self) -> Dict[str, Any]:
@@ -317,7 +336,7 @@ class GridWorldEnv(gym.Env):
             move_mask[6] = 1  # prefer 6 as the "no-op" signal from the policy
         else:
             move_mask = np.ones(7, dtype=np.int8)
-        info["action_mask_move"] = move_mask
+        # No discrete move mask with continuous action space
 
         # If we are already executing a sequence, ignore any attempt to modify/flush
         # and just advance the simulation. This prevents accidental overwrites.
@@ -355,8 +374,8 @@ class GridWorldEnv(gym.Env):
 
             self.render(update_fw)
             return observation, reward, terminated, truncated, info
-        mv_commands = self._decode_action(action)
-        if mv_commands is None:
+        intent = self._decode_action(action)
+        if intent is None:
             observation = self._last_or_dummy_obs()
             info["waiting_for_more_commands"] = True
             reward = self.reward_fn.compute(self, observation, action, info)
@@ -364,17 +383,17 @@ class GridWorldEnv(gym.Env):
             return observation, reward, terminated, truncated, info
 
 
-        # We have a full sequence to execute
-        if len(mv_commands) > 0:
-            try:
-                info["mv_commands"] = len(mv_commands)
-                self.agent.perform_sequence_py(mv_commands)
-            except:
-                # Invalid sequence, we must punish.
-                observation = self._last_or_dummy_obs()
-                info["command_error"] = "duplicate_centroid"
-                reward = -100
-                return observation, reward, terminated, truncated, info
+        # We have a planned intent to execute
+        try:
+            info["mv_commands"] = len(intent.move_sequence)
+            self.action_buffer_codes = [int(d) for d in intent.move_sequence[: self.max_cmd_count]]
+            self.agent.perform_py(intent)
+        except Exception as e:
+            # Invalid sequence, punish
+            observation = self._last_or_dummy_obs()
+            info["command_error"] = f"intent_error: {e}"
+            reward = -100
+            return observation, reward, terminated, truncated, info
 
         self.chase_target = self.chaser.step_chase_py(self.agent, self.delta_time)
         self.agent_dynamics.update_agent_dynamics_py(self.agent, self.world_env, self.chase_target, self.delta_time)
@@ -387,8 +406,7 @@ class GridWorldEnv(gym.Env):
             changeset = self.await_changeset()
             self.update_filter_world(changeset)
             update_fw = True
-            # Start a new planning buffer for next step
-            self.action_buffer = []
+            # Clear planned codes for next step planning
             self.action_buffer_codes = []
 
         
@@ -454,8 +472,7 @@ class GridWorldEnv(gym.Env):
 
         # Provide initial action mask in reset info (idle -> all moves allowed)
         info: Dict[str, Any] = {}
-        move_mask = np.ones(7, dtype=np.int8)
-        info["action_mask_move"] = move_mask
+        # No discrete move mask for continuous actions
         return observation, info
 
     def render(self, update_fw):
