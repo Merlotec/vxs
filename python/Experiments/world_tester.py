@@ -1,31 +1,24 @@
-
 # bench_world48.py
 #
-# Quick micro‑benchmark:
+# Quick micro-benchmark:
 #   1. build a 48×48×48 world                (t_gen)
 #   2. convert the world → VoxelData         (t_conv)
 #   3. push it to the renderer via show_voxels (t_show)
 
-import time, numpy as np, torch
+import time, numpy as np, torch, sys, select, tty, termios
 import voxelsim                                # your Rust bindings
-from representation import VoxelData, show_voxels   # reuse helpers
 import matplotlib.pyplot as plt
 
-
-# --- add these near the top, after your imports ---
+# use the same datastructures + helpers from representation_parallel
 from representation import (
-    # pick the pair you trained; these defaults match your sweep example
-    # CrossAttnTokensEncoder, Factorised3DDecoder,
-    # if you used others, import them instead:
+    VoxelData, show_voxels, TerrainBatch,
     SimpleCNNEncoder, SimpleCNNDecoder,
-    # UNet3DEncoder, UNet3DDecoder,
-    # ResNet3DEncoder, ResNet3DDecoder,
-    # PointMLPEncoder, ImplicitFourierDecoder,
 )
 
-CKPT_PATH = "/pool/advay/vxs/python/Experiments/best_dim512.pt"
-EncClass  = SimpleCNNDecoder         # <-- swap if needed
-DecClass  = SimpleCNNDecoder                   # <-- swap if needed
+CKPT_PATH = "/home/box/drone/vxs/runs/2025-08-13T12-46-36-SimpleCNNEncoder_SimpleCNNDecoder/checkpoints/epoch-5000.pt"
+EncClass  = SimpleCNNEncoder          # <-- swap if needed
+DecClass  = SimpleCNNDecoder          # <-- swap if needed
+
 
 def _infer_emb_dim(enc_sd, dec_sd):
     for k in ("fc.weight", "proj.weight", "head.weight"):
@@ -36,107 +29,124 @@ def _infer_emb_dim(enc_sd, dec_sd):
     return 512  # fallback
 
 def _load_models(ckpt_path, world_side, model_side, device):
-    with Timer() as t_load:
-        ckpt  = torch.load(ckpt_path, map_location="cpu")
-        enc_sd, dec_sd = ckpt["encoder"], ckpt["decoder"]
-        E = _infer_emb_dim(enc_sd, dec_sd)
-        enc = EncClass(voxel_size=world_side, embedding_dim=E).to(device).eval()
-        dec = DecClass(voxel_size=model_side, embedding_dim=E).to(device).eval()
-        enc.load_state_dict(enc_sd); dec.load_state_dict(dec_sd)
-    return enc, dec, t_load.dt
+    ckpt  = torch.load(ckpt_path, map_location="cpu")
+    enc_sd, dec_sd = ckpt["encoder"], ckpt["decoder"]
 
+    # infer emb dim (unchanged)
+    def _infer_emb_dim(enc_sd, dec_sd):
+        for k in ("fc.weight", "proj.weight", "head.weight"):
+            if k in enc_sd: return enc_sd[k].shape[0]
+        if "fc.weight" in dec_sd: return dec_sd["fc.weight"].shape[1]
+        return 512
 
+    E = _infer_emb_dim(enc_sd, dec_sd)
+    enc = EncClass(voxel_size=model_side, embedding_dim=E).to(device).eval()
+    dec = DecClass(voxel_size=model_side, embedding_dim=E).to(device).eval()
 
+    def _prune_mismatched(sd, module):
+        current = module.state_dict()
+        removed = []
+        for k in list(sd.keys()):
+            if (k not in current) or (sd[k].shape != current[k].shape):
+                removed.append(k)
+                sd.pop(k)
+        return removed
 
+    dropped_enc = _prune_mismatched(enc_sd, enc)
+    dropped_dec = _prune_mismatched(dec_sd, dec)
+
+    enc.load_state_dict(enc_sd, strict=False)
+    dec.load_state_dict(dec_sd, strict=False)
+
+    print(f"encoder: loaded {len(enc_sd)} keys, skipped {len(dropped_enc)} → {dropped_enc}")
+    print(f"decoder: loaded {len(dec_sd)} keys, skipped {len(dropped_dec)} → {dropped_dec}")
+    return enc, dec, 0.0
 
 class Timer:
     def __enter__(self):  self.t0 = time.perf_counter(); return self
     def __exit__(self,*_): self.dt = time.perf_counter() - self.t0
 
-def build_world(side=48):
-    g   = voxelsim.TerrainGenerator()
-    cfg = voxelsim.TerrainConfig.default_py()             # enforce 48³
-    # cfg.set_seed_py(int(np.random.randint(0, 2**31))) # new seed
-    cfg.set_seed_py(42)
-    cfg.set_world_size_py(int(side))
-    g.generate_terrain_py(cfg)
-    return g.generate_world_py()
+class KeyPoller:
+    """Non-blocking single-key reader (R to refresh, Q to quit)."""
+    def __enter__(self):
+        self.fd = sys.stdin.fileno()
+        self.old = termios.tcgetattr(self.fd)
+        tty.setcbreak(self.fd)
+        return self
+    def __exit__(self, *args):
+        termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
+    def poll(self, timeout=0.05):
+        r, _, _ = select.select([sys.stdin], [], [], timeout)
+        if r:
+            try:
+                ch = sys.stdin.read(1)
+                return ch
+            except Exception:
+                return None
+        return None
 
-def world_to_voxeldata(world, side=48) -> VoxelData:
-    items = world.to_dict_py_tolistpy()         # Vec<((x,y,z), Cell)>
-    coords, vals = [], []
-
-    for (x,y,z), cell in items:
-        coords.append([x, y, z])
-        vals.append(1.0 if cell.is_filled_py() else 0.5)
-
-    return VoxelData(
-        occupied_coords=torch.tensor(coords, dtype=torch.float32),
-        values=torch.tensor(vals,   dtype=torch.float32),
-        bounds=torch.tensor([side, side, side], dtype=torch.float32),
-        drone_pos=torch.tensor([side//2]*3,      dtype=torch.float32),
-    )
-
-def world_to_voxeldata_np(world, side=48) -> VoxelData:
-    coords_np, vals_np = world.as_numpy()       # two NumPy arrays
-    coords = torch.from_numpy(coords_np)         # (N,3) float32 – zero copy
-    vals   = torch.from_numpy(vals_np)           # (N,)  float32
-
-    return VoxelData(
-        occupied_coords=coords,
-        values         =vals,
-        bounds         =torch.tensor([side, side, side], dtype=torch.float32),
-        drone_pos      =torch.tensor([side//2]*3,        dtype=torch.float32),
-    )
-
-# --- inside your test1() (minimal edits) ---
+# --- bench runner with live refresh ---
 def test1():
-    world_side = 48
-    model_side = 48
-    with Timer() as t_gen:
-        world = build_world(world_side)
-    print(f"🌍 generate          {t_gen.dt*1e3:7.2f} ms")
-
-    with Timer() as t_conv_np:
-        vd_np = world_to_voxeldata_np(world, world_side)
-    print(f"⚡ convert (numpy)   {t_conv_np.dt*1e3:7.2f} ms")
-
+    world_side = 120
+    model_side = 120
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    # two viewers: input on 8090, output on 8091
-    client_in  = voxelsim.RendererClient("sampo", 8080, 8081, 8090, 9090)
-    client_out = voxelsim.RendererClient("sampo", 8082, 8083, 8090, 9090)
+    # data generator (no reordering here)
+    tb = TerrainBatch(
+        world_size=world_side,
+        build_dt=False, build_low=False, build_com=False, build_points=False
+    )
+    tb_iter = iter(tb)
 
-    client_in.connect_py(0)
-    client_out.connect_py(0)
-    print("HI")
-    # show input
-    with Timer() as t_show_in:
-        show_voxels(vd_np, client_in)
-    print(f"🖼  render (input)    {t_show_in.dt*1e3:7.2f} ms")
+    # viewers: input on 8090, output on 8091? (keeping your original args)
+    client_in  = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
+    client_out = voxelsim.RendererClient("127.0.0.1", 8082, 8083, 8090, 9090)
+    client_in.connect_py(0); client_out.connect_py(0)
 
-    # load -> embed -> reconstruct+display (profiled)
-    enc, dec, t_load = _load_models(CKPT_PATH, model_side, world_side, device)
-
-    with Timer() as t_embed:
-        with torch.no_grad():
-            latent = enc.encode([vd_np.to_device(device)])
-            if isinstance(latent, tuple):         # handle (latent, skips)
-                latent = latent[0]
-
-    with Timer() as t_recon_disp:
-        with torch.no_grad():
-            out = dec.decode(latent)
-            logits = out["logits"]
-        show_voxels(logits, client_out)
-    
-
+    # load models once
+    enc, dec, t_load = _load_models(CKPT_PATH, world_side, model_side, device)
     print(f"📦 load ckpt         {t_load*1e3:7.2f} ms")
-    print(f"🧠 embed (encode)    {t_embed.dt*1e3:7.2f} ms")
-    print(f"🎯 recon+display     {t_recon_disp.dt*1e3:7.2f} ms")
-    print("Open 8090 (input) and 8091 (output). Done.")
-    while True:
-        continue
-    
-    
-test1()
+
+    def refresh():
+        # generate + show input
+        with Timer() as t_gen_conv:
+            vd_np, _ = next(tb_iter)  # VoxelData from TerrainBatch
+        print(f"🌍 generate+convert   {t_gen_conv.dt*1e3:7.2f} ms")
+
+        with Timer() as t_show_in:
+            show_voxels(vd_np, client_in)
+        print(f"🖼  render (input)    {t_show_in.dt*1e3:7.2f} ms")
+
+        # encode → decode → show output
+        with Timer() as t_embed:
+            with torch.no_grad():
+                latent = enc.encode([vd_np.to_device(device)])
+                if isinstance(latent, tuple):
+                    latent = latent[0]
+        print(f"🧠 embed (encode)    {t_embed.dt*1e3:7.2f} ms")
+
+        with Timer() as t_recon_disp:
+            with torch.no_grad():
+                out = dec.decode(latent)
+                logits = out["logits"]
+            show_voxels(logits, client_out)
+        print(f"🎯 recon+display     {t_recon_disp.dt*1e3:7.2f} ms")
+
+    # initial render
+    refresh()
+    print("Controls: press R to refresh world, Q to quit.")
+
+    # live loop
+    with KeyPoller() as keys:
+        while True:
+            ch = keys.poll(0.1)
+            if not ch:
+                continue
+            if ch in ("q", "Q"):
+                print("bye.")
+                break
+            if ch in ("r", "R"):
+                refresh()
+
+if __name__ == "__main__":
+    test1()

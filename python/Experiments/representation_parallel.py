@@ -2,7 +2,6 @@
 Octmap Embedding Testbed
 A modular framework for testing various embedding approaches for drone navigation
 """
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,30 +16,30 @@ from abc import ABC, abstractmethod
 import voxelsim
 from collections import defaultdict
 from torch.cuda.amp import autocast, GradScaler
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 import os
-
 from losses import make_recon_loss, make_aux_loss
 from scipy.ndimage import distance_transform_edt as edt
 import time, collections
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 # ============== Data Structures ==============
 @dataclass
 class VoxelData:
     """Container for voxel octmap data"""
     occupied_coords: torch.Tensor  # [N, 3] coordinates of occupied voxels
-    values: torch.Tensor           # [N] values (filled, sparse, etc)``
+    values: torch.Tensor           # [N] values (filled, sparse, etc)
     bounds: torch.Tensor           # [3] max bounds of the octmap TODO: Not sure if we can have this, it might have to infer itself/ be adaptive
     drone_pos: torch.Tensor        # [3] current drone position
     
     def to_device(self, device):
         return VoxelData(
-            occupied_coords=self.occupied_coords.to(device),
-            values=self.values.to(device),
-            bounds=self.bounds.to(device),
-            drone_pos=self.drone_pos.to(device)
+            occupied_coords=self.occupied_coords.to(device, non_blocking=True),
+            values=self.values.to(device, non_blocking=True),
+            bounds=self.bounds.to(device, non_blocking=True),
+            drone_pos=self.drone_pos.to(device, non_blocking=True)
         )
-
 
 # ============== Base Classes ==============
 class EmbeddingEncoder(ABC):
@@ -53,36 +52,29 @@ class EmbeddingEncoder(ABC):
     def get_embedding_dim(self) -> int:
         pass
 
-
 class EmbeddingDecoder(ABC):
     """Base class for all decoders"""
     @abstractmethod
     def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
         pass
 
-
 class LossHead(ABC, nn.Module):
     variable_length_target: bool = False  # override in subclasses if needed
-
     def __init__(self, logits_fn: Optional[Callable[[torch.Tensor], torch.Tensor]] = None):
         super().__init__()
         self.logits_fn = logits_fn
-
     def bind_logits(self, fn: Callable[[torch.Tensor], torch.Tensor]):
         self.logits_fn = fn
         return self
-
     @abstractmethod
     def forward(self, embedding: torch.Tensor, logits: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Return 'prediction' used by compute_loss.
         If logits is None and self.logits_fn is set, the head may call self.logits_fn(embedding).
         """
-
     @abstractmethod
     def compute_loss(self, prediction: torch.Tensor, target) -> torch.Tensor:
         pass
-
 
 # ============== Simple CNN Autoencoder ==============
 class SimpleCNNEncoder(EmbeddingEncoder, nn.Module):
@@ -95,61 +87,43 @@ class SimpleCNNEncoder(EmbeddingEncoder, nn.Module):
         self.conv1 = nn.Conv3d(1, 32, kernel_size=5, stride=2, padding=2)
         self.conv2 = nn.Conv3d(32, 64, kernel_size=3, stride=2, padding=1)
         self.conv3 = nn.Conv3d(64, 128, kernel_size=3, stride=2, padding=1)
-
+        
         # Calculate flattened size
-        # self.flat_size = 128 * (voxel_size // 8) ** 3
-        # self.fc = nn.Linear(self.flat_size, embedding_dim)
+        self.flat_size = 128 * (voxel_size // 8) ** 3
+        self.fc = nn.Linear(self.flat_size, embedding_dim)
+    
+    def forward(self, voxel_batch):  # ADD THIS
+        return self.encode(voxel_batch)
         
     def encode(self, voxel_batch: List[VoxelData]) -> torch.Tensor:
         # Build one dense grid per sample, then stack
         grids = [self._sparse_to_dense(vd) for vd in voxel_batch]  # each [1,1,D,D,D]
         x = torch.cat(grids, dim=0)                                # [B,1,D,D,D]
-
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
         # x = x.flatten(1)                                           # [B, F]
         # return self.fc(x) 
         return x
-    @staticmethod
-    def _center_crop_or_pad_to(x: torch.Tensor, target: int) -> torch.Tensor:
-        # x: [B,1,D,H,W]
-        B,C,D,H,W = x.shape
-        td, th, tw = target - D, target - H, target - W
-        if td > 0 or th > 0 or tw > 0:
-            pd0, pd1 = td//2, td - td//2
-            ph0, ph1 = th//2, th - th//2
-            pw0, pw1 = tw//2, tw - tw//2
-            x = F.pad(x, (pw0, pw1, ph0, ph1, pd0, pd1))
-            D,H,W = x.shape[-3:]
-        if D > target or H > target or W > target:
-            sd = (D - target)//2
-            sh = (H - target)//2
-            sw = (W - target)//2
-            x = x[..., sd:sd+target, sh:sh+target, sw:sw+target]
-        return x
-
+    
     def _sparse_to_dense(self, voxel_data: VoxelData) -> torch.Tensor:
-        """Build at the world's native side, then center crop/pad to model size."""
-        src_side = int(voxel_data.bounds[0].item())  # world side
-        grid = torch.zeros((1, 1, src_side, src_side, src_side),
-                           device=voxel_data.occupied_coords.device, dtype=torch.float32)
-        if voxel_data.occupied_coords.shape[0] > 0:
-            coords = voxel_data.occupied_coords.clone()
-            coords[:, 2] = -coords[:, 2]            # flip z to index
-            coords = coords.long()
-            coords[:, 0].clamp_(0, src_side - 1)
-            coords[:, 1].clamp_(0, src_side - 1)
-            coords[:, 2].clamp_(0, src_side - 1)
-            grid[0, 0, coords[:, 0], coords[:, 1], coords[:, 2]] = voxel_data.values
-
-        # 🔵 enforce decoder’s trained size without interpolation
-        return self._center_crop_or_pad_to(grid, self.voxel_size)
-
+        """Convert sparse voxel coordinates to dense grid"""
+        grid = torch.zeros((1, 1, self.voxel_size, self.voxel_size, self.voxel_size),
+                          device=voxel_data.occupied_coords.device, dtype=torch.float32)
         
+        if voxel_data.occupied_coords.shape[0] > 0:
+            # Normalize coordinates to grid size
+            coords = voxel_data.occupied_coords.float()
+            coords = coords / voxel_data.bounds.float() * (self.voxel_size - 1)
+            coords = coords.long().clamp(0, self.voxel_size - 1)
+            
+            # Fill grid
+            grid[0, 0, coords[:, 0], coords[:, 1], coords[:, 2]] = voxel_data.values
+     
+        return grid
+    
     def get_embedding_dim(self) -> int:
         return self.embedding_dim
-
 
 class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
     def __init__(self, embedding_dim=128, voxel_size=48):
@@ -165,15 +139,23 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
         self.deconv1 = nn.ConvTranspose3d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1)
         self.deconv2 = nn.ConvTranspose3d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1)
         self.deconv3 = nn.ConvTranspose3d(32, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
+    
+    def forward(self, embedding, **kwargs):  # ADD THIS
+        return self.decode(embedding, **kwargs)
         
-    def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None):
+    def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None) -> Dict[str, torch.Tensor]:
         if embedding.dim() == 2:
+            # old (flat) path
+            print("HOUSTON WE AAVE")
             x = self.fc(embedding)
             x = x.view(-1, 128, self.init_size, self.init_size, self.init_size)
         elif embedding.dim() == 5:
+            
+            # NEW: feature-map path
             x = embedding
+            # (optional) sanity check on spatial size
             assert x.shape[2:] == (self.init_size, self.init_size, self.init_size), \
-                f"Expected [B,128,{self.init_size},{self.init_size},{self.init_size}], got {tuple(x.shape)}"
+                f"Expected feature map [B,128,{self.init_size},{self.init_size},{self.init_size}], got {tuple(x.shape)}"
         else:
             raise ValueError(f"Decoder got unexpected tensor shape {embedding.shape}")
 
@@ -184,7 +166,6 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
 
 
 # Mein Encoder
-
 class MeinEncoder(EmbeddingEncoder, nn.Module):
     def __init__(self, voxel_size=48, embedding_dim=128):
         super().__init__()
@@ -199,12 +180,14 @@ class MeinEncoder(EmbeddingEncoder, nn.Module):
         # Calculate flattened size
         self.flat_size = 128 * (voxel_size // 8) ** 3
         self.fc = nn.Linear(self.flat_size, embedding_dim)
+    
+    def forward(self, voxel_batch):  # ADD THIS
+        return self.encode(voxel_batch)
         
     def encode(self, voxel_batch: List[VoxelData]) -> torch.Tensor:
         # Build one dense grid per sample, then stack
         grids = [self._sparse_to_dense(vd) for vd in voxel_batch]  # each [1,1,D,D,D]
         x = torch.cat(grids, dim=0)                                # [B,1,D,D,D]
-
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
@@ -213,7 +196,6 @@ class MeinEncoder(EmbeddingEncoder, nn.Module):
     
     def _sparse_to_dense(self, voxel_data: VoxelData) -> torch.Tensor:
         """Convert sparse voxel coordinates to dense grid"""
-
         grid = torch.zeros((1, 1, self.voxel_size, self.voxel_size, self.voxel_size),
                           device=voxel_data.occupied_coords.device, dtype=torch.float32)
         
@@ -226,12 +208,10 @@ class MeinEncoder(EmbeddingEncoder, nn.Module):
             # Fill grid
             grid[0, 0, coords[:, 0], coords[:, 1], coords[:, 2]] = voxel_data.values
      
-
         return grid
     
     def get_embedding_dim(self) -> int:
         return self.embedding_dim
-
 
 class MeinDecoder(EmbeddingDecoder, nn.Module):
     def __init__(self, embedding_dim=128, voxel_size=48):
@@ -247,6 +227,9 @@ class MeinDecoder(EmbeddingDecoder, nn.Module):
         self.deconv1 = nn.ConvTranspose3d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1)
         self.deconv2 = nn.ConvTranspose3d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1)
         self.deconv3 = nn.ConvTranspose3d(32, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
+    
+    def forward(self, embedding, **kwargs):  # ADD THIS
+        return self.decode(embedding, **kwargs)
         
     def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None) -> Dict[str, torch.Tensor]:
         x = self.fc(embedding)
@@ -258,10 +241,7 @@ class MeinDecoder(EmbeddingDecoder, nn.Module):
         
         return {"logits": logits}
 
-
 # ---------------------------------------------------------------------------
-
-
 class ResBlock3D(nn.Module):
     def __init__(self, c):
         super().__init__()
@@ -272,17 +252,14 @@ class ResBlock3D(nn.Module):
             nn.BatchNorm3d(c),
         )
         self.act = nn.ReLU(inplace=True)
-
     def forward(self, x):
         return self.act(x + self.net(x))
-
 
 class UNet3DEncoder(EmbeddingEncoder, nn.Module):
     def __init__(self, voxel_size=48, embedding_dim=512):   # pick any ≤1000
         super().__init__()
         self.voxel_size    = voxel_size
         self.embedding_dim = embedding_dim
-
         self.stem = nn.Sequential(                 # 48³ → 24³ (32ch)
             nn.Conv3d(1, 32, 3, padding=1, bias=False),
             nn.BatchNorm3d(32), nn.ReLU(inplace=True),
@@ -296,9 +273,11 @@ class UNet3DEncoder(EmbeddingEncoder, nn.Module):
             nn.BatchNorm3d(128), nn.ReLU(inplace=True),
             ResBlock3D(128)
         )
-
         self.fc = nn.Linear(128, embedding_dim)
-
+    
+    def forward(self, voxel_batch):  # ADD THIS
+        return self.encode(voxel_batch)
+    
     # same helper you already have
     def _sparse_to_dense(self, vd):
         g = torch.zeros((1,1,self.voxel_size,self.voxel_size,self.voxel_size),
@@ -308,17 +287,14 @@ class UNet3DEncoder(EmbeddingEncoder, nn.Module):
             xyz = xyz.clamp(0, self.voxel_size-1)  # ← add this
             g[0,0, xyz[:,0], xyz[:,1], xyz[:,2]] = vd.values
         return g
-
     def encode(self, voxel_batch):
         x = torch.cat([self._sparse_to_dense(v) for v in voxel_batch], 0)
         x = self.stem(x)
         x = self.down(x)                 # [B,128,12,12,12]
         x = x.mean(dim=[2,3,4])          # global average-pool
-        return self.fc(x)                # **only latent**, no skips
-
+        return self.fc(x)                # only latent, no skips
     def get_embedding_dim(self):
         return self.embedding_dim
-
 
 # ------------------------------------------------------------------
 #  🄱 Decoder: latent → 12³ → 24³ → 48³ (no skip cat)
@@ -329,7 +305,6 @@ class UNet3DDecoder(EmbeddingDecoder, nn.Module):
         self.voxel_size = voxel_size
         self.init_size  = voxel_size // 4       # 12
         self.fc = nn.Linear(embedding_dim, 128 * self.init_size**3)
-
         self.up1 = nn.Sequential(               # 12³ → 24³
             nn.ConvTranspose3d(128, 64, 4, stride=2, padding=1, bias=False),
             nn.BatchNorm3d(64), nn.ReLU(inplace=True),
@@ -341,7 +316,10 @@ class UNet3DDecoder(EmbeddingDecoder, nn.Module):
             ResBlock3D(32)
         )
         self.out = nn.Conv3d(32, 3, 3, padding=1)
-
+    
+    def forward(self, embedding, **kwargs):  # ADD THIS
+        return self.decode(embedding, **kwargs)
+    
     def decode(self, embedding, skips=None):    # skips ignored
         x = self.fc(embedding)
         x = x.view(-1, 128, self.init_size, self.init_size, self.init_size)
@@ -373,7 +351,6 @@ class ResNet3DEncoder(EmbeddingEncoder, nn.Module):
         self.voxel_size = voxel_size
         self.embedding_dim = embedding_dim
         c0, c1, c2 = widths
-
         self.stem = nn.Sequential(
             nn.Conv3d(1, c0, 5, stride=2, padding=2, bias=False), _GN3d(c0), nn.ReLU(True),
             _ResBlock3D_GN(c0),
@@ -386,9 +363,11 @@ class ResNet3DEncoder(EmbeddingEncoder, nn.Module):
             nn.Conv3d(c1, c2, 3, stride=2, padding=1, bias=False), _GN3d(c2), nn.ReLU(True),
             _ResBlock3D_GN(c2),
         )  # x/8
-
         self.proj = nn.Linear(c2, embedding_dim)
-
+    
+    def forward(self, voxel_batch):  # ADD THIS
+        return self.encode(voxel_batch)
+    
     def _sparse_to_dense(self, vd: VoxelData) -> torch.Tensor:
         g = torch.zeros((1,1,self.voxel_size,self.voxel_size,self.voxel_size),
                         device=vd.occupied_coords.device, dtype=torch.float32)
@@ -396,16 +375,13 @@ class ResNet3DEncoder(EmbeddingEncoder, nn.Module):
             xyz = (vd.occupied_coords.float()/vd.bounds.float()*(self.voxel_size-1)).long().clamp(0,self.voxel_size-1)
             g[0,0, xyz[:,0], xyz[:,1], xyz[:,2]] = vd.values
         return g
-
     def encode(self, voxel_batch: List[VoxelData]) -> torch.Tensor:
         x = torch.cat([self._sparse_to_dense(v) for v in voxel_batch], 0)  # [B,1,D,H,W]
         x = self.stem(x); x = self.stage1(x); x = self.stage2(x)           # [B,c2,D/8,H/8,W/8]
         x = x.mean(dim=(2,3,4))                                            # GAP → [B,c2]
         return self.proj(x)                                                # [B,E]
-
     def get_embedding_dim(self) -> int:
         return self.embedding_dim
-
 
 class ResNet3DDecoder(EmbeddingDecoder, nn.Module):
     """latent → 1/8 grid → 1/4 → 1/2 → full; 3-class logits."""
@@ -415,9 +391,7 @@ class ResNet3DDecoder(EmbeddingDecoder, nn.Module):
         self.voxel_size = voxel_size
         self.init_size  = voxel_size // 8
         c2, c1, c0 = widths
-
         self.fc = nn.Linear(embedding_dim, c2 * self.init_size**3)
-
         self.up1 = nn.Sequential(  # 1/8 → 1/4
             nn.ConvTranspose3d(c2, c1, 4, stride=2, padding=1, bias=False), _GN3d(c1), nn.ReLU(True),
             _ResBlock3D_GN(c1),
@@ -430,7 +404,10 @@ class ResNet3DDecoder(EmbeddingDecoder, nn.Module):
             nn.ConvTranspose3d(c0, 32, 4, stride=2, padding=1, bias=False), _GN3d(32), nn.ReLU(True),
         )
         self.out = nn.Conv3d(32, 3, 3, padding=1)
-
+    
+    def forward(self, embedding, **kwargs):  # ADD THIS
+        return self.decode(embedding, **kwargs)
+    
     def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None) -> Dict[str, torch.Tensor]:
         x = self.fc(embedding).view(-1, self.up1[0].in_channels, self.init_size, self.init_size, self.init_size)
         x = self.up1(x); x = self.up2(x); x = self.up3(x)
@@ -450,7 +427,6 @@ class ImplicitMLPDecoder(EmbeddingDecoder, nn.Module):
         self.hidden = hidden
         self.depth = depth
         self.chunk = chunk
-
         layers = []
         in_dim = embedding_dim + 3
         for i in range(depth):
@@ -460,7 +436,6 @@ class ImplicitMLPDecoder(EmbeddingDecoder, nn.Module):
                 layers.append(nn.ReLU(inplace=True))
                 in_dim = hidden
         self.mlp = nn.Sequential(*layers)
-
         # precompute normalized grid in [-1, 1]³
         coords = torch.stack(torch.meshgrid(
             torch.linspace(-1, 1, voxel_size),
@@ -469,7 +444,10 @@ class ImplicitMLPDecoder(EmbeddingDecoder, nn.Module):
             indexing='ij'
         ), dim=-1).view(-1, 3)  # [V,3]
         self.register_buffer("grid", coords, persistent=False)
-
+    
+    def forward(self, embedding, **kwargs):  # ADD THIS
+        return self.decode(embedding, **kwargs)
+    
     def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None) -> Dict[str, torch.Tensor]:
         # embedding: [B,E]
         B, E = embedding.shape
@@ -488,7 +466,6 @@ class ImplicitMLPDecoder(EmbeddingDecoder, nn.Module):
         return {"logits": logits}
     
 # Point MLP Encoder
-
 class PointMLPEncoder(EmbeddingEncoder, nn.Module):
     """
     Encodes directly from sparse points: [x,y,z] (normalized) + value.
@@ -501,34 +478,31 @@ class PointMLPEncoder(EmbeddingEncoder, nn.Module):
         self.embedding_dim = embedding_dim
         self.max_points = max_points
         self.k = fourier_feats
-
         in_dim = 4  # x,y,z,val
         if self.k > 0:
             in_dim += 6 * self.k  # sin/cos on 3 coords with k bands
-
         self.mlp = nn.Sequential(
             nn.Linear(in_dim, 128), nn.ReLU(True),
             nn.Linear(128, 256),     nn.ReLU(True),
             nn.Linear(256, 256),     nn.ReLU(True),
         )
         self.head = nn.Linear(256 * 2, embedding_dim)  # mean+max concat
-
         # precompute Fourier frequencies if requested
         if self.k > 0:
             bands = 2.0 ** torch.arange(self.k).float() * np.pi
             self.register_buffer("bands", bands, persistent=False)
-
+    
+    def forward(self, voxel_batch):  # ADD THIS
+        return self.encode(voxel_batch)
+    
     def get_embedding_dim(self): return self.embedding_dim
-
     def _featify(self, vd: VoxelData) -> torch.Tensor:
         if vd.occupied_coords.numel() == 0:
             return torch.zeros((1, 4 + (6*self.k if self.k>0 else 0)),
                                device=self.head.weight.device)
-
         xyz = vd.occupied_coords.float() / vd.bounds.float()  # [0,1]
         val = vd.values.float().unsqueeze(1)                  # [N,1]
         x = torch.cat([xyz, val], dim=1)                      # [N,4]
-
         if self.k > 0:
             # Fourier features on coords mapped to [-1,1]
             uvw = (xyz * 2 - 1)                               # [-1,1]
@@ -538,13 +512,11 @@ class PointMLPEncoder(EmbeddingEncoder, nn.Module):
             # concat along last dim -> [N,3,2k], then flatten 3*(2k)
             fourier = torch.cat([sins, coss], dim=-1).reshape(uvw.size(0), -1)
             x = torch.cat([x, fourier], dim=1)
-
         # random or strided subsample if too many points
         if x.size(0) > self.max_points:
             idx = torch.randperm(x.size(0), device=x.device)[:self.max_points]
             x = x[idx]
         return x
-
     def encode(self, voxel_batch: List[VoxelData]) -> torch.Tensor:
         embs = []
         for vd in voxel_batch:
@@ -554,18 +526,10 @@ class PointMLPEncoder(EmbeddingEncoder, nn.Module):
             mx, _ = f.max(0)
             embs.append(self.head(torch.cat([mean, mx], dim=0)))
         return torch.stack(embs, dim=0)        # [B,E]
-
-
 class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
     """
-    Hierarchical point-set encoder (PointNet++-lite) with FEATURE PROPAGATION.
-    Stages:
-      SA0: sample K0 centers from raw points; group from raw points; per-group MLP on [Δxyz, val, ||Δ||, Fourier(Δ)] → pool → C
-      SA1+: sample Ki from previous centers; group from previous centers; MLP on [Δxyz, ||Δ||, prev_center_feat, Fourier(Δ)] → pool → C
-    Final: global mean+max over last-stage tokens, linear head → embedding_dim.
-    Notes:
-      - Sampling is voxel-grid (fast, uniform-ish). Flip use_fps=True for FPS.
-      - Neighborhood query is brute-force (pairwise) with radius + top-k cap; fine at N≤~8k.
+    PointNet++-lite with simple feature propagation.
+    NaN-safe: masks invalid neighbors before the MLP and clamps distances.
     """
     def __init__(
         self,
@@ -574,7 +538,7 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
         max_points: int = 8192,                 # cap raw N
         stages=((2048, 2.5), (512, 5.0), (128, 9.0)),  # (K, radius_in_voxels)
         nbrs_cap: int = 64,                     # max neighbors per center
-        fourier_feats: int = 0,                 # 0 disables Fourier(Δxyz)
+        fourier_feats: int = 8,                 # 0 disables Fourier(Δxyz)
         width: int = 128,                       # per-stage hidden (C)
         use_fps: bool = False                   # default voxel-grid subsample
     ):
@@ -588,7 +552,7 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
         self.width         = int(width)
         self.use_fps       = bool(use_fps)
 
-        # Stage-specific MLPs: SA0 sees val, later stages see prev feature (C)
+        # SA0 sees val; later stages see prev feature (C)
         in0 = 3 + 1 + 1 + (6*self.k_fourier if self.k_fourier > 0 else 0)          # Δxyz, val, ||Δ||, PE
         inL = 3 + 1 + self.width + (6*self.k_fourier if self.k_fourier > 0 else 0) # Δxyz, ||Δ||, prev_feat, PE
         self.stage_mlps = nn.ModuleList()
@@ -603,13 +567,16 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
                 nn.Linear(2*self.width, self.width), nn.ReLU(True)  # after mean+max concat
             ))
 
-        # Final head after global mean+max over tokens
+        # Final head after global mean+max over last tokens
         self.head = nn.Linear(2*self.width, embedding_dim)
 
         # Fourier bands
         if self.k_fourier > 0:
             bands = (2.0 ** torch.arange(self.k_fourier).float()) * np.pi
             self.register_buffer("bands", bands, persistent=False)
+
+    def forward(self, voxel_batch):
+        return self.encode(voxel_batch)
 
     def get_embedding_dim(self) -> int:
         return self.embedding_dim
@@ -625,7 +592,7 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
     @staticmethod
     def _fps(xyz: torch.Tensor, K: int):
         N = xyz.size(0); K = min(K, N)
-        if K == N:
+        if K == N or N == 0:
             return torch.arange(N, device=xyz.device, dtype=torch.long)
         sel = torch.empty(K, dtype=torch.long, device=xyz.device)
         sel[0] = torch.randint(0, N, (1,), device=xyz.device)
@@ -658,11 +625,12 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
              + cells[:, 1] * 73856093
              + cells[:, 2] * 19349663).to(torch.int64)
 
-        # keep one index per unique hash (stable-ish)
-        h_sorted, perm = torch.sort(h)
-        keep_mask = torch.ones_like(h_sorted, dtype=torch.bool)
-        keep_mask[1:] = h_sorted[1:] != h_sorted[:-1]
-        keep = perm[keep_mask]
+        # keep first index per unique hash (stable-ish, GPU-safe)
+        perm = torch.argsort(h)           # [N]
+        h_sorted = h[perm]                # [N]
+        first = torch.ones_like(h_sorted, dtype=torch.bool)
+        first[1:] = h_sorted[1:] != h_sorted[:-1]
+        keep = perm[first]                # subset of [0..N)
 
         if keep.numel() > target_k:
             keep = keep[torch.randperm(keep.numel(), device=device)[:target_k]]
@@ -670,7 +638,7 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
 
     def _fourier(self, x: torch.Tensor):
         # x: [*,3] roughly in [-1,1]
-        ang = x.unsqueeze(-1) * self.bands  # [*,3,B]
+        ang = x.unsqueeze(-1) * self.bands.to(x.dtype)  # [*,3,B]
         s, c = torch.sin(ang), torch.cos(ang)
         return torch.cat([s, c], dim=-1).reshape(*x.shape[:-1], -1)
 
@@ -678,29 +646,32 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
     def _stage(self, src_xyz: torch.Tensor, src_feat: torch.Tensor,
                base_xyz: torch.Tensor, K: int, radius: float, si: int):
         """
-        src_xyz:  [Ns,3] points to search neighbors from
+        src_xyz:  [Ns,3] search neighbors from here
         src_feat: [Ns,1] (SA0) or [Ns,C] (SA1+)
-        base_xyz: [Nb,3] points to sample centers from (usually same as src_xyz)
-        Returns:
-          centers_xyz:  [K,3]
-          centers_feat: [K,C]
+        base_xyz: [Nb,3] sample centers from here
+        Returns: (centers_xyz [K,3], centers_feat [K,C])
         """
-        device = src_xyz.device; C = self.width
+        device = src_xyz.device
 
         # choose centers
         if self.use_fps:
             idx = self._fps(base_xyz, K)
         else:
             idx = self._voxel_grid_subsample(base_xyz.long().to(torch.int64), K)
-        centers_xyz = base_xyz[idx]  # [K,3]
+        centers_xyz = base_xyz[idx]  # [K,3] (K may be < requested if not enough points)
 
         # neighbor gather
-        d2 = self._pairwise_dist2(centers_xyz, src_xyz)   # [K,Ns]
+        d2 = self._pairwise_dist2(centers_xyz, src_xyz)     # [K,Ns]
         r2 = float(radius * radius)
         d2_masked = d2.clone()
         d2_masked[d2_masked > r2] = float('inf')
 
-        k_take = min(self.nbrs_cap, src_xyz.size(0))
+        k_take = min(self.nbrs_cap, src_xyz.size(0))        # cap on neighbors
+        if k_take == 0:
+            # no neighbors at all → zero features
+            zeros = centers_xyz.new_zeros((centers_xyz.size(0), self.width))
+            return centers_xyz, zeros
+
         vals, nn_idx = torch.topk(d2_masked, k=k_take, dim=1, largest=False)
 
         # ensure at least one finite neighbor per center
@@ -718,12 +689,12 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
         nbr_xyz  = src_xyz[nn_idx]                             # [K,k,3]
         delta    = (nbr_xyz - centers_xyz.unsqueeze(1)) / max(radius, 1e-6)  # [-1,1]-ish
 
-        # distances: clamp to avoid inf, then mask
+        # distances: clamp to avoid inf/negatives, then mask
         distn = torch.sqrt(torch.clamp(vals, min=0.0, max=r2)).unsqueeze(-1) / max(radius, 1e-6)
 
         nbr_feat = src_feat[nn_idx]                            # [K,k, 1 or C]
 
-        # *** CRUCIAL: zero-out invalid neighbors BEFORE the MLP ***
+        # *** mask invalid neighbors BEFORE the MLP ***
         delta    = delta    * valid_e
         distn    = distn    * valid_e
         nbr_feat = nbr_feat * valid_e
@@ -733,11 +704,11 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
             parts.append(self._fourier(delta))                 # delta already masked
         x = torch.cat(parts, dim=-1)                           # [K,k,F_in]
 
-        # per-neighbor MLP → [K,k,C] (finite)
+        # per-neighbor MLP → [K,k,C]
         Kk = x.shape[0] * x.shape[1]
         x  = self.stage_mlps[si](x.view(Kk, -1)).view(x.shape[0], x.shape[1], -1)
 
-        # pooled features
+        # pooled features (mean + masked max)
         counts = valid.float().sum(dim=1).clamp_min_(1.0).unsqueeze(-1)  # [K,1]
         mean   = x.sum(dim=1) / counts                                   # [K,C]
 
@@ -755,7 +726,7 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
         if vd.occupied_coords.numel() == 0:
             return torch.zeros(self.embedding_dim, device=dev)
 
-        xyz = vd.occupied_coords.to(device=dev, dtype=torch.float32)        # [N,3] in voxel units
+        xyz = vd.occupied_coords.to(device=dev, dtype=torch.float32)        # [N,3] voxel units
         val = vd.values.to(device=dev, dtype=torch.float32).unsqueeze(1)    # [N,1]
 
         # optional cap N
@@ -784,38 +755,24 @@ class PointNetPPLiteFPEncoder(EmbeddingEncoder, nn.Module):
         return torch.stack([self._encode_one(vd) for vd in voxel_batch], dim=0)
 
 
-
-
-
 class CrossAttnTokensEncoder(EmbeddingEncoder, nn.Module):
     """
-    High-detail encoder:
-      - Tokens from /8 and /4 global grids
-      - 3D sinusoidal positional encoding
-      - More queries; final Linear projects to embedding_dim
+    Conv ↓ to 1/8 grid → tokens; learnable queries attend to tokens; pooled to latent.
     """
     def __init__(self, voxel_size=48, embedding_dim=1024,
-                 token_channels=256, num_queries=64, heads=4, layers=2,
-                 use_global_g4=True):
+                 token_channels=256, num_queries=20, heads=4, layers=2):
         super().__init__()
         assert voxel_size % 8 == 0
         self.voxel_size = voxel_size
         self.embedding_dim = embedding_dim
-        self.use_global_g4 = use_global_g4
 
-        # --- conv stem with tap points at /4 and /8 ---
-        self.conv1 = nn.Sequential(  # /2
-            nn.Conv3d(1, 32, 5, stride=2, padding=2, bias=False), nn.ReLU(True))
-        self.conv2 = nn.Sequential(  # /4
-            nn.Conv3d(32, 64, 3, stride=2, padding=1, bias=False), nn.ReLU(True))
-        self.conv3 = nn.Sequential(  # /8
-            nn.Conv3d(64, token_channels, 3, stride=2, padding=1, bias=False), nn.ReLU(True))
-        self.reduce4 = nn.Conv3d(64, token_channels, 1, bias=False)  # match C at /4
+        self.conv = nn.Sequential(
+            nn.Conv3d(1, 32, 5, stride=2, padding=2), nn.ReLU(True),  # /2
+            nn.Conv3d(32, 64, 3, stride=2, padding=1), nn.ReLU(True), # /4
+            nn.Conv3d(64, token_channels, 3, stride=2, padding=1), nn.ReLU(True), # /8
+        )
 
-        # learnable queries
         self.queries = nn.Parameter(torch.randn(num_queries, token_channels))
-
-        # attention blocks
         self.mhas = nn.ModuleList([
             nn.MultiheadAttention(token_channels, heads, batch_first=True)
             for _ in range(layers)
@@ -829,12 +786,12 @@ class CrossAttnTokensEncoder(EmbeddingEncoder, nn.Module):
         self.norm_q = nn.LayerNorm(token_channels)
         self.norm_t = nn.LayerNorm(token_channels)
 
-        # final projection keeps output compact for the agent
+        # ✅ final projection so output dim == embedding_dim (like the other encoders)
         self.proj = nn.Linear(num_queries * token_channels, embedding_dim, bias=False)
 
-        self.register_buffer("pe_cached", None, persistent=False)
+    def forward(self, voxel_batch):  # DDP-friendly
+        return self.encode(voxel_batch)
 
-    # -------- utils --------
     def _sparse_to_dense(self, vd):
         g = torch.zeros((1,1,self.voxel_size,self.voxel_size,self.voxel_size),
                         device=vd.occupied_coords.device)
@@ -843,71 +800,22 @@ class CrossAttnTokensEncoder(EmbeddingEncoder, nn.Module):
             g[0,0, xyz[:,0], xyz[:,1], xyz[:,2]] = vd.values
         return g
 
-    def _posenc_3d(self, D, H, W, C, device):
-        # cache per geometry to avoid recompute
-        if (self.pe_cached is not None and
-            self.pe_cached.shape == (1, D, H, W, C) and
-            self.pe_cached.device == device):
-            return self.pe_cached
-
-        z = torch.linspace(-1, 1, D, device=device)
-        y = torch.linspace(-1, 1, H, device=device)
-        x = torch.linspace(-1, 1, W, device=device)
-        zz, yy, xx = torch.meshgrid(z, y, x, indexing='ij')         # [D,H,W]
-        coords = torch.stack([xx, yy, zz], dim=-1)                  # [D,H,W,3]
-
-        bands = torch.arange(max(1, C // 6), device=device).float()
-        freq  = (2.0 ** bands) * np.pi
-        ang   = coords.unsqueeze(-1) * freq                         # [D,H,W,3,B]
-        sincos = torch.cat([torch.sin(ang), torch.cos(ang)], -1)    # [D,H,W,3,2B]
-        pe = sincos.flatten(-2)                                     # [D,H,W,6B]
-        if pe.shape[-1] < C:
-            pe = F.pad(pe, (0, C - pe.shape[-1]))
-        else:
-            pe = pe[..., :C]
-        self.pe_cached = pe.unsqueeze(0)                            # [1,D,H,W,C]
-        return self.pe_cached
-
-    def _flatten_tokens(self, x):  # [B,C,D,H,W] -> [B,T,C]
-        B, C, D, H, W = x.shape
-        return x.permute(0,2,3,4,1).reshape(B, D*H*W, C)
-
-    # -------- encode --------
     def encode(self, voxel_batch):
         x = torch.cat([self._sparse_to_dense(v) for v in voxel_batch], 0)  # [B,1,D,H,W]
-        B = x.size(0)
-
-        x2 = self.conv1(x)                 # /2 (not used for tokens here)
-        x4 = self.conv2(x2)                # /4
-        x8 = self.conv3(x4)                # /8 (token_channels)
-
-        # /8 tokens + PE
-        pe8 = self._posenc_3d(*x8.shape[2:], x8.shape[1], x8.device)       # [1,D8,H8,W8,C]
-        t_list = [ self._flatten_tokens(x8 + pe8.permute(0,4,1,2,3)) ]     # [B,T8,C]
-
-        # /4 tokens + PE (optional, but recommended for detail)
-        if self.use_global_g4:
-            x4r = self.reduce4(x4)                                          # [B,C,D4,H4,W4]
-            pe4 = self._posenc_3d(*x4r.shape[2:], x4r.shape[1], x4r.device)
-            t_list.append(self._flatten_tokens(x4r + pe4.permute(0,4,1,2,3)))
-
-        tokens = torch.cat(t_list, dim=1)                                   # [B, Tsum, C]
+        x = self.conv(x)                                                   # [B,C,g,g,g]
+        B, C, g, _, _ = x.shape
+        tokens = x.view(B, C, g*g*g).transpose(1, 2)                       # [B,T,C]
         tokens = self.norm_t(tokens)
-
-        # cross-attn with more queries, then project to embedding_dim
-        q = self.queries.unsqueeze(0).expand(B, -1, -1)                     # [B,Q,C]
+        q = self.queries.unsqueeze(0).expand(B, -1, -1)                    # [B,Q,C]
         for mha, ffn in zip(self.mhas, self.ffns):
             q2,_ = mha(self.norm_q(q), tokens, tokens)
             q = q + q2
-            q = q + ffn(q)
+            q = q + ffn(q)                                                 # [B,Q,C]
+        z = q.reshape(B, -1)                                               # [B, Q*C]
+        return self.proj(z)                                                # ✅ [B, embedding_dim]
 
-        z = q.reshape(B, -1)                                                # [B,Q*C]
-        return self.proj(z)                                                 # [B,E]
-
-    def forward(self, voxel_batch):  # for DDP
-        return self.encode(voxel_batch)
-
-    def get_embedding_dim(self): return self.embedding_dim
+    def get_embedding_dim(self): 
+        return self.embedding_dim
 
 
 class SepConv3D(nn.Module):
@@ -932,7 +840,6 @@ class Factorised3DDecoder(EmbeddingDecoder, nn.Module):
         self.voxel_size = voxel_size
         s = voxel_size // 8
         self.fc = nn.Linear(embedding_dim, base * s * s * s)
-
         self.up1 = nn.Sequential(
         nn.ConvTranspose3d(base, base//2, 4, stride=2, padding=1, bias=False),
         SepConv3D(base//2, base//2),   # ← add c_out
@@ -945,9 +852,11 @@ class Factorised3DDecoder(EmbeddingDecoder, nn.Module):
             nn.ConvTranspose3d(base//4, base//8, 4, stride=2, padding=1, bias=False),
             SepConv3D(base//8, base//8),   # ← add c_out
         )
-
         self.out = nn.Conv3d(base//8, 3, 1)
-
+    
+    def forward(self, embedding, **kwargs):  # ADD THIS
+        return self.decode(embedding, **kwargs)
+    
     def decode(self, embedding, query_points=None, skips=None):
         B = embedding.size(0)
         s = self.voxel_size // 8
@@ -964,14 +873,12 @@ class ImplicitFourierDecoder(EmbeddingDecoder, nn.Module):
         super().__init__()
         self.voxel_size = voxel_size
         self.chunk = chunk
-
         self.register_buffer("xyz", torch.stack(torch.meshgrid(
             torch.linspace(-1, 1, voxel_size),
             torch.linspace(-1, 1, voxel_size),
             torch.linspace(-1, 1, voxel_size),
             indexing='ij'
         ), dim=-1).view(-1,3), persistent=False)  # [V,3]
-
         freqs = 2.0 ** torch.arange(fourier_bands)
         self.register_buffer("freqs", freqs * np.pi, persistent=False)
         in_dim = embedding_dim + 3 + 6*fourier_bands  # xyz + sin/cos
@@ -982,53 +889,43 @@ class ImplicitFourierDecoder(EmbeddingDecoder, nn.Module):
             d = hidden
         layers += [nn.Linear(d, 3)]
         self.mlp = nn.Sequential(*layers)
-
+    
+    def forward(self, embedding, **kwargs):  # ADD THIS
+        return self.decode(embedding, **kwargs)
+    
     def _encode_xyz(self, xyz):
         # xyz: [N,3] in [-1,1]
         ang = xyz.unsqueeze(-1) * self.freqs  # [N,3,B]
         pe = torch.cat([torch.sin(ang), torch.cos(ang)], dim=-1).view(xyz.size(0), -1)
         return torch.cat([xyz, pe], dim=1)   # [N, 3+6B]
-
-    # In ImplicitFourierDecoder.decode(...)
     def decode(self, embedding, query_points=None, skips=None):
-        import torch.cuda.amp as amp
-        with amp.autocast(enabled=False):                   # ← force fp32 here
-            embedding = embedding.float()
-            B, E = embedding.shape
-            V = self.xyz.size(0)
-            xyz_pe = self._encode_xyz(self.xyz).float()
-            outs = []
-            for b in range(B):
-                z = embedding[b].unsqueeze(0).expand(V, -1)       # [V,E] fp32
-                feats = torch.cat([z, xyz_pe], dim=1)
-                preds = []
-                for i in range(0, V, self.chunk):
-                    preds.append(self.mlp(feats[i:i+self.chunk])) # fp32 MLP
-                logits = torch.cat(preds, dim=0)
-                outs.append(logits.view(self.voxel_size, self.voxel_size, self.voxel_size, 3)
-                                .permute(3,0,1,2))
-            return {"logits": torch.stack(outs, 0)}
-
-
-
-
-
+        B, E = embedding.shape
+        V = self.xyz.size(0)
+        xyz_pe = self._encode_xyz(self.xyz)
+        outs = []
+        for b in range(B):
+            z = embedding[b].unsqueeze(0).expand(V, -1)           # [V,E]
+            feats = torch.cat([z, xyz_pe.to(z.dtype)], dim=1)     # [V,E+pos]
+            preds = []
+            for i in range(0, V, self.chunk):
+                preds.append(self.mlp(feats[i:i+self.chunk]))
+            logits = torch.cat(preds, dim=0)                      # [V,3]
+            outs.append(logits.view(self.voxel_size, self.voxel_size, self.voxel_size, 3)
+                              .permute(3,0,1,2))
+        return {"logits": torch.stack(outs, 0)}  # [B,3,D,H,W]
 
 # ============== Loss Heads ==============
 class AuxFnHead(LossHead):
     """Wraps a function from losses.make_aux_loss to behave like a LossHead."""
     variable_length_target: bool = False  # set True if the fn needs lists (e.g. chamfer)
-
     def __init__(self, fn):
         super().__init__()
         self.fn = fn
-
     def forward(self, embedding, logits=None):
         # We just pass logits through; compute_loss will call the fn with logits + targets
         if logits is None and self.logits_fn is not None:
             logits = self.logits_fn(embedding)
         return logits
-
     def compute_loss(self, prediction, targets):
         # prediction == logits (from forward)
         return self.fn(prediction, targets)
@@ -1040,16 +937,14 @@ class ContourHead(LossHead, nn.Module):
         self.map_size = map_size
         self.fc1 = nn.Linear(embedding_dim, 256)
         self.fc2 = nn.Linear(256, map_size * map_size)
-
         
-    def forward(self, embedding: torch.Tensor) -> torch.Tensor:
+    def forward(self, embedding: torch.Tensor, logits=None) -> torch.Tensor:
         x = F.relu(self.fc1(embedding))
         x = self.fc2(x)
         return x.view(-1, self.map_size, self.map_size)
     
     def compute_loss(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         return F.mse_loss(prediction, target)
-
 
 class RelativeOffsetHead(LossHead, nn.Module):
     """Predicts relative offsets to K nearest obstacles/cover"""
@@ -1059,14 +954,13 @@ class RelativeOffsetHead(LossHead, nn.Module):
         self.fc1 = nn.Linear(embedding_dim, 128)
         self.fc2 = nn.Linear(128, k_nearest * 3)  # 3D offsets
         
-    def forward(self, embedding: torch.Tensor) -> torch.Tensor:
+    def forward(self, embedding: torch.Tensor, logits=None) -> torch.Tensor:
         x = F.relu(self.fc1(embedding))
         x = self.fc2(x)
         return x.view(-1, self.k_nearest, 3)
     
     def compute_loss(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         return F.mse_loss(prediction, target)
-
 
 class CoverMaskHead(LossHead, nn.Module):
     """Predicts binary mask of cover within radius"""
@@ -1076,13 +970,14 @@ class CoverMaskHead(LossHead, nn.Module):
         self.fc1 = nn.Linear(embedding_dim, 256)
         self.fc2 = nn.Linear(256, grid_size * grid_size * grid_size)
         
-    def forward(self, embedding: torch.Tensor) -> torch.Tensor:
+    def forward(self, embedding: torch.Tensor, logits=None) -> torch.Tensor:
         x = F.relu(self.fc1(embedding))
         x = self.fc2(x)
         return torch.sigmoid(x.view(-1, self.grid_size, self.grid_size, self.grid_size))
     
     def compute_loss(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         return F.binary_cross_entropy(prediction, target)
+
 class TopDownHeightHead(LossHead, nn.Module):
     """Predict 2D max-height map (x,z) normalized to [0,1]."""
     def __init__(self, embedding_dim=128, map_size=32):
@@ -1092,10 +987,8 @@ class TopDownHeightHead(LossHead, nn.Module):
             nn.Linear(embedding_dim, 256), nn.ReLU(True),
             nn.Linear(256, map_size*map_size)
         )
-
-    def forward(self, embedding):                    # [B,E] -> [B,S,S]
+    def forward(self, embedding, logits=None):                    # [B,E] -> [B,S,S]
         return self.net(embedding).view(-1, self.map_size, self.map_size)
-
     def compute_loss(self, prediction, target):
         return F.l1_loss(prediction, target)         # robust to outliers
 
@@ -1108,10 +1001,8 @@ class DistanceTransformHead(LossHead, nn.Module):
             nn.Linear(embedding_dim, 512), nn.ReLU(True),
             nn.Linear(512, grid*grid*grid)
         )
-
-    def forward(self, embedding):
+    def forward(self, embedding, logits=None):
         return self.net(embedding).view(-1, self.grid, self.grid, self.grid)
-
     def compute_loss(self, prediction, target_dt):   # expect normalized DT
         return F.smooth_l1_loss(prediction, target_dt)
 
@@ -1124,191 +1015,209 @@ class OccupancyProjectionHead(LossHead, nn.Module):
             nn.Linear(embedding_dim, 1024), nn.ReLU(True),
             nn.Linear(1024, out_ch*grid*grid*grid)
         )
-
-    def forward(self, embedding):
+    def forward(self, embedding, logits=None):
         x = self.fc(embedding).view(-1, 1, self.grid, self.grid, self.grid)
         return torch.sigmoid(x)  # prob of occupancy
-
     def compute_loss(self, prediction, target_occ):  # [B,1,G,G,G] float∈[0,1]
         return F.binary_cross_entropy(prediction, target_occ)
 
 # ============== Training Framework ==============
+def all_reduce_mean(x):
+    if not dist.is_initialized(): return x
+    if not x.is_cuda: x = x.to(torch.cuda.current_device())
+    dist.all_reduce(x, op=dist.ReduceOp.SUM)
+    x /= dist.get_world_size()
+    return x
+
 class EmbeddingTrainer:
     def __init__(self, encoder: EmbeddingEncoder, decoder: EmbeddingDecoder, 
                  loss_heads: Dict[str, LossHead], device='cuda', lr=1e-3, recon_loss = None):
-        self.encoder = encoder
-        self.decoder = decoder
-        self.loss_heads = loss_heads
-        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
+        # Initialize distributed if not already
+        if not dist.is_initialized():
+            dist.init_process_group(backend="nccl")
+            torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
         
-
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        self.device = torch.device(f"cuda:{local_rank}")
         
-        # Move models to device and collect parameters TODO: Not too sure what this does, I think it moves something to GPU if possible
+        # Move models to device
         if isinstance(encoder, nn.Module):
             encoder.to(self.device)
-
         if isinstance(decoder, nn.Module):
             decoder.to(self.device)
-
-        # ↓↓↓ wrap and move once
         self.loss_heads = nn.ModuleDict(loss_heads)
         self.loss_heads.to(self.device)
-
-        # collect params cleanly
-        all_params = []
-        if isinstance(encoder, nn.Module):
-            all_params += list(encoder.parameters())
-        if isinstance(decoder, nn.Module):
-            all_params += list(decoder.parameters())
-        all_params += list(self.loss_heads.parameters())
-
-        self.recon_loss_fn = recon_loss or (lambda l,t,extra=None: F.cross_entropy(l, t))
         
+        # Wrap with DDP
+        self.encoder = DDP(encoder, device_ids=[local_rank], output_device=local_rank,
+                          find_unused_parameters=True)
+        self.decoder = DDP(decoder, device_ids=[local_rank], output_device=local_rank,
+                          find_unused_parameters=True)
+        
+        # Wrap each loss head
+        for k, h in self.loss_heads.items():
+            self.loss_heads[k] = DDP(h, device_ids=[local_rank], output_device=local_rank,
+                                     find_unused_parameters=True)
+        
+        # Collect wrapped params
+        all_params = []
+        all_params += list(self.encoder.parameters())
+        all_params += list(self.decoder.parameters())
+        all_params += list(self.loss_heads.parameters())
+        
+        self.recon_loss_fn = recon_loss or (lambda l,t,extra=None: F.cross_entropy(l, t))
         self.optimizer = torch.optim.Adam(all_params, lr=lr)
+        self.scaler = GradScaler()
     
     def train_step(self, voxel_batch: List[VoxelData], target_batch: List[Dict[str, torch.Tensor]],
                    loss_weights: Dict[str, float]) -> Dict[str, float]:
         """Single training step"""
         # Zeros stored gradients
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad(set_to_none=True)
         
-        # Encode
-        out = self.encoder.encode(voxel_batch)
-        if isinstance(out, tuple):
-            embedding, skips = out
-        else:
-            embedding, skips = out, None
-
-        # Decode for reconstruction loss
-        reconstruction = self.decoder.decode(embedding, skips=skips)
-        logits = reconstruction["logits"]    
-        # Compute losses
-        losses = {}
-        
-        # Reconstruction loss
-        if "reconstruction" in loss_weights:
-            recon_targets = torch.cat(
-            [self._create_reconstruction_target(vd) for vd in voxel_batch], dim=0
-        )   
-
-            # TODO: Check adaptive histogram weighting
+        with autocast():
+            # Encode using forward (which calls encode internally)
+            out = self.encoder(voxel_batch)
+            if isinstance(out, tuple):
+                embedding, skips = out
+            else:
+                embedding, skips = out, None
+            # Decode using forward
+            reconstruction = self.decoder(embedding, skips=skips)
+            logits = reconstruction["logits"]    
+            # Compute losses
+            losses = {}
             
-            # hist = torch.bincount(recon_target.view(-1), minlength=3).float() 
-            # inv = 1.0 / (hist + 1e-6)
-            # weights = (inv / inv.sum()) * 3.0
-
-            #weights = torch.tensor([0.2, 1.0, 1.5], device=logits.device)
-
-            # --- dynamic class weights (median-frequency + EMA) ---
-            num_classes = 3
-            counts = torch.bincount(recon_targets.view(-1), minlength=num_classes).float()
-            freq = counts / counts.sum().clamp_min(1)
-
-            # median-frequency balancing: w_c = median(freq)/freq_c
-            med = freq[freq > 0].median()
-            w = med / freq.clamp_min(1e-6)
-
-            # optional: clamp extremes so a missing class doesn't explode the loss
-            w = w.clamp(0.25, 4.0)
-            alpha = 1.35  # try 1.2–1.6
-            w * torch.tensor([1.0, 1.0/alpha, alpha], device=w.device)
-
-            # smooth over time (create the buffers the first time)
-            if not hasattr(self, "class_weight_ema"):
-                self.class_weight_ema = w.to(logits.device)
-                self.class_weight_momentum = 0.9
-            else:
-                self.class_weight_ema = (
-                    self.class_weight_momentum * self.class_weight_ema
-                    + (1 - self.class_weight_momentum) * w.to(logits.device)
-                )
-
-            weights = self.class_weight_ema
-
-            losses["reconstruction"] = self.recon_loss_fn(
-            logits, recon_targets,
-            extra={"class_weights": weights}
-        )
-
-        # inside EmbeddingTrainer.train_step, for aux heads loop
-
-        merged_targets = {}
-        if len(target_batch) > 0:
-            keys = set().union(*[t.keys() for t in target_batch])
-            for k in keys:
-                if k == "points":
-                    merged_targets[k] = [t[k] for t in target_batch if k in t]
+            # Reconstruction loss
+            if "reconstruction" in loss_weights:
+                recon_targets = torch.cat(
+                [self._create_reconstruction_target(vd) for vd in voxel_batch], dim=0
+            )   
+                # --- dynamic class weights (median-frequency + EMA) ---
+                num_classes = 3
+                counts = torch.bincount(recon_targets.view(-1), minlength=num_classes).float()
+                freq = counts / counts.sum().clamp_min(1)
+                # median-frequency balancing: w_c = median(freq)/freq_c
+                med = freq[freq > 0].median()
+                w = med / freq.clamp_min(1e-6)
+                # optional: clamp extremes so a missing class doesn't explode the loss
+                w = w.clamp(0.25, 4.0)
+                # smooth over time (create the buffers the first time)
+                if not hasattr(self, "class_weight_ema"):
+                    self.class_weight_ema = w.to(logits.device)
+                    self.class_weight_momentum = 0.9
                 else:
-                    merged_targets[k] = torch.stack(
-                        [t[k] for t in target_batch if k in t], dim=0
-                    ).to(self.device)
-
-        # ---- auxiliary heads ----
-        for name, head in self.loss_heads.items():
-            if name not in loss_weights:
-                continue
-
-            # Function-based aux heads (use merged_targets, skip name check)
-            if isinstance(head, AuxFnHead):
-                preds = head(embedding, logits=logits)  # logits reused from recon
-                losses[name] = head.compute_loss(preds, merged_targets)
-                continue
-
-            # Legacy per-head targets (keep old key check)
-            if not all(name in tb for tb in target_batch):
-                continue
-            preds = head(embedding, logits=logits)
-            if getattr(head, "variable_length_target", False):
-                t_for_head = [tb[name] for tb in target_batch]
-            else:
-                t_for_head = torch.stack([tb[name] for tb in target_batch], dim=0)
-            losses[name] = head.compute_loss(preds, t_for_head)
-
-        # Total loss
-        total_loss = sum(loss_weights.get(name, 0) * loss for name, loss in losses.items())
-        losses["total"] = total_loss
+                    self.class_weight_ema = (
+                        self.class_weight_momentum * self.class_weight_ema
+                        + (1 - self.class_weight_momentum) * w.to(logits.device)
+                    )
+                weights = self.class_weight_ema
+                losses["reconstruction"] = self.recon_loss_fn(
+                logits, recon_targets,
+                extra={"class_weights": weights}
+            )
+            # inside EmbeddingTrainer.train_step, for aux heads loop
+            merged_targets = {}
+            if len(target_batch) > 0:
+                keys = set().union(*[t.keys() for t in target_batch])
+                for k in keys:
+                    if k == "points":
+                        merged_targets[k] = [t[k] for t in target_batch if k in t]
+                    else:
+                        merged_targets[k] = torch.stack(
+                            [t[k] for t in target_batch if k in t], dim=0
+                        ).to(self.device)
+            # ---- auxiliary heads ----
+            for name, head in self.loss_heads.items():
+                if name not in loss_weights:
+                    continue
+                # Function-based aux heads (use merged_targets, skip name check)
+                if isinstance(head.module, AuxFnHead):  # Note: .module to unwrap DDP
+                    preds = head(embedding, logits=logits)
+                    losses[name] = head.module.compute_loss(preds, merged_targets)
+                    continue
+                # Legacy per-head targets (keep old key check)
+                if not all(name in tb for tb in target_batch):
+                    continue
+                preds = head(embedding, logits=logits)
+                if getattr(head.module, "variable_length_target", False):
+                    t_for_head = [tb[name] for tb in target_batch]
+                else:
+                    t_for_head = torch.stack([tb[name] for tb in target_batch], dim=0)
+                losses[name] = head.module.compute_loss(preds, t_for_head)
+            
+            # Total loss
+            total_loss = sum(loss_weights.get(name, 0) * loss for name, loss in losses.items())
+            losses["total"] = total_loss
         
-        # Backward pass
-        total_loss.backward()
-        self.optimizer.step()
+        # Backward pass with scaler
+        self.scaler.scale(total_loss).backward()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
         
-        return {k: v.item() for k, v in losses.items()}
+        # Average losses across all GPUs for logging
+        return {k: all_reduce_mean(v.detach()).item() for k, v in losses.items()}
     
     def _create_reconstruction_target(self, voxel_data: VoxelData) -> torch.Tensor:
-        side = self.encoder.voxel_size
-        target = torch.zeros((1, side, side, side), device=self.device, dtype=torch.long)
-
+        voxel_size = self.encoder.module.voxel_size if hasattr(self.encoder.module, 'voxel_size') else 64
+        # default empty = 0
+        target = torch.zeros(
+        (1, voxel_size, voxel_size, voxel_size),
+        device=self.device, dtype=torch.long
+        )
         if voxel_data.occupied_coords.shape[0] > 0:
-            coords = voxel_data.occupied_coords.clone()
-            coords[:, 2] = -coords[:, 2]                     # FLIP z
-            coords = coords.long()
-            coords[:, 0].clamp_(0, side - 1)
-            coords[:, 1].clamp_(0, side - 1)
-            coords[:, 2].clamp_(0, side - 1)
-
-            filled_mask = voxel_data.values >= 0.6
-            sparse_mask = (~filled_mask) & (voxel_data.values >= 0.3)
-
+            coords = voxel_data.occupied_coords.float()
+            coords = coords / voxel_data.bounds.float() * (voxel_size - 1)
+            coords = coords.long().clamp(0, voxel_size - 1)
+            # map your current values (1.0 filled, 0.5 sparse) to labels 2 / 1
+            filled_mask = voxel_data.values >= 0.8
+            sparse_mask = (~filled_mask) & (voxel_data.values >= 0.5)
             target[0, coords[filled_mask, 0], coords[filled_mask, 1], coords[filled_mask, 2]] = 2
             target[0, coords[sparse_mask, 0], coords[sparse_mask, 1], coords[sparse_mask, 2]] = 1
         return target
 
 # ============== Data Generation ==============
+class DistShard(IterableDataset):
+    """Shards an IterableDataset across distributed ranks and workers"""
+    def __init__(self, src: IterableDataset):
+        super().__init__()
+        self.src = src
+    
+    def __iter__(self):
+        it = iter(self.src)
+        info = get_worker_info()
+        worker_id = info.id if info else 0
+        num_workers = info.num_workers if info else 1
+        
+        if dist.is_initialized():
+            rank = dist.get_rank()
+            world_size = dist.get_world_size()
+        else:
+            rank = 0
+            world_size = 1
+        
+        # Global stride across all ranks and workers
+        stride = world_size * num_workers
+        offset = rank * num_workers + worker_id
+        
+        for i, sample in enumerate(it):
+            if i % stride == offset:
+                yield sample
+
 class TerrainBatch(IterableDataset):
     """Infinite generator of full cubic worlds (no sub-volume)."""
     def __init__(self, world_size: int = 120,
-                 build_dt: bool = True,
-                 build_low: bool = True,
+                 build_dt: bool = False,
+                 build_low: bool = False,
                  low_scale: int = 4,
-                 build_com: bool = True,
-                 build_points: bool = True):
+                 build_com: bool = False,
+                 build_points: bool = False):
         self.world_size = int(world_size)
         self.build_dt   = bool(build_dt)
         self.build_low  = bool(build_low)
         self.low_scale  = int(low_scale)
         self.build_com  = bool(build_com)
         self.build_pts  = bool(build_points)
-
     @staticmethod
     def world_to_voxeldata_np(world: voxelsim.VoxelGrid, side: int) -> VoxelData:
         coords_np, vals_np = world.as_numpy()  # (N,3) in (x,z,y) per your lib note; you already treat as (x,y,z)
@@ -1320,7 +1229,6 @@ class TerrainBatch(IterableDataset):
             bounds          = torch.tensor([side]*3, dtype=torch.float32),
             drone_pos       = torch.tensor([side//2]*3, dtype=torch.float32),
         )
-
     def __iter__(self):
         side = self.world_size
         while True:
@@ -1331,22 +1239,19 @@ class TerrainBatch(IterableDataset):
             cfg.set_world_size_py(side)
             g.generate_terrain_py(cfg)
             world = g.generate_world_py()
-
             voxel_data = self.world_to_voxeldata_np(world, side)
             targets = self._generate_targets(voxel_data)  # fast path
             yield voxel_data, targets
-
     # ---------- helpers ----------
     @staticmethod
     def _block_mean_3d(x: np.ndarray, scale: int) -> np.ndarray:
-        """Average pool by integer factor `scale` in 3D."""
+        """Average pool by integer factor scale in 3D."""
         if scale <= 1:
             return x
         D, H, W = x.shape
         assert D % scale == 0 and H % scale == 0 and W % scale == 0, "low_scale must divide each dim"
         x = x.reshape(D//scale, scale, H//scale, scale, W//scale, scale)
         return x.mean(axis=(1,3,5))
-
     def _generate_targets(self, voxel_data: VoxelData) -> Dict[str, torch.Tensor]:
         """
         Builds:
@@ -1360,36 +1265,28 @@ class TerrainBatch(IterableDataset):
         """
         side = int(voxel_data.bounds[0].item())
         D = H = W = side
-
         # ---- dense labels (vectorized) ----
         labels_np = np.zeros((D, H, W), dtype=np.uint8)  # 0 empty
         if voxel_data.occupied_coords.numel() > 0:
             coords = voxel_data.occupied_coords.cpu().numpy().astype(np.int64)  # [N,3] (x,y,z)
-            coords[:, 2] = -coords[:, 2]          
             vals   = voxel_data.values.cpu().numpy().astype(np.float32)
-
             # clamp just in case
             np.clip(coords, 0, side-1, out=coords)
-
-            filled_mask = vals >= 0.6
-            sparse_mask = (~filled_mask) & (vals >= 0.3)
-
+            filled_mask = vals >= 0.8
+            sparse_mask = (~filled_mask) & (vals >= 0.5)
             if filled_mask.any():
                 xyz = coords[filled_mask]
                 labels_np[xyz[:,0], xyz[:,1], xyz[:,2]] = 2
             if sparse_mask.any():
                 xyz = coords[sparse_mask]
                 labels_np[xyz[:,0], xyz[:,1], xyz[:,2]] = 1
-
         # ---- occupancy float (0, 0.5, 1.0) ----
         occ_np = (labels_np == 2).astype(np.float32) + 0.5 * (labels_np == 1).astype(np.float32)
-
         # ---- low-res occupancy by avg pooling ----
         if self.build_low:
             occ_low_np = self._block_mean_3d(occ_np, self.low_scale)
         else:
             occ_low_np = None
-
         # ---- distance transform to boundary (0 at boundary/occupied) ----
         if self.build_dt:
             # edt returns distance to zero; build both sides and take min for boundary distance
@@ -1402,7 +1299,6 @@ class TerrainBatch(IterableDataset):
             dt_np = (dt_bound / (mx + 1e-6)).astype(np.float32)
         else:
             dt_np = None
-
         # ---- center of mass (weighted by occ_np) ----
         if self.build_com:
             mass = occ_np.sum()
@@ -1410,24 +1306,20 @@ class TerrainBatch(IterableDataset):
                 xs = np.arange(W, dtype=np.float32)
                 ys = np.arange(H, dtype=np.float32)
                 zs = np.arange(D, dtype=np.float32)
-
                 # sum over planes
                 sum_x = (occ_np.sum(axis=(0,1)) * xs).sum()
                 sum_y = (occ_np.sum(axis=(0,2)) * ys).sum()
                 sum_z = (occ_np.sum(axis=(1,2)) * zs).sum()
-
                 com_np = np.array([sum_x/mass, sum_y/mass, sum_z/mass], dtype=np.float32)
             else:
                 com_np = np.array([W/2.0, H/2.0, D/2.0], dtype=np.float32)  # fallback
         else:
             com_np = None
-
         # ---- points (variable length) ----
         if self.build_pts and voxel_data.occupied_coords.numel() > 0:
             pts_t = voxel_data.occupied_coords.clone().detach()  # [N,3] torch (CPU)
         else:
             pts_t = torch.zeros((0,3), dtype=torch.float32)
-
         # ---- pack to torch tensors (CPU) ----
         targets: Dict[str, torch.Tensor] = {
             "labels"   : torch.from_numpy(labels_np.astype(np.int64)),   # Long
@@ -1443,190 +1335,236 @@ class TerrainBatch(IterableDataset):
             targets["points"] = pts_t.float()                            # Float [N,3]
         return targets
     
-
-
-
-
-
-
 # ============== Main Test Runner ==============
 def collate_fn(batch):
     """Custom collate function for batching"""
     voxel_list, target_list = zip(*batch)       
     return list(voxel_list), list(target_list)
 
+def run_experiment(
+    encoder_class,
+    decoder_class,
+    loss_heads,
+    recon_loss,
+    embedding_dim=128,
+    num_epochs=100,
+    batch_size=1,
+    visualize_every=10,
+    size=48,
+    ckpt_every=100,
+    *,
+    early_stop_patience=1500,
+    early_stop_min_delta=1e-4,
+    early_stop_metric="total",
+):
+    """Run a complete experiment with given encoder/decoder (DDP-safe, early stop)."""
+    # Get rank info
+    IS_MAIN = (dist.get_rank() == 0) if dist.is_initialized() else True
+    WORLD_SIZE = dist.get_world_size() if dist.is_initialized() else 1
 
-def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embedding_dim=128, num_epochs=100, batch_size=1, visualize_every=10, size = 48, ckpt_every=100):
-    """Run a complete experiment with given encoder/decoder"""
     # Initialize components
-    encoder  = encoder_class(voxel_size=size, embedding_dim=embedding_dim)
-    decoder  = decoder_class(voxel_size=size, embedding_dim=embedding_dim)
-    
-        
-    # one-step logits function
-    logits_fn = lambda z: decoder.decode(z)["logits"]
+    encoder = encoder_class(voxel_size=size, embedding_dim=embedding_dim)
+    decoder = decoder_class(voxel_size=size, embedding_dim=embedding_dim)
 
-    # bind it to all heads that need logits
-    for h in loss_heads.values():
-        if hasattr(h, "bind_logits"):
-            h.bind_logits(logits_fn)
-
-    loss_keys = {"total", "reconstruction", *loss_heads.keys()}
-
-    logger = RunLogger(encoder_class.__name__, decoder_class.__name__,
-                       loss_keys=loss_keys, ckpt_every=ckpt_every)
-    print("▶ logging to:", logger.dir)
-    
     trainer = EmbeddingTrainer(encoder, decoder, loss_heads, recon_loss=recon_loss)
-    
-    # Initialize renderer clients for before/after visualization
-    client_input = voxelsim.RendererClient("127.0.0.1", 8080, 8081, 8090, 9090)
-    client_output = voxelsim.RendererClient("127.0.0.1", 8082, 8083, 8090, 9090)  
-    client_input.connect_py(0)
-    client_output.connect_py(0)
-    
-    # Set up agents for camera positions
-    agent_input = voxelsim.Agent(0)
-    agent_output = voxelsim.Agent(0)
-    # Position cameras above the voxel volume
-    agent_input.set_pos([size/2, size/2, -size/2])  # Adjust based on sub_volume_size
-    agent_output.set_pos([size/2, size/2, -size/2])
-    client_input.send_agents_py({0: agent_input})
-    client_output.send_agents_py({0: agent_output})
 
+    # one-step logits function (works with DDP-wrapped decoder)
+    def ddp_logits(z):
+        return trainer.decoder.module.decode(z)["logits"]
 
+    for h in trainer.loss_heads.values():
+        target = h.module if hasattr(h, "module") else h
+        if hasattr(target, "bind_logits"):
+            target.bind_logits(ddp_logits)
+
+    # Only rank 0 does logging
+    if IS_MAIN:
+        loss_keys = {"total", "reconstruction", *loss_heads.keys()}
+        logger = RunLogger(
+            encoder_class.__name__,
+            decoder_class.__name__,
+            loss_keys=loss_keys,
+            ckpt_every=ckpt_every,
+        )
+        print("▶ logging to:", logger.dir)
+        best_ckpt_path = os.path.join(logger.dir, f"best_dim{embedding_dim}.pt")
 
     # Create dataloader
     dataset    = TerrainBatch(world_size=size, build_dt=False, build_low=False, build_points=False,build_com=False)
+    # If you want distinct data per rank/worker, wrap with DistShard:
+    # dataset = DistShard(TerrainBatch(world_size=size))
+
     dataloader = DataLoader(
         dataset,
-        batch_size          = batch_size,
-        collate_fn          = collate_fn,
-        num_workers         = os.cpu_count(),
-        pin_memory          = True,
-        persistent_workers  = True,
-        prefetch_factor     = 1,
+        batch_size=batch_size,
+        collate_fn=collate_fn,
+        num_workers=max(1, os.cpu_count() // WORLD_SIZE),
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=1,
     )
-    
+
     # Training loop
     loss_history = defaultdict(list)
-    
-    steps_per_epoch = 10  # Since we have an infinite dataset
-    
+    steps_per_epoch = 10  # infinite dataset; define an "epoch" as N steps
 
-    # Store a sample for visualization
+    # Visualization sample (rank 0 only)
     viz_sample = None
     stats = collections.defaultdict(list)
     last_viz_wall_t = time.perf_counter()
     dataloader_iter = iter(dataloader)
+
+    # ---- early-stop state ----
+    best_metric = float("inf")
+    since_improve = 0
+    metric_name = early_stop_metric
+
     for epoch in range(num_epochs):
         epoch_losses = defaultdict(float)
-        
+
         for step in range(steps_per_epoch):
             with Timer() as t_fetch:
                 voxel_batch, target_batch = next(dataloader_iter)
-            if viz_sample is None:
+            if viz_sample is None and IS_MAIN:
                 viz_sample = (voxel_batch[0], target_batch[0])
-                
+
             # Move to device
+            need_aux = (len(loss_heads) > 0)  # no heads → no aux
             with Timer() as t_move:
-                voxel_batch  = [vd.to_device(trainer.device) for vd in voxel_batch]
-                target_batch = [{k: v.to(trainer.device) for k, v in t.items()} 
-                                for t in target_batch]
-            
+                voxel_batch = [vd.to_device(trainer.device) for vd in voxel_batch]
+                if need_aux:
+                    target_batch = [{k: v.to(trainer.device) for k, v in t.items()} for t in target_batch]
+                else:
+                    target_batch = []  # nothing to move/merge
             # Train step
             with Timer() as t_model:
                 loss_weights = {
-                "reconstruction": 1.0,
-                "soft_iou": 0.5,
-                "tv": 0.05,
-                "boundary": 0.5,
-                "com": 0.2,
-                "class_balance": 0.05,
-                "ms_occ": 0.3,
-                "chamfer": 0.2,
-            }
+                    "reconstruction": 1.0,
+                    # "soft_iou": 0.5,
+                    # "tv": 0.05,
+                    # "boundary": 0.5,
+                    # "com": 0.2,
+                    # "class_balance": 0.05,
+                    # "ms_occ": 0.3,
+                    # "chamfer": 0.2,
+                }
                 losses = trainer.train_step(voxel_batch, target_batch, loss_weights)
 
             stats["fetch"].append(t_fetch.dt)
-            stats["move" ].append(t_move.dt)
+            stats["move"].append(t_move.dt)
             stats["model"].append(t_model.dt)
-            
 
             # Accumulate losses
             for name, value in losses.items():
                 epoch_losses[name] += value
-        
+
         # Average losses
         for name in epoch_losses:
             epoch_losses[name] /= steps_per_epoch
             loss_history[name].append(epoch_losses[name])
-        f = np.mean(stats["fetch"][-steps_per_epoch:])
-        m = np.mean(stats["move" ][-steps_per_epoch:])
-        g = np.mean(stats["model"][-steps_per_epoch:])
-        if epoch % visualize_every == 0:
-            print(f"Epoch {epoch}: {dict(epoch_losses)}")
 
-            
-            # --- averaged timings for the last “epoch” (10 steps) ---
- 
+        f = np.mean(stats["fetch"][-steps_per_epoch:])
+        m = np.mean(stats["move"][-steps_per_epoch:])
+        g = np.mean(stats["model"][-steps_per_epoch:])
+
+        # --- periodic console viz (rank 0) ---
+        if IS_MAIN and epoch % visualize_every == 0:
+            print(f"Epoch {epoch}: {dict(epoch_losses)}")
             print(
                 f"Epoch {epoch:04d}  "
-                f"| fetch {f*1e3:6.1f} ms   "
-                f"move {m*1e3:6.1f} ms   "
-                f"model {g*1e3:6.1f} ms   "
-                f"total {(f+m+g)*1e3:6.1f} ms"
+                f"| fetch {f*1e3:6.1f} ms   "
+                f"move {m*1e3:6.1f} ms   "
+                f"model {g*1e3:6.1f} ms   "
+                f"total {(f+m+g)*1e3:6.1f} ms"
+            )
+            now = time.perf_counter()
+            delta = now - last_viz_wall_t
+            last_viz_wall_t = now
+            print(f"⏲  {delta:6.2f} s since previous visualisation\n")
+
+            # Quick forward for a viz sample using the *non-DDP* encoder/decoder
+            if viz_sample is not None:
+                with Timer() as t_disp:
+                    enc = trainer.encoder.module
+                    dec = trainer.decoder.module
+
+                    # preserve training flags, do a clean eval() pass for viz
+                    enc_mode, dec_mode = enc.training, dec.training
+                    enc.eval(); dec.eval()
+                    try:
+                        with torch.no_grad():
+                            viz_data = [viz_sample[0].to_device(trainer.device)]
+                            out = enc.encode(viz_data)              # ✅ use DDP module
+                            embedding, skips = (out if isinstance(out, tuple) else (out, None))
+                            reconstruction = dec.decode(embedding, skips)  # ✅ use DDP module
+                            logits = reconstruction["logits"]
+                    finally:
+                        enc.train(enc_mode); dec.train(dec_mode)
+                print(f"Visualization updated  –  (render {t_disp.dt*1e3:6.1f} ms)")
+
+        # ---------- rank-0 logging and early-stop decision ----------
+        stop_tensor = torch.zeros(1, device=trainer.device, dtype=torch.int64)
+        if IS_MAIN:
+            # Log & periodic ckpt
+            logger.log_epoch(epoch, epoch_losses, {"fetch": f, "move": m, "model": g})
+            logger.maybe_ckpt(epoch, trainer.encoder.module, trainer.decoder.module, trainer.optimizer)
+
+            # Current metric (fall back if missing)
+            cur = (
+                epoch_losses.get(metric_name, None)
+                if metric_name in epoch_losses
+                else (epoch_losses.get("total", None) or epoch_losses.get("reconstruction", None))
             )
 
-            # --- wall‑clock since last visualisation ---
-            now          = time.perf_counter()
-            delta        = now - last_viz_wall_t
-            last_viz_wall_t = now
-            print(f"⏲  {delta:6.2f} s since previous visualisation\n")
+            if cur is not None:
+                improved = (cur + early_stop_min_delta) < best_metric
+                if improved:
+                    best_metric = cur
+                    since_improve = 0
+                    # Save best checkpoint
+                    torch.save(
+                        {
+                            "epoch": epoch + 1,
+                            "encoder": trainer.encoder.module.state_dict(),
+                            "decoder": trainer.decoder.module.state_dict(),
+                            "optim": trainer.optimizer.state_dict(),
+                            "metric": best_metric,
+                            "metric_name": metric_name,
+                            "embedding_dim": embedding_dim,
+                        },
+                        best_ckpt_path,
+                    )
+                else:
+                    since_improve += 1
 
+                if since_improve >= early_stop_patience:
+                    print(
+                        f"[early-stop] No improvement in {early_stop_patience} epochs "
+                        f"(best {metric_name}={best_metric:.6f}). Advancing."
+                    )
+                    stop_tensor.fill_(1)
 
-            if viz_sample is not None:
-                # Show input (before)
-                show_voxels(viz_sample[0], client_input)
-                with Timer() as t_disp:
-                    # Generate reconstruction (after)
-                    with torch.no_grad():
-                        viz_data = [viz_sample[0].to_device(trainer.device)]
-                        out = encoder.encode(viz_data)
-        
+        # Broadcast stop decision to all ranks, then honor it
+        if dist.is_initialized():
+            dist.broadcast(stop_tensor, src=0)
 
-                        # handle (latent)   vs   (latent, skips)
-                        if isinstance(out, tuple):
-                            embedding, skips = out
-                        else:
-                            embedding, skips = out, None
-                        reconstruction = decoder.decode(embedding,skips)
-                        logits = reconstruction["logits"]                  # [1,3,D,H,W]
-                        
-                    
-                    # Show output (after)
-           
-                    show_voxels(logits, client_output)
-                    
-                print(
-                    f"Visualization updated  –  "
-                    f"Input:8090 Output:8091   "
-                    f"(render {t_disp.dt*1e3:6.1f} ms)"
-                )
-            # log & checkpoint
-        logger.log_epoch(epoch, epoch_losses,
-                            {"fetch": f, "move": m, "model": g})
-        logger.maybe_ckpt(epoch, encoder, decoder, trainer.optimizer)
-    logger.close()
+        if stop_tensor.item() == 1:
+            if IS_MAIN:
+                logger.close()
+            return loss_history
+
+    # normal completion
+    if IS_MAIN:
+        logger.close()
+
     return loss_history
+
 
 class Timer:
     def __enter__(self):
         self.t0 = time.perf_counter(); return self
     def __exit__(self, *exc):
         self.dt = time.perf_counter()-self.t0
-
-
 
 def show_voxels(sample, client):
     """
@@ -1635,16 +1573,14 @@ def show_voxels(sample, client):
       - torch.Tensor logits with shape [B, 3, D, H, W] or [3, D, H, W]
     """
     cell_dict = {}
-
     # ---------- Ground truth case ----------
     if isinstance(sample, VoxelData):
         coords = sample.occupied_coords.long().cpu().numpy()
         vals   = sample.values.cpu().numpy()  # 0.5 sparse, 1.0 filled
         for (x,y,z), v in zip(coords, vals):
             cell_dict[(int(x), int(y), int(z))] = (
-                voxelsim.Cell.filled() if v > 0.6 else voxelsim.Cell.sparse()
+                voxelsim.Cell.filled() if v > 0.9 else voxelsim.Cell.sparse()
             )
-
     # ---------- Prediction case ----------
     else:
         logits = sample
@@ -1652,23 +1588,14 @@ def show_voxels(sample, client):
             logits = logits[0]
         # logits now [3,D,H,W]
         pred_class = logits.argmax(0).cpu().numpy()  # 0 empty, 1 sparse, 2 filled
-
         filled = np.argwhere(pred_class == 2)
         sparse = np.argwhere(pred_class == 1)
-
-        
-        for x, y, kz in filled:
-            z = int(-kz)                                  # UNFLIP
-            cell_dict[(int(x), int(y), z)] = voxelsim.Cell.filled()
-
-        for x, y, kz in sparse:
-            z = int(-kz)
-            cell_dict[(int(x), int(y), z)] = voxelsim.Cell.sparse()
-
+        for x,y,z in filled:
+            cell_dict[(int(x),int(y),int(z))] = voxelsim.Cell.filled()
+        for x,y,z in sparse:
+            cell_dict[(int(x),int(y),int(z))] = voxelsim.Cell.sparse()
     world = voxelsim.VoxelGrid.from_dict_py(cell_dict)
     client.send_world_py(world)
-
-
 
 class RunLogger:
     """
@@ -1676,7 +1603,6 @@ class RunLogger:
     loss_keys : iterable of strings you plan to log, e.g.
                 {"total","reconstruction","contour","relative_offset"}
     """
-
     def __init__(self, enc_name, dec_name, *,
                  loss_keys,                     # ← NEW (set/list)
                  root="runs", ckpt_every=50):
@@ -1684,7 +1610,6 @@ class RunLogger:
         self.dir = os.path.join(root, f"{stamp}-{enc_name}_{dec_name}")
         os.makedirs(self.dir, exist_ok=True) 
         os.makedirs(f"{self.dir}/checkpoints", exist_ok=True)
-
         # ---- CSV header -------------------------------------------------
         self.loss_keys = list(loss_keys)          # keep a stable order
         header = (["epoch"] +
@@ -1692,24 +1617,20 @@ class RunLogger:
                   ["t_fetch_ms", "t_move_ms", "t_model_ms"])
         self.csv_f = open(os.path.join(self.dir, "losses.csv"), "w", newline="")
         self.csv_w = csv.writer(self.csv_f); self.csv_w.writerow(header)
-
         # ---- TensorBoard ------------------------------------------------
         self.tb = SummaryWriter(self.dir)
         self.tb.flush()
         self.ckpt_every = ckpt_every
-
     # ---------------------------------------------------------------------
     def log_epoch(self, epoch:int, losses:dict, t:dict):
         row = [epoch] + [losses.get(k, 0.0) for k in self.loss_keys] + [
             t.get("fetch",0)*1e3, t.get("move",0)*1e3, t.get("model",0)*1e3
         ]
         self.csv_w.writerow(row); self.csv_f.flush()
-
         for k in self.loss_keys:
             self.tb.add_scalar(f"loss/{k}", losses.get(k,0.0), epoch)
         for k,v in t.items():
             self.tb.add_scalar(f"time/{k}", v, epoch)
-
     # ---------------------------------------------------------------------
     def maybe_ckpt(self, epoch:int, enc, dec, opt):
         if (epoch+1) % self.ckpt_every == 0:
@@ -1720,48 +1641,8 @@ class RunLogger:
                 "optim"  : opt.state_dict()
             }, os.path.join(self.dir, "checkpoints",
                             f"epoch-{epoch+1:04d}.pt"))
-
     def close(self):
         self.csv_f.close(); self.tb.close()
-
-# ============== Usage Example ==============
-# if __name__ == "__main__":
-#     # Test simple CNN autoencoder
-#     print("Testing CNN Autoencoder...")
-#     print("CUDA available:", torch.cuda.is_available())
-#     print("CUDA device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
-        
-#     loss_heads = {
-#         # # function losses wrapped as heads
-#         # "soft_iou":      AuxFnHead(make_aux_loss("soft_iou")),
-#         # "tv":            AuxFnHead(make_aux_loss("tv")),
-#         # "boundary":      AuxFnHead(make_aux_loss("boundary")),
-#         # "com":           AuxFnHead(make_aux_loss("com")),
-#         # "class_balance": AuxFnHead(make_aux_loss("class_balance")),
-#         # "ms_occ":        AuxFnHead(make_aux_loss("ms_occ", scale=4)),
-#         # "chamfer":       AuxFnHead(make_aux_loss("chamfer", topk=2048)),
-#     }
-#     # loss_heads["chamfer"].variable_length_target = True
-#     recon_loss = make_recon_loss("ce") 
-#     torch.cuda.empty_cache()
-#     # dims = [128, 256, 512, 1024]          # sweep list
-#     # for d in dims:
-#     #     print(f"\n=== 🔵 latent_dim = {d} ===")
-#     #     run_experiment(SimpleCNNEncoder, SimpleCNNDecoder,
-#     #                    embedding_dim=d,
-#     #                    num_epochs=500,            # shorter for quick sweep
-#     #                    batch_size=8,
-#     #                    visualize_every=50,
-#     #                    size=48,
-#     #                    ckpt_every=50)
-#     run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, loss_heads,
-#                        embedding_dim=512,
-#                        num_epochs=5000,            # shorter for quick sweep
-#                        recon_loss=recon_loss,
-#                        batch_size=1,
-#                        visualize_every=50,
-#                        size=48,
-#                        ckpt_every=50)
 
 def make_aux_heads(embedding_dim):
     heads = {
@@ -1780,32 +1661,52 @@ def make_aux_heads(embedding_dim):
     # heads["chamfer"].variable_length_target = True
     return heads
 
-def sweep():
-    recon_loss = make_recon_loss("ce")
+def init_distributed():
+    """Initialize distributed training if not already done"""
+    if not dist.is_initialized():
+        dist.init_process_group(backend="nccl")
+        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
+def cleanup_distributed():
+    """Clean up distributed processes"""
+    if dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()
+
+def sweep():
+    init_distributed()
+    
+    # Set different seeds per rank
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    torch.manual_seed(42 + rank)
+    np.random.seed(42 + rank)
+    
+    torch.backends.cudnn.benchmark = True
+    
+    recon_loss = make_recon_loss("ce")
     encoder_decoder_pairs = [
         (SimpleCNNEncoder,        SimpleCNNDecoder),
-        # (PointNetPPLiteFPEncoder,           ImplicitFourierDecoder),
+        #  (CrossAttnTokensEncoder, ImplicitFourierDecoder),
         # (ResNet3DEncoder,         ResNet3DDecoder),
         # (CrossAttnTokensEncoder,  ImplicitFourierDecoder),
         # (PointMLPEncoder,         ImplicitFourierDecoder),   # sparse-in / implicit-out
     ]
-
-    emb_dims = [128,192,256]
-    emb_dims=[1000]
-    size = 120
- 
+    emb_dims = [512, 1024,2048,5120]
+    size = 48
      # Regimes are factories now
     regimes = [
         ("recon_only",    lambda dim: {}),
         ("recon_plus_aux", make_aux_heads),   # will be called with dim
     ]
-
+    
+    IS_MAIN = (dist.get_rank() == 0) if dist.is_initialized() else True
+    
     for regime_name, heads_factory in regimes:
         for Enc, Dec in encoder_decoder_pairs:
             for d in emb_dims:
                 loss_heads = heads_factory(d)
-                print(f"\n=== {regime_name} | {Enc.__name__} → {Dec.__name__} | dim={d} ===")
+                if IS_MAIN:
+                    print(f"\n=== {regime_name} | {Enc.__name__} → {Dec.__name__} | dim={d} ===")
                 run_experiment(
                     encoder_class=Enc,
                     decoder_class=Dec,
@@ -1814,13 +1715,14 @@ def sweep():
                     embedding_dim=d,
                     num_epochs=5000,
                     batch_size=1,
-                    visualize_every=100,
+                    visualize_every=250,
                     size=size,
                     ckpt_every=500,
                 )
+    
+    cleanup_distributed()
 
 if __name__ == "__main__":
     print("CUDA available:", torch.cuda.is_available())
     torch.cuda.empty_cache()
     sweep()
-

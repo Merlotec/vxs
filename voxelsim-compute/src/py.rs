@@ -18,8 +18,9 @@ use voxelsim::viewport::{CameraProjection, CameraView};
 #[pymodule]
 pub fn voxelsim_compute(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FilterWorld>()?;
-    m.add_class::<WorldChangeset>()?;
-    m.add_class::<AgentVisionRenderer>()?;
+    m.add_class::
+    <WorldChangeset>()?;
+    85/m.add_class::<AgentVisionRenderer>()?;
     m.add_class::<NoiseParams>()?;
     Ok(())
 }
