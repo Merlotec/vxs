@@ -5140,6 +5140,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "px4-mc"
+version = "0.1.0"
+dependencies = [
+ "cmake",
+ "nalgebra 0.33.2",
+]
+
+[[package]]
 name = "pyo3"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8877,6 +8885,7 @@ dependencies = [
  "nalgebra 0.33.2",
  "noise",
  "peng_quad",
+ "px4-mc",
  "pyo3",
  "rand 0.9.2",
  "rayon",

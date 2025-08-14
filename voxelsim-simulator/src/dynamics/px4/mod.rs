@@ -4,59 +4,55 @@ use voxelsim::{
     chase::{ActionProgress, ChaseTarget},
 };
 
-use crate::dynamics::{
-    AgentDynamics,
-    px4::{
-        attitude::AttitudeControl,
-        position::{PIDState, PositionControl},
-        rate::{RateControl, RateState, SaturationFlags},
-    },
-};
+use crate::dynamics::{AgentDynamics, run_simulation_tick_rk4};
+use px4_mc::{Px4McController, Px4McSettings};
 
 pub mod attitude;
 pub mod position;
 pub mod rate;
+#[cfg(feature = "python")]
+pub mod settings;
 
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
-pub struct PX4Dynamics {
-    position_control: PositionControl,
-    attitude_control: AttitudeControl,
-    rate_control: RateControl,
-
-    rate_state: RateState,
-    saturation_flags: SaturationFlags,
-
+pub struct Px4Dynamics {
+    controller: Px4McController,
     bounding_box: Vector3<f64>,
-    pid: PIDState,
-
     quad: peng_quad::Quadrotor,
+    hover_thrust: f32, // normalized [0,1] used by PX4 PositionControl
 }
 
-impl Default for PX4Dynamics {
+impl Default for Px4Dynamics {
     fn default() -> Self {
         // Reasonable starting values; matches QuadParams::default-like settings
         let quad = peng_quad::Quadrotor::new(
             0.01,
-            0.3,
-            -9.81,
+            1.0,
+            9.8,
             0.01,
             [0.0347563, 0.0, 0.0, 0.0, 0.0458929, 0.0, 0.0, 0.0, 0.0977],
         )
         .unwrap();
+        // Build settings up-front and construct controller with them
+        let mut settings = Px4McSettings::default();
+        settings.dt = 0.01;
+        settings.mass = quad.mass as f32;
+        let hover_thrust = settings.hover_thrust;
+        let controller = Px4McController::new(&settings);
         Self {
-            position_control: PositionControl::default(),
-            attitude_control: AttitudeControl::default(),
-            rate_control: RateControl::default(),
-            rate_state: RateState::default(),
-            saturation_flags: SaturationFlags::default(),
+            controller,
             bounding_box: Vector3::new(0.3, 0.3, 0.1),
-            pid: PIDState::default(),
             quad,
+            hover_thrust,
         }
     }
 }
 
-impl PX4Dynamics {
+impl Px4Dynamics {
+    pub fn apply_px4_settings(&mut self, s: &Px4McSettings) {
+        self.hover_thrust = s.hover_thrust;
+        self.controller.apply_settings(s);
+    }
+
     pub fn next_body_rate_sp(
         &mut self,
         pos: Vector3<f64>,
@@ -68,43 +64,27 @@ impl PX4Dynamics {
         t_yaw: f64,
         dt: f64,
     ) -> (f64, Vector3<f64>) {
-        let vel_sp = self.position_control.position_controller(pos, t_pos, t_vel);
+        // Update controller dt in case it differs
+        self.controller.set_dt(dt as f32);
 
-        let mut pid = self.pid;
-        // Tell PX4 to fill in these values.
-        pid.thr_sp.x = f64::NAN;
-        pid.thr_sp.y = f64::NAN;
+        // Convert inputs to f32 as expected by px4_mc
+        let posf = pos.cast::<f32>();
+        let velf = vel.cast::<f32>();
+        let ratesf = rate.cast::<f32>();
+        let t_posf = t_pos.cast::<f32>();
+        let t_velf = t_vel.cast::<f32>();
+        let qf = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+            q.w as f32, q.i as f32, q.j as f32, q.k as f32,
+        ));
 
-        let new_pid = self
-            .position_control
-            .velocity_controller(vel, vel_sp, pid, dt);
-
-        self.pid = new_pid;
-
-        println!("Thrust setpoint: {:?}", new_pid.thr_sp);
-
-        let att_sp = attitude::thrust_to_attitude(new_pid.thr_sp, t_yaw);
-
-        let body_dir = att_sp.q_d * (-Vector3::z_axis());
-        println!("Body target dir: {:?}", body_dir);
-
-        let rate_sp = self.attitude_control.update(q, att_sp.q_d, 0.0);
-        println!("Rate sp: {:?}", rate_sp);
-
-        let (torque, new_rate_state) = self.rate_control.update(
-            rate,
-            rate_sp,
-            self.rate_state,
-            self.saturation_flags,
-            dt,
-            false,
-        );
-        println!("Body torque: {:?}", torque);
-
-        self.rate_state = new_rate_state;
-
-        // Do something with rate_sp.
-        (att_sp.thrust_body.z, torque)
+        let (torque, thrust_norm_z) = self
+            .controller
+            .update(&posf, &velf, &qf, &ratesf, &t_posf, &t_velf, dt as f32, t_yaw as f32, 0.0);
+        // Map PX4 normalized thrust (FRD z-component, negative for lift) to Newtons magnitude for Peng quad
+        // F = (-thr_z / hover_thrust) * m * g
+        let thrust_newtons =
+            (-(thrust_norm_z) / self.hover_thrust) as f64 * (self.quad.mass as f64) * 9.81_f64;
+        (-thrust_newtons, torque.cast::<f64>())
     }
 
     pub fn mass(&self) -> f64 {
@@ -112,7 +92,7 @@ impl PX4Dynamics {
     }
 }
 
-impl AgentDynamics for PX4Dynamics {
+impl AgentDynamics for Px4Dynamics {
     fn update_agent_dynamics(
         &mut self,
         agent: &mut Agent,
@@ -146,22 +126,20 @@ impl AgentDynamics for PX4Dynamics {
             delta,
         );
 
+        println!("thrust: {:?}, torque: {:?}", control_thrust, control_torque);
+
         // Now enter RX4 inputs.
-        self.quad.position = agent.pos.cast();
-        self.quad.velocity = agent.vel.cast();
-        self.quad.orientation = agent.attitude.cast();
-        self.quad.angular_velocity = agent.rate.cast();
+        run_simulation_tick_rk4(agent, &mut self.quad, control_thrust, control_torque, delta);
 
-        self.quad.time_step = delta as f32;
+        // run_simulation_tick_rk4(
+        //     agent,
+        //     &mut self.quad,
+        //     control_thrust,
+        //     Vector3::new(0.0, 0.0, 0.0),
+        //     delta,
+        // );
 
-        // Due to NED, we enter negative control thrust along the vertical (z) axis to represent forward movement.
-        self.quad
-            .update_dynamics_with_controls_rk4(control_thrust as f32, &control_torque.cast());
-
-        agent.pos = self.quad.position.cast();
-        agent.vel = self.quad.velocity.cast();
-        agent.attitude = self.quad.orientation.cast();
-        agent.rate = self.quad.angular_velocity.cast();
+        // agent.attitude = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.0);
     }
 
     fn bounding_box(&self) -> Vector3<f64> {

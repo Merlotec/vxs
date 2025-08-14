@@ -4,25 +4,27 @@ use voxelsim::chase::ChaseTarget;
 use voxelsim::py::PyCoord;
 use voxelsim::{Agent, VoxelGrid};
 
-use crate::dynamics::px4::PX4Dynamics;
-use crate::dynamics::px4::attitude::AttitudeControl;
-use crate::dynamics::px4::position::PositionControl;
-use crate::dynamics::px4::rate::RateControl;
 use crate::dynamics::quad::{QuadDynamics, QuadParams};
 use crate::dynamics::{AgentDynamics, EnvState};
 use crate::terrain::{TerrainConfig, TerrainGenerator};
+
+#[cfg(feature = "px4")]
+use crate::dynamics::px4::Px4Dynamics;
 
 #[pymodule]
 pub fn voxelsim_simulator(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<QuadDynamics>()?;
     m.add_class::<QuadParams>()?;
     // PX4 nested module
-    let px4_mod = PyModule::new(m.py(), "px4")?;
-    px4_mod.add_class::<PX4Dynamics>()?;
-    px4_mod.add_class::<PositionControl>()?;
-    px4_mod.add_class::<AttitudeControl>()?;
-    px4_mod.add_class::<RateControl>()?;
-    m.add_submodule(&px4_mod)?;
+    #[cfg(feature = "px4")]
+    {
+        use crate::dynamics::px4::settings::Px4SettingsPy;
+
+        let px4_mod = PyModule::new(m.py(), "px4")?;
+        px4_mod.add_class::<Px4Dynamics>()?;
+        px4_mod.add_class::<Px4SettingsPy>()?;
+        m.add_submodule(&px4_mod)?;
+    }
     m.add_class::<TerrainGenerator>()?;
     m.add_class::<TerrainConfig>()?;
     m.add_class::<EnvState>()?;
@@ -54,8 +56,9 @@ impl QuadDynamics {
     }
 }
 
+#[cfg(feature = "px4")]
 #[pymethods]
-impl PX4Dynamics {
+impl Px4Dynamics {
     #[staticmethod]
     pub fn default_py() -> Self {
         Self::default()
@@ -70,29 +73,10 @@ impl PX4Dynamics {
     ) {
         self.update_agent_dynamics(agent, env, chaser, delta);
     }
-}
 
-#[pymethods]
-impl PositionControl {
-    #[staticmethod]
-    pub fn default_py() -> Self {
-        Self::default()
-    }
-}
-
-#[pymethods]
-impl AttitudeControl {
-    #[staticmethod]
-    pub fn default_py() -> Self {
-        Self::default()
-    }
-}
-
-#[pymethods]
-impl RateControl {
-    #[staticmethod]
-    pub fn default_py() -> Self {
-        Self::default()
+    pub fn apply_px4_settings_py(&mut self, s: &crate::dynamics::px4::settings::Px4SettingsPy) {
+        let native = s.to_native();
+        self.apply_px4_settings(&native);
     }
 }
 

@@ -6,7 +6,7 @@ agent = vxs.Agent(0)
 agent.set_pos([50.0, 50.0, -20.0])
 
 fw = vxs.FilterWorld()
-dynamics = vxs.px4.PX4Dynamics.default_py()
+dynamics = vxs.px4.Px4Dynamics.default_py()
 
 chaser = vxs.FixedLookaheadChaser.default_py()
 
