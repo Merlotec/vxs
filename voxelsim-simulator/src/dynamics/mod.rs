@@ -1,4 +1,5 @@
 pub mod pid;
+#[cfg(feature = "px4")]
 pub mod px4;
 pub mod quad;
 
