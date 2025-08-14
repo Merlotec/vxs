@@ -29,17 +29,38 @@ def _infer_emb_dim(enc_sd, dec_sd):
     return 512  # fallback
 
 def _load_models(ckpt_path, world_side, model_side, device):
-    class Timer:
-        def __enter__(self): self.t0=time.perf_counter(); return self
-        def __exit__(self,*_): self.dt=time.perf_counter()-self.t0
-    with Timer() as t_load:
-        ckpt  = torch.load(ckpt_path, map_location="cpu")
-        enc_sd, dec_sd = ckpt["encoder"], ckpt["decoder"]
-        E = _infer_emb_dim(enc_sd, dec_sd)
-        enc = EncClass(voxel_size=world_side, embedding_dim=E).to(device).eval()
-        dec = DecClass(voxel_size=model_side, embedding_dim=E).to(device).eval()
-        enc.load_state_dict(enc_sd); dec.load_state_dict(dec_sd)
-    return enc, dec, t_load.dt
+    ckpt  = torch.load(ckpt_path, map_location="cpu")
+    enc_sd, dec_sd = ckpt["encoder"], ckpt["decoder"]
+
+    # infer emb dim (unchanged)
+    def _infer_emb_dim(enc_sd, dec_sd):
+        for k in ("fc.weight", "proj.weight", "head.weight"):
+            if k in enc_sd: return enc_sd[k].shape[0]
+        if "fc.weight" in dec_sd: return dec_sd["fc.weight"].shape[1]
+        return 512
+
+    E = _infer_emb_dim(enc_sd, dec_sd)
+    enc = EncClass(voxel_size=model_side, embedding_dim=E).to(device).eval()
+    dec = DecClass(voxel_size=model_side, embedding_dim=E).to(device).eval()
+
+    def _prune_mismatched(sd, module):
+        current = module.state_dict()
+        removed = []
+        for k in list(sd.keys()):
+            if (k not in current) or (sd[k].shape != current[k].shape):
+                removed.append(k)
+                sd.pop(k)
+        return removed
+
+    dropped_enc = _prune_mismatched(enc_sd, enc)
+    dropped_dec = _prune_mismatched(dec_sd, dec)
+
+    enc.load_state_dict(enc_sd, strict=False)
+    dec.load_state_dict(dec_sd, strict=False)
+
+    print(f"encoder: loaded {len(enc_sd)} keys, skipped {len(dropped_enc)} → {dropped_enc}")
+    print(f"decoder: loaded {len(dec_sd)} keys, skipped {len(dropped_dec)} → {dropped_dec}")
+    return enc, dec, 0.0
 
 class Timer:
     def __enter__(self):  self.t0 = time.perf_counter(); return self
@@ -66,7 +87,7 @@ class KeyPoller:
 
 # --- bench runner with live refresh ---
 def test1():
-    world_side = 150
+    world_side = 120
     model_side = 120
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -83,7 +104,7 @@ def test1():
     client_in.connect_py(0); client_out.connect_py(0)
 
     # load models once
-    enc, dec, t_load = _load_models(CKPT_PATH, model_side, world_side, device)
+    enc, dec, t_load = _load_models(CKPT_PATH, world_side, model_side, device)
     print(f"📦 load ckpt         {t_load*1e3:7.2f} ms")
 
     def refresh():

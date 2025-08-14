@@ -97,8 +97,8 @@ class SimpleCNNEncoder(EmbeddingEncoder, nn.Module):
         self.conv3 = nn.Conv3d(64, 128, kernel_size=3, stride=2, padding=1)
 
         # Calculate flattened size
-        self.flat_size = 128 * (voxel_size // 8) ** 3
-        self.fc = nn.Linear(self.flat_size, embedding_dim)
+        # self.flat_size = 128 * (voxel_size // 8) ** 3
+        # self.fc = nn.Linear(self.flat_size, embedding_dim)
         
     def encode(self, voxel_batch: List[VoxelData]) -> torch.Tensor:
         # Build one dense grid per sample, then stack
@@ -111,21 +111,40 @@ class SimpleCNNEncoder(EmbeddingEncoder, nn.Module):
         # x = x.flatten(1)                                           # [B, F]
         # return self.fc(x) 
         return x
+    @staticmethod
+    def _center_crop_or_pad_to(x: torch.Tensor, target: int) -> torch.Tensor:
+        # x: [B,1,D,H,W]
+        B,C,D,H,W = x.shape
+        td, th, tw = target - D, target - H, target - W
+        if td > 0 or th > 0 or tw > 0:
+            pd0, pd1 = td//2, td - td//2
+            ph0, ph1 = th//2, th - th//2
+            pw0, pw1 = tw//2, tw - tw//2
+            x = F.pad(x, (pw0, pw1, ph0, ph1, pd0, pd1))
+            D,H,W = x.shape[-3:]
+        if D > target or H > target or W > target:
+            sd = (D - target)//2
+            sh = (H - target)//2
+            sw = (W - target)//2
+            x = x[..., sd:sd+target, sh:sh+target, sw:sw+target]
+        return x
+
     def _sparse_to_dense(self, voxel_data: VoxelData) -> torch.Tensor:
-        side = self.voxel_size
-        grid = torch.zeros((1, 1, side, side, side),
-                        device=voxel_data.occupied_coords.device, dtype=torch.float32)
-
+        """Build at the world's native side, then center crop/pad to model size."""
+        src_side = int(voxel_data.bounds[0].item())  # world side
+        grid = torch.zeros((1, 1, src_side, src_side, src_side),
+                           device=voxel_data.occupied_coords.device, dtype=torch.float32)
         if voxel_data.occupied_coords.shape[0] > 0:
-            coords = voxel_data.occupied_coords.clone()      # [N,3] world: z ∈ [-(side-1), 0]
-            coords[:, 2] = -coords[:, 2]                     # FLIP z → k_z
+            coords = voxel_data.occupied_coords.clone()
+            coords[:, 2] = -coords[:, 2]            # flip z to index
             coords = coords.long()
-            coords[:, 0].clamp_(0, side - 1)                 # clamp x
-            coords[:, 1].clamp_(0, side - 1)                 # clamp y
-            coords[:, 2].clamp_(0, side - 1)                 # clamp z index
-
+            coords[:, 0].clamp_(0, src_side - 1)
+            coords[:, 1].clamp_(0, src_side - 1)
+            coords[:, 2].clamp_(0, src_side - 1)
             grid[0, 0, coords[:, 0], coords[:, 1], coords[:, 2]] = voxel_data.values
-        return grid
+
+        # 🔵 enforce decoder’s trained size without interpolation
+        return self._center_crop_or_pad_to(grid, self.voxel_size)
 
         
     def get_embedding_dim(self) -> int:
@@ -147,19 +166,14 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
         self.deconv2 = nn.ConvTranspose3d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1)
         self.deconv3 = nn.ConvTranspose3d(32, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
         
-    def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None) -> Dict[str, torch.Tensor]:
+    def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None):
         if embedding.dim() == 2:
-            # old (flat) path
-            print("HOUSTON WE AAVE")
             x = self.fc(embedding)
             x = x.view(-1, 128, self.init_size, self.init_size, self.init_size)
         elif embedding.dim() == 5:
-            
-            # NEW: feature-map path
             x = embedding
-            # (optional) sanity check on spatial size
             assert x.shape[2:] == (self.init_size, self.init_size, self.init_size), \
-                f"Expected feature map [B,128,{self.init_size},{self.init_size},{self.init_size}], got {tuple(x.shape)}"
+                f"Expected [B,128,{self.init_size},{self.init_size},{self.init_size}], got {tuple(x.shape)}"
         else:
             raise ValueError(f"Decoder got unexpected tensor shape {embedding.shape}")
 
