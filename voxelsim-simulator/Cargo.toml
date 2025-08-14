@@ -21,3 +21,4 @@ pyo3 = { version = "0.25.1", features = ["extension-module"], optional = true }
 bytemuck = "1.23.1"
 dashmap = { version = "6.1.0", features = ["serde", "rayon"] }
 peng_quad = "0.5.5"
+px4-mc = { path = "../px4-mc" }
