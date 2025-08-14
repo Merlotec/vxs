@@ -77,9 +77,17 @@ impl Px4Dynamics {
             q.w as f32, q.i as f32, q.j as f32, q.k as f32,
         ));
 
-        let (torque, thrust_norm_z) = self
-            .controller
-            .update(&posf, &velf, &qf, &ratesf, &t_posf, &t_velf, dt as f32, t_yaw as f32, 0.0);
+        let (torque, thrust_norm_z) = self.controller.update(
+            &posf,
+            &velf,
+            &qf,
+            &ratesf,
+            &t_posf,
+            &t_velf,
+            dt as f32,
+            t_yaw as f32,
+            0.0,
+        );
         // Map PX4 normalized thrust (FRD z-component, negative for lift) to Newtons magnitude for Peng quad
         // F = (-thr_z / hover_thrust) * m * g
         let thrust_newtons =
@@ -125,8 +133,6 @@ impl AgentDynamics for Px4Dynamics {
             chaser.yaw,
             delta,
         );
-
-        println!("thrust: {:?}, torque: {:?}", control_thrust, control_torque);
 
         // Now enter RX4 inputs.
         run_simulation_tick_rk4(agent, &mut self.quad, control_thrust, control_torque, delta);
