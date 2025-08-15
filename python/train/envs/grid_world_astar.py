@@ -133,7 +133,7 @@ class GridWorldAStarEnv(gym.Env):
     def _init_world(self):
         self._gen_world(seed=random.randint(1, 10**6))
         self.agent = vxs.Agent(0)
-        self.agent.set_pos(self.start_pos)
+        self.agent.set_hold_py(self.start_pos, 0.0)
         self.filter_world = vxs.FilterWorld()
         self.vision = vxs.AgentVisionRenderer(self.world, (160, 100), self.noise)
         if self.client:
@@ -174,7 +174,7 @@ class GridWorldAStarEnv(gym.Env):
         self.filter_world = vxs.FilterWorld()
         self.vision = vxs.AgentVisionRenderer(self.world, (160, 100), self.noise)
         self.agent = vxs.Agent(0)
-        self.agent.set_pos(self.start_pos)
+        self.agent.set_hold_py(self.start_pos, 0.0)
         self.world_time = 0.0
         self._last_action[:] = 0.0
         self.chaser = vxs.FixedLookaheadChaser.default_py()
@@ -196,7 +196,7 @@ class GridWorldAStarEnv(gym.Env):
         urgency = float(np.clip(urgency, 0.0, 1.0))
         urgency = 0.8
         yaw = float(np.clip(yaw, -math.pi, math.pi))
-        yaw = 0
+        # yaw = 0
         priority = float(np.clip(priority, 0.0, 1.0))
         # Compute destination voxel coord relative to current voxel
         origin = np.array(self.agent.get_coord_py())
@@ -210,7 +210,7 @@ class GridWorldAStarEnv(gym.Env):
         failed = False
 
         # Plan if allowed (override or idle)
-        curr = self.agent.get_action()
+        curr = self.agent.get_action_py()
         if (not curr):# or (priority >= self.override_threshold):
             if curr and priority >= self.override_threshold:
                 overridden = True

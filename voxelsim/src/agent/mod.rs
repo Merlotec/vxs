@@ -29,7 +29,13 @@ pub struct Agent {
     pub id: usize,
 
     // Current action being processed by the agent.
-    pub action: Option<Action>,
+    pub state: AgentState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AgentState {
+    Action(Action),
+    Hold { coord: Coord, yaw: f64 },
 }
 
 #[derive(
@@ -108,6 +114,11 @@ impl ActionIntent {
             None
         }
     }
+
+    pub fn relative_end_coord(&self) -> Coord {
+        self.relative_centroid_pos(self.move_sequence.len())
+            .unwrap()
+    }
 }
 
 impl Action {
@@ -133,6 +144,10 @@ impl Action {
 
         Ok(centroids)
     }
+
+    pub fn end_coord(&self) -> Coord {
+        self.origin + self.intent.relative_end_coord()
+    }
 }
 
 pub const MAX_ACTIONS: usize = 6;
@@ -145,7 +160,10 @@ impl Agent {
             vel: Vector3::zeros(),
             thrust: Vector3::zeros(),
             rate: Vector3::zeros(),
-            action: None,
+            state: AgentState::Hold {
+                coord: Vector3::zeros(),
+                yaw: 0.0,
+            },
             attitude: UnitQuaternion::identity(),
         }
     }
@@ -154,16 +172,25 @@ impl Agent {
         CameraView::from_pos_quat(self.pos, orientation.quat * self.attitude)
     }
 
-    pub fn set_position(&mut self, x: f64, y: f64, z: f64) {
-        self.pos = Vector3::new(x, y, z);
+    pub fn get_action(&self) -> Option<&Action> {
+        if let AgentState::Action(action) = &self.state {
+            Some(action)
+        } else {
+            None
+        }
     }
 
-    pub fn get_position(&self) -> (f64, f64, f64) {
-        (self.pos.x, self.pos.y, self.pos.z)
+    pub fn get_position(&self) -> Vector3<f64> {
+        self.pos
     }
 
     pub fn get_coord(&self) -> Coord {
         self.pos.map(|e| e.round() as i32)
+    }
+
+    pub fn set_hold(&mut self, coord: Coord, yaw: f64) {
+        self.pos = coord.cast();
+        self.state = AgentState::Hold { coord, yaw };
     }
 
     pub fn set_velocity(&mut self, x: f64, y: f64, z: f64) {
@@ -181,7 +208,7 @@ impl Agent {
             origin,
             trajectory: Trajectory::generate(origin, &cells),
         };
-        self.action = Some(action);
+        self.state = AgentState::Action(action);
         Ok(())
     }
 }

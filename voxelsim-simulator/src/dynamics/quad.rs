@@ -1,7 +1,7 @@
 use nalgebra::{Matrix3, Rotation3, Vector3};
 use peng_quad::Quadrotor;
 use voxelsim::{
-    Agent,
+    Agent, AgentState,
     chase::{ActionProgress, ChaseTarget},
 };
 
@@ -130,54 +130,54 @@ impl AgentDynamics for QuadDynamics {
         &mut self,
         agent: &mut Agent,
         _env: &super::EnvState,
-        chaser: &ChaseTarget,
+        chaser: ChaseTarget,
         delta: f64,
     ) {
-        let (mut t_pos, mut t_vel, mut t_acc, pos_params_sel, _rate_params_sel, target_blend) = match chaser.progress {
-            ActionProgress::ProgressTo(p) => {
-                if let Some(action) = &mut agent.action {
-                    action.trajectory.progress = p;
+        let idle = !matches!(&chaser.progress, ActionProgress::ProgressTo(_));
+        let (mut t_pos, mut t_vel, mut t_acc, pos_params_sel, _rate_params_sel, target_blend) =
+            match chaser.progress {
+                ActionProgress::ProgressTo(p) => {
+                    if let AgentState::Action(action) = &mut agent.state {
+                        action.trajectory.progress = p;
+                    }
+                    // Debug print removed to avoid runtime jitter
+                    (
+                        chaser.pos,
+                        chaser.vel,
+                        chaser.acc,
+                        self.params.moving_pos_params,
+                        self.params.moving_rate_params,
+                        1.0,
+                    )
                 }
-                // Debug print removed to avoid runtime jitter
-                (
-                    chaser.pos,
-                    chaser.vel,
-                    chaser.acc,
-                    self.params.moving_pos_params,
-                    self.params.moving_rate_params,
-                    1.0,
-                )
-            }
-            ActionProgress::Complete => {
-                agent.action = None;
-                (
+                ActionProgress::Complete(next_state) => {
+                    agent.state = next_state;
+                    (
+                        agent.pos,
+                        Vector3::zeros(),
+                        Vector3::zeros(),
+                        self.params.pos_params,
+                        self.params.rate_params,
+                        0.0,
+                    )
+                }
+                ActionProgress::Hold => (
                     agent.pos,
                     Vector3::zeros(),
                     Vector3::zeros(),
                     self.params.pos_params,
                     self.params.rate_params,
                     0.0,
-                )
-            }
-            ActionProgress::Hold => (
-                agent.pos,
-                Vector3::zeros(),
-                Vector3::zeros(),
-                self.params.pos_params,
-                self.params.rate_params,
-                0.0,
-            ),
-        };
+                ),
+            };
         // Smoothly blend rate controller params between hover and moving profiles to avoid step changes
         let tau_blend = 0.6_f64; // seconds
         let alpha = (-delta / tau_blend).exp();
         self.rate_blend = self.rate_blend * alpha + target_blend * (1.0 - alpha);
         let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
-        let lerp_v3 = |a: Vector3<f64>, b: Vector3<f64>, t: f64| Vector3::new(
-            lerp(a.x, b.x, t),
-            lerp(a.y, b.y, t),
-            lerp(a.z, b.z, t),
-        );
+        let lerp_v3 = |a: Vector3<f64>, b: Vector3<f64>, t: f64| {
+            Vector3::new(lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t))
+        };
         let rp_hover = self.params.rate_params;
         let rp_move = self.params.moving_rate_params;
         let rate_params = pid::RatePIDParams {
@@ -199,7 +199,6 @@ impl AgentDynamics for QuadDynamics {
         self.quad.velocity = agent.vel.cast::<f32>();
 
         // Determine idle (no active trajectory progress)
-        let idle = !matches!(chaser.progress, ActionProgress::ProgressTo(_));
 
         // On transition to idle, reset integrators and filters to avoid latent windup
         if idle && !self.last_idle {
@@ -259,15 +258,17 @@ impl AgentDynamics for QuadDynamics {
         }
         // Yaw setpoint generator: smooth target into yaw_sp/yaw_rate_cmd
         let wrap = |mut a: f64| {
-            while a > std::f64::consts::PI { a -= 2.0 * std::f64::consts::PI; }
-            while a < -std::f64::consts::PI { a += 2.0 * std::f64::consts::PI; }
+            while a > std::f64::consts::PI {
+                a -= 2.0 * std::f64::consts::PI;
+            }
+            while a < -std::f64::consts::PI {
+                a += 2.0 * std::f64::consts::PI;
+            }
             a
         };
         // If idle (no active progress), follow current yaw to avoid fighting small drifts
-        let target_yaw = match chaser.progress {
-            ActionProgress::ProgressTo(_) => chaser.yaw,
-            _ => yaw_current,
-        };
+        let target_yaw = chaser.yaw;
+
         let e_yaw = wrap(target_yaw - self.yaw_sp);
         let omega_z = self.quad.angular_velocity.z as f64;
         let e_abs = e_yaw.abs();
@@ -295,19 +296,27 @@ impl AgentDynamics for QuadDynamics {
 
         // Build attitude setpoint using filtered yaw_sp (or hold current yaw when idle)
         let yaw_for_cmd = if idle { yaw_current } else { self.yaw_sp };
-        let r_cmd = Rotation3::from_matrix_unchecked(pid::build_body_rotation(&z_b_cmd, yaw_for_cmd));
+        let r_cmd =
+            Rotation3::from_matrix_unchecked(pid::build_body_rotation(&z_b_cmd, yaw_for_cmd));
         // Yaw feedforward only when moving
         let yaw_rate_ff = if idle { 0.0 } else { self.yaw_rate_cmd };
-        let mut rate_sp = pid::attitude_to_bodyrate(&r_cmd, &r_act, yaw_rate_ff, &self.params.att_p.p);
+        let mut rate_sp =
+            pid::attitude_to_bodyrate(&r_cmd, &r_act, yaw_rate_ff, &self.params.att_p.p);
         // Clamp yaw body-rate to avoid torque saturation stealing authority
         let yaw_rate_limit = 1.0; // rad/s
         rate_sp.z = rate_sp.z.clamp(-yaw_rate_limit, yaw_rate_limit);
         // If idle, apply small deadband and soften rate demands to prevent self-excitation
         if idle {
             let dead = 0.2;
-            if rate_sp.x.abs() < dead { rate_sp.x = 0.0; }
-            if rate_sp.y.abs() < dead { rate_sp.y = 0.0; }
-            if rate_sp.z.abs() < dead { rate_sp.z = 0.0; }
+            if rate_sp.x.abs() < dead {
+                rate_sp.x = 0.0;
+            }
+            if rate_sp.y.abs() < dead {
+                rate_sp.y = 0.0;
+            }
+            if rate_sp.z.abs() < dead {
+                rate_sp.z = 0.0;
+            }
             // Soften remaining rates when idle
             rate_sp *= 0.8;
         }
@@ -380,7 +389,7 @@ impl AgentDynamics for QuadDynamics {
         );
         // Add passive viscous damping, especially useful in hover
         let ang_vel = self.quad.angular_velocity.cast::<f64>();
-        let passive_damp = if matches!(chaser.progress, ActionProgress::ProgressTo(_)) {
+        let passive_damp = if idle {
             Vector3::new(0.02, 0.02, 0.03)
         } else {
             Vector3::new(0.05, 0.05, 0.07)
@@ -403,8 +412,7 @@ impl AgentDynamics for QuadDynamics {
         }
 
         // If idle and nearly still, aggressively bleed integrators to prevent delayed wobble
-        let idle_near_still = !matches!(chaser.progress, ActionProgress::ProgressTo(_))
-            && ang_vel.norm() < 0.3;
+        let idle_near_still = idle && ang_vel.norm() < 0.3;
         if idle_near_still {
             self.rate_state.integral *= 0.9;
             self.pos_state.vel_integral *= 0.9;
@@ -423,16 +431,13 @@ impl AgentDynamics for QuadDynamics {
         self.last_torque = torque;
 
         // Idle hygiene: when not progressing, slowly decay integrators to prevent delayed oscillations
-        match chaser.progress {
-            ActionProgress::ProgressTo(_) => {}
-            _ => {
-                let decay = (-delta / 1.2).exp();
-                self.rate_state.integral *= decay;
-                self.rate_state.d_filt *= decay;
-                self.pos_state.vel_integral *= decay;
-                // bleed yaw rate command toward zero
-                self.yaw_rate_cmd *= decay;
-            }
+        if !idle {
+            let decay = (-delta / 1.2).exp();
+            self.rate_state.integral *= decay;
+            self.rate_state.d_filt *= decay;
+            self.pos_state.vel_integral *= decay;
+            // bleed yaw rate command toward zero
+            self.yaw_rate_cmd *= decay;
         }
         self.rate_state.last_error = rate_error;
         self.quad.time_step = delta as f32;

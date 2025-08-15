@@ -29,7 +29,7 @@ pub trait AgentDynamics {
         &mut self,
         agent: &mut Agent,
         env: &EnvState,
-        chaser: &ChaseTarget,
+        chaser: ChaseTarget,
         delta: f64,
     );
 

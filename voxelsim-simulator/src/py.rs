@@ -49,7 +49,7 @@ impl QuadDynamics {
         &mut self,
         agent: &mut Agent,
         env: &EnvState,
-        chaser: &ChaseTarget,
+        chaser: ChaseTarget,
         delta: f64,
     ) {
         self.update_agent_dynamics(agent, env, chaser, delta);
@@ -68,7 +68,7 @@ impl Px4Dynamics {
         &mut self,
         agent: &mut Agent,
         env: &EnvState,
-        chaser: &ChaseTarget,
+        chaser: ChaseTarget,
         delta: f64,
     ) {
         self.update_agent_dynamics(agent, env, chaser, delta);

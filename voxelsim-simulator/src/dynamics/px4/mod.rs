@@ -1,6 +1,6 @@
 use nalgebra::{UnitQuaternion, Vector3};
 use voxelsim::{
-    Agent,
+    Agent, AgentState,
     chase::{ActionProgress, ChaseTarget},
 };
 
@@ -103,22 +103,20 @@ impl AgentDynamics for Px4Dynamics {
         &mut self,
         agent: &mut Agent,
         _env: &super::EnvState,
-        chaser: &ChaseTarget,
+        chaser: ChaseTarget,
         delta: f64,
     ) {
-        let (t_pos, t_vel, t_acc) = match chaser.progress {
+        let (t_pos, t_vel, t_acc) = (chaser.pos, chaser.vel, chaser.acc);
+        match chaser.progress {
             ActionProgress::ProgressTo(p) => {
-                if let Some(action) = &mut agent.action {
+                if let AgentState::Action(action) = &mut agent.state {
                     action.trajectory.progress = p;
                 }
-                // Debug print removed to avoid runtime jitter
-                (chaser.pos, chaser.vel, chaser.acc)
             }
-            ActionProgress::Complete => {
-                agent.action = None;
-                (agent.pos, Vector3::zeros(), Vector3::zeros())
+            ActionProgress::Complete(next_state) => {
+                agent.state = next_state;
             }
-            ActionProgress::Hold => (agent.pos, Vector3::zeros(), Vector3::zeros()),
+            ActionProgress::Hold => (),
         };
 
         let (control_thrust, control_torque) = self.next_body_rate_sp(

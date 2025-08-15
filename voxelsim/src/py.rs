@@ -12,7 +12,7 @@ use numpy::ndarray::ShapeError;
 use crate::{
     Cell, Coord,
     agent::{
-        Action, ActionIntent, Agent, MAX_ACTIONS, MoveDir, MoveSequence,
+        Action, ActionIntent, Agent, AgentState, MAX_ACTIONS, MoveDir, MoveSequence,
         viewport::{CameraProjection, CameraView},
     },
     chase::{ChaseTarget, FixedLookaheadChaser, TrajectoryChaser},
@@ -172,8 +172,8 @@ impl Agent {
         self.camera_view(orientation)
     }
 
-    pub fn get_action(&self) -> Option<Action> {
-        self.action.clone()
+    pub fn get_action_py(&self) -> Option<Action> {
+        self.get_action().cloned()
     }
 
     pub fn set_pos(&mut self, pos: [f64; 3]) {
@@ -186,6 +186,10 @@ impl Agent {
 
     pub fn get_coord_py(&self) -> [i32; 3] {
         self.get_coord().into()
+    }
+
+    pub fn set_hold_py(&mut self, coord: PyCoord, yaw: f64) {
+        self.set_hold(coord.into(), yaw);
     }
 
     pub fn max_command_count(&self) -> usize {

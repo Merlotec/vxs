@@ -3,7 +3,7 @@ import voxelsim as vxs, time
 
 # dynamics = vxs.AgentDynamics.default_drone()
 agent = vxs.Agent(0)
-agent.set_pos([50.0, 50.0, -20.0])
+agent.set_hold_py([50, 50, -20], 0.0)
 
 fw = vxs.FilterWorld()
 dynamics = vxs.px4.Px4Dynamics.default_py()
@@ -104,7 +104,7 @@ while listener.running:
             renderer.update_filter_world_py(agent.camera_view_py(camera_orientation), proj, fw, t0, world_update)
             last_view_time = t0
 
-    action = agent.get_action()
+    action = agent.get_action_py()
     commands = []
     if action:
         commands = action.get_intent().get_move_sequence()
