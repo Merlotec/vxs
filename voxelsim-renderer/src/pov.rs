@@ -38,7 +38,7 @@ struct PovStats {
 
 pub fn run_pov_server(port_offset: u16) {
     let (mut pov_sub, pov_receiver) = NetworkSubscriber::<PovData>::new(
-        std::env::var("VXS_POV_ADDR").unwrap_or("127.0.0.1".to_string()),
+        std::env::var("VXS_POV_ADDR").unwrap_or("0.0.0.0".to_string()),
         std::env::var("VXS_POV_PORT")
             .ok()
             .and_then(|x| x.parse::<u16>().ok())
@@ -47,7 +47,7 @@ pub fn run_pov_server(port_offset: u16) {
     );
 
     let (mut agent_sub, agent_receiver) = NetworkSubscriber::<HashMap<usize, Agent>>::new(
-        std::env::var("VXS_AGENT_POV_ADDR").unwrap_or("127.0.0.1".to_string()),
+        std::env::var("VXS_AGENT_POV_ADDR").unwrap_or("0.0.0.0".to_string()),
         std::env::var("VXS_AGENT_POV_PORT")
             .ok()
             .and_then(|x| x.parse::<u16>().ok())
@@ -297,7 +297,7 @@ fn synchronise_world(
         let mut action_cells = Vec::new();
         let mut origin_cells = Vec::new();
         for (_id, agent) in agents_map.iter() {
-            if let Some(action) = &agent.action {
+            if let Some(action) = agent.get_action() {
                 origin_cells.push(action.origin);
                 let mut p = action.origin;
                 for cmd in &action.intent.move_sequence {
@@ -379,7 +379,7 @@ fn synchronise_world(
                     );
 
                     // spline
-                    if let Some(action) = &agent_comp.agent.action {
+                    if let Some(action) = &agent_comp.agent.get_action() {
                         draw_spline(&mut gizmos, &action.trajectory);
                     }
 
@@ -467,7 +467,7 @@ fn update_pov_ui_text(
     pov_stats: Res<PovStats>,
     focused: Res<FocusedAgent>,
 ) {
-    let mut text = match text_q.get_single_mut() {
+    let mut text = match text_q.single_mut() {
         Ok(t) => t,
         Err(_) => return,
     };
@@ -487,8 +487,7 @@ fn update_pov_ui_text(
             let (roll, pitch, yaw) = a.agent.attitude.euler_angles();
             let actions = a
                 .agent
-                .action
-                .as_ref()
+                .get_action()
                 .map(|act| act.intent.move_sequence.len())
                 .unwrap_or(0);
 

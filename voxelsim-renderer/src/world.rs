@@ -22,7 +22,7 @@ use bevy::app::AppExit;
 use bevy::prelude::*;
 pub fn run_world_server() {
     let (mut world_sub, world_receiver) = NetworkSubscriber::<VoxelGrid>::new(
-        std::env::var("VXS_WORLD_PORT").unwrap_or("127.0.0.1".to_string()),
+        std::env::var("VXS_WORLD_PORT").unwrap_or("0.0.0.0".to_string()),
         std::env::var("VXS_WORLD_PORT")
             .ok()
             .and_then(|x| x.parse::<u16>().ok())
@@ -30,7 +30,7 @@ pub fn run_world_server() {
     );
 
     let (mut agent_sub, agent_receiver) = NetworkSubscriber::<HashMap<usize, Agent>>::new(
-        std::env::var("VXS_AGENT_PORT").unwrap_or("127.0.0.1".to_string()),
+        std::env::var("VXS_AGENT_PORT").unwrap_or("0.0.0.0".to_string()),
         std::env::var("VXS_AGENT_PORT")
             .ok()
             .and_then(|x| x.parse::<u16>().ok())
@@ -203,7 +203,7 @@ fn synchronise_world(
         let mut action_cells = Vec::new();
         let mut origin_cells = Vec::new();
         for (_id, agent) in agents_map.iter() {
-            if let Some(action) = &agent.action {
+            if let Some(action) = agent.get_action() {
                 origin_cells.push(action.origin);
                 let mut p = action.origin;
                 for cmd in &action.intent.move_sequence {
@@ -285,7 +285,7 @@ fn synchronise_world(
                     );
 
                     // spline
-                    if let Some(action) = &agent_comp.agent.action {
+                    if let Some(action) = &agent_comp.agent.get_action() {
                         draw_spline(&mut gizmos, &action.trajectory);
                     }
 
