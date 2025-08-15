@@ -208,36 +208,79 @@ pub struct Px4McSettings {
     pub torque_scale_nm: [f32; 3],
 }
 
+// impl Default for Px4McSettings {
+//     fn default() -> Self {
+//         Self {
+//             dt: 0.01,
+//             mass: 1.0,
+//             // Slightly softer attitude P to reduce oscillations
+//             att_p: [4.0, 4.0, 1.5],
+//             att_yaw_weight: 0.9,
+//             att_rate_limit: [3.0, 3.0, 1.5],
+//             // More conservative position and velocity gains, add more D for damping
+//             pos_p: [1.0, 1.0, 2.0],
+//             vel_p: [2.0, 2.0, 2.0],
+//             vel_i: [0.4, 0.4, 0.5],
+//             vel_d: [0.8, 0.8, 0.3],
+//             vel_lim_xy: 8.0,
+//             vel_up: 4.0,
+//             vel_down: 2.0,
+//             thr_min: 0.05,
+//             thr_max: 0.9,
+//             thr_xy_margin: 0.2,
+//             tilt_max_rad: 0.6,
+//             hover_thrust: 0.5,
+//             // Increase yaw authority and damping
+//             rate_p: [0.12, 0.12, 0.15],
+//             rate_i: [0.06, 0.06, 0.06],
+//             rate_d: [0.05, 0.05, 0.04],
+//             rate_int_lim: [0.2, 0.2, 0.15],
+//             // Keep decoupling enabled for better horizontal tracking without vertical coupling
+//             decouple_horiz_vert_accel: 1,
+//             // Default torque scaling for a small quad; tune for your platform
+//             torque_scale_nm: [0.8, 0.8, 0.6],
+//         }
+//     }
+// }
 impl Default for Px4McSettings {
     fn default() -> Self {
         Self {
             dt: 0.01,
             mass: 1.0,
-            // Slightly softer attitude P to reduce oscillations
-            att_p: [4.0, 4.0, 1.5],
-            att_yaw_weight: 0.9,
-            att_rate_limit: [3.0, 3.0, 1.5],
-            // More conservative position and velocity gains, add more D for damping
-            pos_p: [1.0, 1.0, 2.0],
-            vel_p: [2.0, 2.0, 2.0],
-            vel_i: [0.4, 0.4, 0.5],
-            vel_d: [0.8, 0.8, 0.3],
-            vel_lim_xy: 8.0,
-            vel_up: 4.0,
-            vel_down: 2.0,
+
+            // Attitude: stiffer and faster
+            att_p: [6.0, 6.0, 2.0],          // was [4.0,4.0,1.5]
+            att_yaw_weight: 1.0,             // was 0.9
+            att_rate_limit: [6.0, 6.0, 4.0], // was [3.0,3.0,1.5]  (rad/s)
+
+            // Position/velocity: more assertive, with damping
+            pos_p: [1.5, 1.5, 3.0],   // was [1.0,1.0,2.0]
+            vel_p: [3.5, 3.5, 3.0],   // was [2.0,2.0,2.0]
+            vel_i: [0.55, 0.55, 0.6], // was [0.4,0.4,0.5]
+            vel_d: [1.1, 1.1, 0.45],  // was [0.8,0.8,0.3]
+
+            // Speed limits: allow quicker translation
+            vel_lim_xy: 12.0, // was 8.0
+            vel_up: 6.0,      // was 4.0
+            vel_down: 3.0,    // was 2.0
+
+            // Thrust/tilt authority
             thr_min: 0.05,
-            thr_max: 0.9,
-            thr_xy_margin: 0.2,
-            tilt_max_rad: 0.6,
+            thr_max: 0.98,       // was 0.9  (ensure ESCs/motors are happy near max)
+            thr_xy_margin: 0.15, // was 0.2 (slightly more room for lateral)
+            tilt_max_rad: 0.95,  // was 0.6 (~54° vs ~34°)
             hover_thrust: 0.5,
-            // Increase yaw authority and damping
-            rate_p: [0.12, 0.12, 0.15],
-            rate_i: [0.06, 0.06, 0.06],
-            rate_d: [0.05, 0.05, 0.04],
-            rate_int_lim: [0.2, 0.2, 0.15],
-            // Keep decoupling enabled for better horizontal tracking without vertical coupling
+
+            // Rate loop: crisper + a bit more damping
+            rate_p: [0.20, 0.20, 0.22],       // was [0.12,0.12,0.15]
+            rate_i: [0.06, 0.06, 0.06],       // keep modest; increase later if needed
+            rate_d: [0.08, 0.08, 0.06],       // was [0.05,0.05,0.04]
+            rate_int_lim: [0.25, 0.25, 0.20], // was [0.2,0.2,0.15]
+
+            // Keep decoupling to avoid Z–XY fights at high gains
             decouple_horiz_vert_accel: 1,
-            // Default torque scaling for a small quad; tune for your platform
+
+            // Torque scaling: leave unless you know your plant model
             torque_scale_nm: [0.8, 0.8, 0.6],
         }
     }
