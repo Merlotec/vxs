@@ -81,7 +81,7 @@ class GridWorldAStarEnv(gym.Env):
 
         # Continuous action space: [dx,dy,dz,urgency,yaw,priority]
         low = np.array(
-            [-self.max_offset, -self.max_offset, -self.max_offset, 0.0, -math.pi, 0.0],
+            [-self.max_offset, -self.max_offset, -self.max_offset, 0.5, -math.pi, 0.0],
             dtype=np.float32,
         )
         high = np.array(
