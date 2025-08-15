@@ -17,9 +17,15 @@ client = vxs.RendererClient.default_localhost_py()
 client.connect_py(1)
 
 env = GridWorldAStarEnv(
-    reward =SimpleReward(),
-    render_client = client,
-    start_pos=[100, 100, -20] # NED coordinate system
+    reward=SimpleReward(
+        plan_success_bonus=0.2,
+        distance_bonus_per_step=0.02,
+    ),
+    render_client=client,
+    start_pos=[100, 100, -20],  # NED coordinate system
+    action_gain=3.0,
+    attempt_scales=(1.0, 0.85, 0.6, 0.4),
+    allow_override=True,
 )
 
 
@@ -56,6 +62,8 @@ model = PPO(
     gamma=0.99,
     gae_lambda=0.95,
     clip_range=0.2,
+    ent_coef=0.01,
+    policy_kwargs=dict(log_std_init=1.0),
     device="mps",
 )
 

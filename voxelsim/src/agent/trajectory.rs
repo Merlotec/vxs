@@ -23,6 +23,7 @@ fn project_point_onto_segment(
     a + ab * t
 }
 
+// Determines if the line segment from p0 to p1 intersects the box bmin to bmax, and returns the first intersection point if so.
 fn first_surface_intersection(
     p0: Vector3<f64>,
     p1: Vector3<f64>,

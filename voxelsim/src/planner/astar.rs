@@ -14,10 +14,17 @@ struct Cost {
     f: i32, // g + heuristic
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+struct StateKey {
+    coord: Coord,
+    // -1 indicates None (no previous direction)
+    last_dir_code: i8,
+}
+
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct QueueEntry {
     f: i32,
-    node: Node,
+    state: StateKey,
 }
 
 impl Ord for QueueEntry {
@@ -26,9 +33,9 @@ impl Ord for QueueEntry {
         other
             .f
             .cmp(&self.f)
-            .then_with(|| self.node.0.x.cmp(&other.node.0.x))
-            .then_with(|| self.node.0.y.cmp(&other.node.0.y))
-            .then_with(|| self.node.0.z.cmp(&other.node.0.z))
+            .then_with(|| self.state.coord.x.cmp(&other.state.coord.x))
+            .then_with(|| self.state.coord.y.cmp(&other.state.coord.y))
+            .then_with(|| self.state.coord.z.cmp(&other.state.coord.z))
     }
 }
 
@@ -92,6 +99,14 @@ fn delta_to_dir(d: Coord) -> Option<MoveDir> {
         (0, 0, 1) => Some(MoveDir::Down),
         (0, 0, -1) => Some(MoveDir::Up),
         _ => None,
+    }
+}
+
+#[inline]
+fn move_dir_code(dir: Option<MoveDir>) -> i8 {
+    match dir {
+        Some(d) => d as i8,
+        None => -1,
     }
 }
 
@@ -164,30 +179,50 @@ impl super::ActionPlanner for AStarActionPlanner {
             return Err(PlannerError::PathBlocked);
         }
 
+        // Direction-aware A*: include last direction in the state to prefer
+        // paths with more direction changes (i.e., fewer repeated straight steps).
         let mut open = BinaryHeap::<QueueEntry>::new();
-        let mut came_from: HashMap<Coord, Coord> = HashMap::new();
-        let mut g_score: HashMap<Coord, i32> = HashMap::new();
-        let mut closed: HashSet<Coord> = HashSet::new();
+        let mut came_from: HashMap<StateKey, StateKey> = HashMap::new();
+        let mut g_score: HashMap<StateKey, i32> = HashMap::new();
+        let mut closed: HashSet<StateKey> = HashSet::new();
 
-        g_score.insert(origin, 0);
+        // Scale costs to allow a small per-step penalty while keeping integers
+        const STEP_COST: i32 = 1000;
+        const STRAIGHT_PENALTY: i32 = 1; // applied when continuing in the same direction
+
+        let start = StateKey { coord: origin, last_dir_code: -1 };
+        g_score.insert(start, 0);
         open.push(QueueEntry {
-            f: manhattan(origin, dst),
-            node: Node(origin),
+            f: manhattan(origin, dst) * STEP_COST,
+            state: start,
         });
 
         // Limit to avoid infinite search in degenerate inputs
         let max_expansions = 200_000;
         let mut expansions = 0;
 
-        while let Some(QueueEntry {
-            node: Node(curr), ..
-        }) = open.pop()
+        while let Some(QueueEntry { state, .. }) = open.pop()
         {
-            if curr == dst {
-                let move_sequence = Self::reconstruct_path(&came_from, dst, origin);
+            if state.coord == dst {
+                // Reconstruct using direction-aware came_from
+                let mut steps: Vec<MoveDir> = Vec::new();
+                let mut cur = state;
+                while cur.coord != origin {
+                    if let Some(prev) = came_from.get(&cur) {
+                        let delta = cur.coord - prev.coord;
+                        if let Some(dir) = delta_to_dir(delta) {
+                            steps.push(dir);
+                        }
+                        cur = *prev;
+                    } else {
+                        break;
+                    }
+                }
+                steps.reverse();
+                let move_sequence = steps;
                 return Ok(ActionIntent::new(urgency, yaw, move_sequence));
             }
-            if !closed.insert(curr) {
+            if !closed.insert(state) {
                 continue;
             }
             expansions += 1;
@@ -195,17 +230,30 @@ impl super::ActionPlanner for AStarActionPlanner {
                 break;
             }
 
-            for nb in neighbours6(curr) {
-                if is_blocked(world, &nb, self.padding) || closed.contains(&nb) {
+            for nb in neighbours6(state.coord) {
+                let next_dir = delta_to_dir(nb - state.coord);
+                if is_blocked(world, &nb, self.padding) {
                     continue;
                 }
-                let tentative_g = g_score.get(&curr).copied().unwrap_or(i32::MAX - 1) + 1;
-                let g_old = g_score.get(&nb).copied();
+                // Compute per-step cost with preference for direction change
+                let same_dir = match next_dir {
+                    Some(d) if state.last_dir_code >= 0 => (d as i8) == state.last_dir_code,
+                    _ => false,
+                };
+                let step_penalty = if same_dir { STRAIGHT_PENALTY } else { 0 };
+                let curr_g = g_score.get(&state).copied().unwrap_or(i32::MAX / 4);
+                let tentative_g = curr_g + STEP_COST + step_penalty;
+
+                let next_state = StateKey { coord: nb, last_dir_code: move_dir_code(next_dir) };
+                if closed.contains(&next_state) {
+                    continue;
+                }
+                let g_old = g_score.get(&next_state).copied();
                 if g_old.is_none() || tentative_g < g_old.unwrap() {
-                    came_from.insert(nb, curr);
-                    g_score.insert(nb, tentative_g);
-                    let f = tentative_g + manhattan(nb, dst);
-                    open.push(QueueEntry { f, node: Node(nb) });
+                    came_from.insert(next_state, state);
+                    g_score.insert(next_state, tentative_g);
+                    let f = tentative_g + manhattan(nb, dst) * STEP_COST;
+                    open.push(QueueEntry { f, state: next_state });
                 }
             }
         }

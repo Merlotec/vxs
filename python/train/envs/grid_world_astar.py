@@ -17,13 +17,25 @@ class SimpleReward:
         collision_penalty: float = -100.0,
         override_penalty: float = -5.0,
         plan_fail_penalty: float = -2.0,
+        # Optional positive shaping to encourage longer planned paths
+        plan_success_bonus: float = 0.0,
+        distance_bonus_per_step: float = 0.0,
     ):
         self.living_cost = living_cost
         self.collision_penalty = collision_penalty
         self.override_penalty = override_penalty
         self.plan_fail_penalty = plan_fail_penalty
+        self.plan_success_bonus = plan_success_bonus
+        self.distance_bonus_per_step = distance_bonus_per_step
 
-    def compute(self, *, collided: bool, overridden: bool, failed: bool) -> float:
+    def compute(
+        self,
+        *,
+        collided: bool,
+        overridden: bool,
+        failed: bool,
+        plan_len: int = 0,
+    ) -> float:
         r = self.living_cost
         if collided:
             r += self.collision_penalty
@@ -31,6 +43,10 @@ class SimpleReward:
             r += self.override_penalty
         if failed:
             r += self.plan_fail_penalty
+        else:
+            if plan_len > 0:
+                r += self.plan_success_bonus
+                r += self.distance_bonus_per_step * float(plan_len)
         return r
 
 
@@ -56,8 +72,11 @@ class GridWorldAStarEnv(gym.Env):
         planner_padding: int = 1,
         override_threshold: float = 0.8,
         max_offset: int = 12,
+        action_gain: float = 1.0,
+        attempt_scales: Tuple[float, ...] = (1.0, 0.75, 0.5, 0.25),
+        allow_override: bool = False,
         start_pos: Tuple[int, int, int] = (0, 0, 0),
-        delta_time: float = 0.05,
+        delta_time: float = 0.01,
         filter_update_lag: float = 0.2,
         filter_delta: float = 0.25,
         reward: Optional[SimpleReward] = None,
@@ -78,6 +97,9 @@ class GridWorldAStarEnv(gym.Env):
         self.dense_half_dims = tuple(int(x) for x in dense_half_dims)
         self.client = render_client
         self.noise = noise or vxs.NoiseParams.default_with_seed_py([0, 0, 0])
+        self.action_gain = float(action_gain)
+        self.attempt_scales = tuple(float(s) for s in attempt_scales)
+        self.allow_override = bool(allow_override)
 
         # Continuous action space: [dx,dy,dz,urgency,yaw,priority]
         low = np.array(
@@ -99,8 +121,15 @@ class GridWorldAStarEnv(gym.Env):
             shape=grid_shape,
             dtype=np.int32,
         )
-        la_low = np.array([-1e6, -1e6, -1e6, 0.0, -math.pi, 0.0], dtype=np.float32)
-        la_high = np.array([1e6, 1e6, 1e6, 1.0, math.pi, 1.0], dtype=np.float32)
+        # Record relative offsets for last_action (not absolute voxels)
+        la_low = np.array(
+            [-self.max_offset, -self.max_offset, -self.max_offset, 0.0, -math.pi, 0.0],
+            dtype=np.float32,
+        )
+        la_high = np.array(
+            [self.max_offset, self.max_offset, self.max_offset, 1.0, math.pi, 1.0],
+            dtype=np.float32,
+        )
         last_action_space = gym.spaces.Box(low=la_low, high=la_high, dtype=np.float32)
         self.observation_space = gym.spaces.Dict(
             {
@@ -194,33 +223,38 @@ class GridWorldAStarEnv(gym.Env):
         assert action.shape[0] == 6
         dx, dy, dz, urgency, yaw, priority = action
         urgency = float(np.clip(urgency, 0.0, 1.0))
-        urgency = 0.8
+        # urgency = 0.8
         yaw = float(np.clip(yaw, -math.pi, math.pi))
         # yaw = 0
         priority = float(np.clip(priority, 0.0, 1.0))
         # Compute destination voxel coord relative to current voxel
         origin = np.array(self.agent.get_coord_py())
-        offset = np.round(np.clip([dx, dy, dz], -self.max_offset, self.max_offset)).astype(np.int32)
+        # Optional gain to make proposed offsets larger (clamped to bounds)
+        scaled = self.action_gain * np.array([dx, dy, dz], dtype=np.float32)
+        offset = np.round(np.clip(scaled, -self.max_offset, self.max_offset)).astype(np.int32)
         dst = tuple((origin + offset).tolist())
 
-        # Record last action using the actual voxel coordinate used (absolute voxels)
-        self._last_action[:] = [float(dst[0]), float(dst[1]), float(dst[2]), urgency, yaw, priority]
+        # Record last action as the relative offset requested (updated to actual used below)
+        self._last_action[:] = [float(offset[0]), float(offset[1]), float(offset[2]), urgency, yaw, priority]
 
         overridden = False
         failed = False
 
+        ds_len = math.sqrt(dx**2 + dy**2 + dz**2)
+        scaled_len = math.sqrt((self.action_gain*dx)**2 + (self.action_gain*dy)**2 + (self.action_gain*dz)**2)
+        print(f"requested_offset_len: {ds_len:.3f} | scaled_offset_len: {scaled_len:.3f} (gain {self.action_gain})")
         # Plan if allowed (override or idle)
         curr = self.agent.get_action_py()
-        if (not curr):# or (priority >= self.override_threshold):
+        if (not curr):# or (self.allow_override and (priority >= self.override_threshold)):
             if curr and priority >= self.override_threshold:
                 overridden = True
 
             # Try planning, penalise on exceptions and fall back by reducing offset
-            attempts = [offset]
-            for s in (0.5, 0.25, 0.0):
-                attempts.append(np.round(offset * s).astype(np.int32))
+            # Try progressively smaller offsets if planning fails
+            attempts = [np.round(offset * s).astype(np.int32) for s in self.attempt_scales]
 
             planned = False
+            chosen_plan_len = 0
             for off in attempts:
                 dst_try = tuple((origin + off).tolist())
                 try:
@@ -232,8 +266,9 @@ class GridWorldAStarEnv(gym.Env):
                     intent = vxs.ActionIntent(float(urgency), float(yaw), dirs)
                     try:
                         self.agent.perform_py(intent)
-                        # record the actual voxel used
-                        self._last_action[:3] = [float(dst_try[0]), float(dst_try[1]), float(dst_try[2])]
+                        # record the actual relative offset used
+                        self._last_action[:3] = [float(off[0]), float(off[1]), float(off[2])]
+                        chosen_plan_len = len(dirs)
                         planned = True
                         break
                     except Exception:
@@ -271,7 +306,9 @@ class GridWorldAStarEnv(gym.Env):
         truncated = False
 
         obs = self._build_observation()
-        reward = self.reward_fn.compute(collided=collided, overridden=overridden, failed=failed)
+        reward = self.reward_fn.compute(
+            collided=collided, overridden=overridden, failed=failed, plan_len=int(locals().get("chosen_plan_len", 0))
+        )
         info: Dict[str, Any] = {"overridden": overridden, "collided": collided, "failed": failed}
 
         # Update render client in the same way as grid_world.py
