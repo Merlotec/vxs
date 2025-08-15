@@ -23,7 +23,6 @@ fn project_point_onto_segment(
     a + ab * t
 }
 
-// Determines if the line segment from p0 to p1 intersects the box bmin to bmax, and returns the first intersection point if so.
 fn first_surface_intersection(
     p0: Vector3<f64>,
     p1: Vector3<f64>,
@@ -31,8 +30,13 @@ fn first_surface_intersection(
     bmax: Vector3<f64>,
 ) -> Option<Vector3<f64>> {
     let d = p1 - p0;
-    let mut t_enter = 0.0f64;
-    let mut t_exit = 1.0f64;
+
+    // Use a practical tolerance for "parallel"
+    let eps = 1e-12_f64;
+
+    // Unclamped interval along the infinite line
+    let mut t_enter = f64::NEG_INFINITY;
+    let mut t_exit = f64::INFINITY;
 
     for i in 0..3 {
         let p0i = p0[i];
@@ -40,13 +44,15 @@ fn first_surface_intersection(
         let bi_min = bmin[i];
         let bi_max = bmax[i];
 
-        if di.abs() < std::f64::EPSILON {
-            // if outside slab then no hit
+        if di.abs() < eps {
+            // Segment is (effectively) parallel to this axis slab: must be within the slab
             if p0i < bi_min || p0i > bi_max {
                 return None;
             }
+            // No change to t_enter/t_exit for this axis
         } else {
-            let (mut t0, mut t1) = ((bi_min - p0i) / di, (bi_max - p0i) / di);
+            let mut t0 = (bi_min - p0i) / di;
+            let mut t1 = (bi_max - p0i) / di;
             if t0 > t1 {
                 std::mem::swap(&mut t0, &mut t1);
             }
@@ -58,15 +64,19 @@ fn first_surface_intersection(
         }
     }
 
-    // Compute both points
-    let entry_pt = p0 + d * t_enter;
-    let exit_pt = p0 + d * t_exit;
-
-    if t_enter > 0.0 {
-        Some(entry_pt)
-    } else {
-        Some(exit_pt)
+    // Now choose the first surface hit along the *segment* t in [0,1]
+    // Case 1: entering from outside (or touching): use t_enter if it’s within [0,1]
+    if t_enter >= 0.0 && t_enter <= 1.0 {
+        return Some(p0 + d * t_enter);
     }
+
+    // Case 2: starting inside (t_enter < 0): first surface is at t_exit, if it’s within the segment
+    if t_enter < 0.0 && t_exit >= 0.0 && t_exit <= 1.0 {
+        return Some(p0 + d * t_exit);
+    }
+
+    // Otherwise, the infinite line intersects the box, but not within the segment bounds.
+    None
 }
 
 pub fn solve_constrained_smoothing_pass(
@@ -87,16 +97,20 @@ pub fn solve_constrained_smoothing_pass(
 
         let m = project_point_onto_segment(&p, &a, &b);
 
-        let p_cnt = cells[i + 1].cast::<f64>();
+        let p_cnt = cells[i].cast::<f64>();
+
+        let t = m * 0.5 + p * 0.5;
 
         let bmin = p_cnt - cell_size * 0.5;
         let bmax = p_cnt + cell_size * 0.5;
 
-        if let Some(x) = first_surface_intersection(m, p, bmin, bmax) {
+        // im_pts.push(t);
+
+        if let Some(x) = first_surface_intersection(t, p, bmin, bmax) {
             // There is an intersection, so we need to pull back to the intersection.
             im_pts.push(x);
         } else {
-            im_pts.push(m);
+            im_pts.push(t);
         }
     }
 
