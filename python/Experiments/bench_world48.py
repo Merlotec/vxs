@@ -9,49 +9,16 @@ import time, numpy as np, torch
 import voxelsim                                # your Rust bindings
 from representation import VoxelData
 import matplotlib.pyplot as plt
-
+from representation import (
+    VoxelData, show_voxels,
+    SimpleCNNEncoder, SimpleCNNDecoder,
+)
 
 
 class Timer:
     def __enter__(self):  self.t0 = time.perf_counter(); return self
     def __exit__(self,*_): self.dt = time.perf_counter() - self.t0
 
-
-def show_voxels(sample, client):
-    """
-    sample: either
-      - VoxelData (GT sparse coords), or
-      - torch.Tensor logits with shape [B, 3, D, H, W] or [3, D, H, W]
-    """
-    cell_dict = {}
-
-    # ---------- Ground truth case ----------
-    if isinstance(sample, VoxelData):
-        coords = sample.occupied_coords.long().cpu().numpy()
-        vals   = sample.values.cpu().numpy()  # 0.5 sparse, 1.0 filled
-        for (x,y,z), v in zip(coords, vals):
-            cell_dict[(int(x), int(y), int(z))] = (
-                voxelsim.Cell.filled() if v > 0.9 else voxelsim.Cell.sparse()
-            )
-
-    # ---------- Prediction case ----------
-    else:
-        logits = sample
-        if logits.dim() == 5:   # [B,3,D,H,W]
-            logits = logits[0]
-        # logits now [3,D,H,W]
-        pred_class = logits.argmax(0).cpu().numpy()  # 0 empty, 1 sparse, 2 filled
-
-        filled = np.argwhere(pred_class == 2)
-        sparse = np.argwhere(pred_class == 1)
-
-        for x,y,z in filled:
-            cell_dict[(int(x),int(y),int(z))] = voxelsim.Cell.filled()
-        for x,y,z in sparse:
-            cell_dict[(int(x),int(y),int(z))] = voxelsim.Cell.sparse()
-
-    world = voxelsim.VoxelGrid.from_dict_py(cell_dict)
-    client.send_world_py(world)
 
 
 def build_world(side=48):
@@ -106,6 +73,7 @@ def test1():
 
     with Timer() as t_show:
         show_voxels(vd_np, client)
+        time.sleep(1)
     print(f"🖼  render     {t_show.dt*1e3:7.2f} ms")
     print("Done – open port 8090 to view.")
 
