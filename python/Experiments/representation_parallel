@@ -88,9 +88,9 @@ class SimpleCNNEncoder(EmbeddingEncoder, nn.Module):
         self.conv2 = nn.Conv3d(32, 64, kernel_size=3, stride=2, padding=1)
         self.conv3 = nn.Conv3d(64, 128, kernel_size=3, stride=2, padding=1)
         
-        # Calculate flattened size
-        self.flat_size = 128 * (voxel_size // 8) ** 3
-        self.fc = nn.Linear(self.flat_size, embedding_dim)
+        # # Calculate flattened size
+        # self.flat_size = 128 * (voxel_size // 8) ** 3
+        # self.fc = nn.Linear(self.flat_size, embedding_dim)
     
     def forward(self, voxel_batch):  # ADD THIS
         return self.encode(voxel_batch)
@@ -109,21 +109,23 @@ class SimpleCNNEncoder(EmbeddingEncoder, nn.Module):
     def _sparse_to_dense(self, voxel_data: VoxelData) -> torch.Tensor:
         """Convert sparse voxel coordinates to dense grid"""
         grid = torch.zeros((1, 1, self.voxel_size, self.voxel_size, self.voxel_size),
-                          device=voxel_data.occupied_coords.device, dtype=torch.float32)
+                        device=voxel_data.occupied_coords.device, dtype=torch.float32)
         
         if voxel_data.occupied_coords.shape[0] > 0:
             # Normalize coordinates to grid size
             coords = voxel_data.occupied_coords.float()
             coords = coords / voxel_data.bounds.float() * (self.voxel_size - 1)
-            coords = coords.long().clamp(0, self.voxel_size - 1)
+            coords = coords.long()
+            coords[:, 2] = -coords[:, 2]            # flip z to index
+            coords = coords.clamp(0, self.voxel_size - 1)
             
             # Fill grid
             grid[0, 0, coords[:, 0], coords[:, 1], coords[:, 2]] = voxel_data.values
-     
+
         return grid
-    
-    def get_embedding_dim(self) -> int:
-        return self.embedding_dim
+        
+        def get_embedding_dim(self) -> int:
+            return self.embedding_dim
 
 class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
     def __init__(self, embedding_dim=128, voxel_size=48):
@@ -139,29 +141,26 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
         self.deconv1 = nn.ConvTranspose3d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1)
         self.deconv2 = nn.ConvTranspose3d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1)
         self.deconv3 = nn.ConvTranspose3d(32, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
-    
-    def forward(self, embedding, **kwargs):  # ADD THIS
-        return self.decode(embedding, **kwargs)
         
-    def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None) -> Dict[str, torch.Tensor]:
+    def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None):
         if embedding.dim() == 2:
-            # old (flat) path
-            print("HOUSTON WE AAVE")
             x = self.fc(embedding)
             x = x.view(-1, 128, self.init_size, self.init_size, self.init_size)
         elif embedding.dim() == 5:
-            
-            # NEW: feature-map path
             x = embedding
-            # (optional) sanity check on spatial size
             assert x.shape[2:] == (self.init_size, self.init_size, self.init_size), \
-                f"Expected feature map [B,128,{self.init_size},{self.init_size},{self.init_size}], got {tuple(x.shape)}"
+                f"Expected [B,128,{self.init_size},{self.init_size},{self.init_size}], got {tuple(x.shape)}"
         else:
             raise ValueError(f"Decoder got unexpected tensor shape {embedding.shape}")
-
+        
         x = F.relu(self.deconv1(x))
         x = F.relu(self.deconv2(x))
         logits = self.deconv3(x)
+        
+        # FLIP THE Z-AXIS BACK before returning
+        # logits shape: [B, 3, D, H, W] where dimensions are [batch, classes, x, y, z]
+        logits = torch.flip(logits, dims=[4])  # flip the z dimension (index 4)
+        
         return {"logits": logits}
 
 
@@ -197,19 +196,21 @@ class MeinEncoder(EmbeddingEncoder, nn.Module):
     def _sparse_to_dense(self, voxel_data: VoxelData) -> torch.Tensor:
         """Convert sparse voxel coordinates to dense grid"""
         grid = torch.zeros((1, 1, self.voxel_size, self.voxel_size, self.voxel_size),
-                          device=voxel_data.occupied_coords.device, dtype=torch.float32)
+                        device=voxel_data.occupied_coords.device, dtype=torch.float32)
         
         if voxel_data.occupied_coords.shape[0] > 0:
             # Normalize coordinates to grid size
             coords = voxel_data.occupied_coords.float()
             coords = coords / voxel_data.bounds.float() * (self.voxel_size - 1)
-            coords = coords.long().clamp(0, self.voxel_size - 1)
+            coords = coords.long()
+            coords[:, 2] = -coords[:, 2]            # flip z to index
+            coords = coords.clamp(0, self.voxel_size - 1)
             
             # Fill grid
             grid[0, 0, coords[:, 0], coords[:, 1], coords[:, 2]] = voxel_data.values
-     
+
         return grid
-    
+        
     def get_embedding_dim(self) -> int:
         return self.embedding_dim
 
@@ -1168,7 +1169,9 @@ class EmbeddingTrainer:
         if voxel_data.occupied_coords.shape[0] > 0:
             coords = voxel_data.occupied_coords.float()
             coords = coords / voxel_data.bounds.float() * (voxel_size - 1)
-            coords = coords.long().clamp(0, voxel_size - 1)
+            coords = coords.long()
+            coords[:, 2] = -coords[:, 2]            # flip z to index
+            coords = coords.clamp(0, voxel_size - 1)
             # map your current values (1.0 filled, 0.5 sparse) to labels 2 / 1
             filled_mask = voxel_data.values >= 0.8
             sparse_mask = (~filled_mask) & (voxel_data.values >= 0.5)

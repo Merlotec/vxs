@@ -176,12 +176,16 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
                 f"Expected [B,128,{self.init_size},{self.init_size},{self.init_size}], got {tuple(x.shape)}"
         else:
             raise ValueError(f"Decoder got unexpected tensor shape {embedding.shape}")
-
+        
         x = F.relu(self.deconv1(x))
         x = F.relu(self.deconv2(x))
         logits = self.deconv3(x)
+        
+        # FLIP THE Z-AXIS BACK before returning
+        # logits shape: [B, 3, D, H, W] where dimensions are [batch, classes, x, y, z]
+        logits = torch.flip(logits, dims=[4])  # flip the z dimension (index 4)
+        
         return {"logits": logits}
-
 
 # Mein Encoder
 
@@ -1657,12 +1661,12 @@ def show_voxels(sample, client):
         sparse = np.argwhere(pred_class == 1)
 
         
-        for x, y, kz in filled:
-            z = int(-kz)                                  # UNFLIP
+        for x, y, z in filled:
+                                          
             cell_dict[(int(x), int(y), z)] = voxelsim.Cell.filled()
 
-        for x, y, kz in sparse:
-            z = int(-kz)
+        for x, y, z in sparse:
+            
             cell_dict[(int(x), int(y), z)] = voxelsim.Cell.sparse()
 
     world = voxelsim.VoxelGrid.from_dict_py(cell_dict)
