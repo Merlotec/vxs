@@ -95,6 +95,10 @@ class SimpleCNNEncoder(EmbeddingEncoder, nn.Module):
         self.conv1 = nn.Conv3d(1, 32, kernel_size=5, stride=2, padding=2)
         self.conv2 = nn.Conv3d(32, 64, kernel_size=3, stride=2, padding=1)
         self.conv3 = nn.Conv3d(64, 128, kernel_size=3, stride=2, padding=1)
+        
+        self.conv4 = nn.Conv3d(128, 256, kernel_size=3, stride=2, padding=1)
+        self.conv5 = nn.Conv3d(256, 512, kernel_size=3, stride=2, padding=1)
+        self.conv6 = nn.Conv3d(512, 1024, kernel_size=3, stride=2, padding=1)
 
         # Calculate flattened size
         # self.flat_size = 128 * (voxel_size // 8) ** 3
@@ -108,6 +112,10 @@ class SimpleCNNEncoder(EmbeddingEncoder, nn.Module):
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = F.relu(self.conv5(x))
+        x = F.relu(self.conv6(x))
+
         # x = x.flatten(1)                                           # [B, F]
         # return self.fc(x) 
         return x
@@ -161,10 +169,15 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
         self.init_size = voxel_size // 8
         self.flat_size = 128 * self.init_size ** 3
         
-        self.fc = nn.Linear(embedding_dim, self.flat_size)
-        self.deconv1 = nn.ConvTranspose3d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1)
-        self.deconv2 = nn.ConvTranspose3d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1)
-        self.deconv3 = nn.ConvTranspose3d(32, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
+        # self.fc = nn.Linear(embedding_dim, self.flat_size)
+        self.deconv1 = nn.ConvTranspose3d(1024, 512, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.deconv2 = nn.ConvTranspose3d(512, 256, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.deconv3 = nn.ConvTranspose3d(256, 128, kernel_size=3, stride=2, padding=1, output_padding=1)
+
+        self.deconv4 = nn.ConvTranspose3d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.deconv5 = nn.ConvTranspose3d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.deconv6 = nn.ConvTranspose3d(32, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
+        
         
     def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None):
         if embedding.dim() == 2:
@@ -179,7 +192,12 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
         
         x = F.relu(self.deconv1(x))
         x = F.relu(self.deconv2(x))
-        logits = self.deconv3(x)
+        
+        x = F.relu(self.deconv3(x))
+        x = F.relu(self.deconv4(x))
+        x = F.relu(self.deconv5(x))
+
+        logits = self.deconv6(x)
         
         # FLIP THE Z-AXIS BACK before returning
         # logits shape: [B, 3, D, H, W] where dimensions are [batch, classes, x, y, z]
@@ -1591,7 +1609,7 @@ def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embeddi
 
             if viz_sample is not None:
                 # Show input (before)
-                show_voxels(viz_sample[0], client_input)
+                # show_voxels(viz_sample[0], client_input)
                 with Timer() as t_disp:
                     # Generate reconstruction (after)
                     with torch.no_grad():
@@ -1610,7 +1628,7 @@ def run_experiment(encoder_class, decoder_class, loss_heads, recon_loss, embeddi
                     
                     # Show output (after)
            
-                    show_voxels(logits, client_output)
+                    # show_voxels(logits, client_output)
                     
                 print(
                     f"Visualization updated  –  "
@@ -1728,44 +1746,7 @@ class RunLogger:
     def close(self):
         self.csv_f.close(); self.tb.close()
 
-# ============== Usage Example ==============
-# if __name__ == "__main__":
-#     # Test simple CNN autoencoder
-#     print("Testing CNN Autoencoder...")
-#     print("CUDA available:", torch.cuda.is_available())
-#     print("CUDA device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
-        
-#     loss_heads = {
-#         # # function losses wrapped as heads
-#         # "soft_iou":      AuxFnHead(make_aux_loss("soft_iou")),
-#         # "tv":            AuxFnHead(make_aux_loss("tv")),
-#         # "boundary":      AuxFnHead(make_aux_loss("boundary")),
-#         # "com":           AuxFnHead(make_aux_loss("com")),
-#         # "class_balance": AuxFnHead(make_aux_loss("class_balance")),
-#         # "ms_occ":        AuxFnHead(make_aux_loss("ms_occ", scale=4)),
-#         # "chamfer":       AuxFnHead(make_aux_loss("chamfer", topk=2048)),
-#     }
-#     # loss_heads["chamfer"].variable_length_target = True
-#     recon_loss = make_recon_loss("ce") 
-#     torch.cuda.empty_cache()
-#     # dims = [128, 256, 512, 1024]          # sweep list
-#     # for d in dims:
-#     #     print(f"\n=== 🔵 latent_dim = {d} ===")
-#     #     run_experiment(SimpleCNNEncoder, SimpleCNNDecoder,
-#     #                    embedding_dim=d,
-#     #                    num_epochs=500,            # shorter for quick sweep
-#     #                    batch_size=8,
-#     #                    visualize_every=50,
-#     #                    size=48,
-#     #                    ckpt_every=50)
-#     run_experiment(SimpleCNNEncoder, SimpleCNNDecoder, loss_heads,
-#                        embedding_dim=512,
-#                        num_epochs=5000,            # shorter for quick sweep
-#                        recon_loss=recon_loss,
-#                        batch_size=1,
-#                        visualize_every=50,
-#                        size=48,
-#                        ckpt_every=50)
+
 
 def make_aux_heads(embedding_dim):
     heads = {
@@ -1795,9 +1776,9 @@ def sweep():
         # (PointMLPEncoder,         ImplicitFourierDecoder),   # sparse-in / implicit-out
     ]
 
-    emb_dims = [128,192,256]
+    # emb_dims = [128,192,256]
     emb_dims=[1000]
-    size = 120
+    size = 128
  
      # Regimes are factories now
     regimes = [
@@ -1818,7 +1799,7 @@ def sweep():
                     embedding_dim=d,
                     num_epochs=5000,
                     batch_size=1,
-                    visualize_every=100,
+                    visualize_every=500,
                     size=size,
                     ckpt_every=500,
                 )

@@ -87,6 +87,10 @@ class SimpleCNNEncoder(EmbeddingEncoder, nn.Module):
         self.conv1 = nn.Conv3d(1, 32, kernel_size=5, stride=2, padding=2)
         self.conv2 = nn.Conv3d(32, 64, kernel_size=3, stride=2, padding=1)
         self.conv3 = nn.Conv3d(64, 128, kernel_size=3, stride=2, padding=1)
+
+        self.conv4 = nn.Conv3d(128, 256, kernel_size=3, stride=2, padding=1)
+        self.conv5 = nn.Conv3d(256, 512, kernel_size=3, stride=2, padding=1)
+        self.conv6 = nn.Conv3d(512, 1024, kernel_size=3, stride=2, padding=1)
         
         # # Calculate flattened size
         # self.flat_size = 128 * (voxel_size // 8) ** 3
@@ -98,10 +102,14 @@ class SimpleCNNEncoder(EmbeddingEncoder, nn.Module):
     def encode(self, voxel_batch: List[VoxelData]) -> torch.Tensor:
         # Build one dense grid per sample, then stack
         grids = [self._sparse_to_dense(vd) for vd in voxel_batch]  # each [1,1,D,D,D]
-        x = torch.cat(grids, dim=0)                                # [B,1,D,D,D]
+        x = torch.cat(grids, dim=0)      
+                                  # [B,1,D,D,D]
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = F.relu(self.conv5(x))
+        x = F.relu(self.conv6(x))
         # x = x.flatten(1)                                           # [B, F]
         # return self.fc(x) 
         return x
@@ -124,8 +132,8 @@ class SimpleCNNEncoder(EmbeddingEncoder, nn.Module):
 
         return grid
         
-        def get_embedding_dim(self) -> int:
-            return self.embedding_dim
+    def get_embedding_dim(self) -> int:
+        return self.embedding_dim
 
 class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
     def __init__(self, embedding_dim=128, voxel_size=48):
@@ -134,34 +142,45 @@ class SimpleCNNDecoder(EmbeddingDecoder, nn.Module):
         self.embedding_dim = embedding_dim
         
         # Calculate sizes
-        self.init_size = voxel_size // 8
+        self.init_size = voxel_size // (2**6)
         self.flat_size = 128 * self.init_size ** 3
         
         self.fc = nn.Linear(embedding_dim, self.flat_size)
-        self.deconv1 = nn.ConvTranspose3d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1)
-        self.deconv2 = nn.ConvTranspose3d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1)
-        self.deconv3 = nn.ConvTranspose3d(32, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.deconv1 = nn.ConvTranspose3d(1024, 512, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.deconv2 = nn.ConvTranspose3d(512, 256, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.deconv3 = nn.ConvTranspose3d(256, 128, kernel_size=5, stride=2, padding=2, output_padding=1)
+
+        self.deconv4 = nn.ConvTranspose3d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.deconv5 = nn.ConvTranspose3d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.deconv6 = nn.ConvTranspose3d(32, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
         
     def decode(self, embedding: torch.Tensor, query_points: Optional[torch.Tensor] = None, skips=None):
-        if embedding.dim() == 2:
-            x = self.fc(embedding)
-            x = x.view(-1, 128, self.init_size, self.init_size, self.init_size)
-        elif embedding.dim() == 5:
-            x = embedding
-            assert x.shape[2:] == (self.init_size, self.init_size, self.init_size), \
-                f"Expected [B,128,{self.init_size},{self.init_size},{self.init_size}], got {tuple(x.shape)}"
-        else:
-            raise ValueError(f"Decoder got unexpected tensor shape {embedding.shape}")
-        
+        # if embedding.dim() == 2:
+        #     x = self.fc(embedding)
+        #     x = x.view(-1, 128, self.init_size, self.init_size, self.init_size)
+        # elif embedding.dim() == 5:
+        #     x = embedding
+        #     assert x.shape[2:] == (self.init_size, self.init_size, self.init_size), \
+        #         f"Expected [ , , {self.init_size},{self.init_size},{self.init_size}], got {tuple(x.shape)}"
+        # else:
+        #     raise ValueError(f"Decoder got unexpected tensor shape {embedding.shape}")
+        x = embedding
         x = F.relu(self.deconv1(x))
         x = F.relu(self.deconv2(x))
-        logits = self.deconv3(x)
-        
+
+        x = F.relu(self.deconv3(x))
+        x = F.relu(self.deconv4(x))
+        x = F.relu(self.deconv5(x))
+
+        logits = self.deconv6(x)
+     
         # FLIP THE Z-AXIS BACK before returning
         # logits shape: [B, 3, D, H, W] where dimensions are [batch, classes, x, y, z]
         logits = torch.flip(logits, dims=[4])  # flip the z dimension (index 4)
         
         return {"logits": logits}
+    def forward(self, embedding, **kwargs):
+        return self.decode(embedding, **kwargs)
 
 
 # Mein Encoder
@@ -1210,11 +1229,11 @@ class DistShard(IterableDataset):
 class TerrainBatch(IterableDataset):
     """Infinite generator of full cubic worlds (no sub-volume)."""
     def __init__(self, world_size: int = 120,
-                 build_dt: bool = True,
-                 build_low: bool = True,
+                 build_dt: bool = False,
+                 build_low: bool = False,
                  low_scale: int = 4,
-                 build_com: bool = True,
-                 build_points: bool = True):
+                 build_com: bool = False,
+                 build_points: bool = False):
         self.world_size = int(world_size)
         self.build_dt   = bool(build_dt)
         self.build_low  = bool(build_low)
@@ -1393,7 +1412,7 @@ def run_experiment(
         best_ckpt_path = os.path.join(logger.dir, f"best_dim{embedding_dim}.pt")
 
     # Create dataloader
-    dataset = TerrainBatch(world_size=size)
+    dataset    = TerrainBatch(world_size=size, build_dt=False, build_low=False, build_points=False,build_com=False)
     # If you want distinct data per rank/worker, wrap with DistShard:
     # dataset = DistShard(TerrainBatch(world_size=size))
 
@@ -1693,8 +1712,9 @@ def sweep():
         # (CrossAttnTokensEncoder,  ImplicitFourierDecoder),
         # (PointMLPEncoder,         ImplicitFourierDecoder),   # sparse-in / implicit-out
     ]
-    emb_dims = [512, 1024,2048,5120]
-    size = 48
+    # emb_dims = [512, 1024,2048,5120]
+    emb_dims = [512]
+    size = 128
      # Regimes are factories now
     regimes = [
         ("recon_only",    lambda dim: {}),
@@ -1715,9 +1735,9 @@ def sweep():
                     loss_heads=loss_heads,
                     recon_loss=recon_loss,
                     embedding_dim=d,
-                    num_epochs=5000,
+                    num_epochs=10000,
                     batch_size=1,
-                    visualize_every=250,
+                    visualize_every=500,
                     size=size,
                     ckpt_every=500,
                 )
