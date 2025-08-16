@@ -205,7 +205,7 @@ impl Default for Trajectory {
 
 impl Trajectory {
     /// Generates a spline through the grid path (positions only).
-    pub fn generate(origin: Vector3<i32>, cells: &[Coord]) -> Self {
+    pub fn new(origin: Vector3<i32>, cells: &[Coord]) -> Self {
         let mut cells: Vec<Coord> = cells.to_vec();
         cells.insert(0, origin);
 

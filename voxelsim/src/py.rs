@@ -232,8 +232,13 @@ impl Action {
 #[pymethods]
 impl ActionIntent {
     #[new]
-    pub fn new_py(urgency: f64, yaw: f64, move_sequence: MoveSequence) -> Self {
-        Self::new(urgency, yaw, move_sequence)
+    pub fn new_py(
+        urgency: f64,
+        yaw: f64,
+        move_sequence: MoveSequence,
+        next: Option<ActionIntent>,
+    ) -> Self {
+        Self::new(urgency, yaw, move_sequence, next.map(|x| Box::new(x)))
     }
 
     pub fn get_move_sequence(&self) -> MoveSequence {
@@ -455,7 +460,7 @@ impl AStarActionPlanner {
         yaw: f64,
         urgency: f64,
     ) -> PyResult<ActionIntent> {
-        self.plan_action(world, origin.into(), dst.into(), yaw, urgency)
+        self.plan_action(world, origin.into(), dst.into(), yaw, urgency, None)
             .map_err(|e| PyException::new_err(format!("Failed to create action intent: {}", e)))
     }
 }

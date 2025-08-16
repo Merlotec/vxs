@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap};
 
 use crate::agent::MoveDir;
 use crate::{ActionIntent, PlannerError};
@@ -14,28 +14,28 @@ struct Cost {
     f: i32, // g + heuristic
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-struct StateKey {
-    coord: Coord,
-    // -1 indicates None (no previous direction)
-    last_dir_code: i8,
-}
-
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct QueueEntry {
-    f: i32,
-    state: StateKey,
+    // Primary key: estimated total steps (g_steps + h_steps)
+    f_steps: i32,
+    // Secondary key: tie-breaker = sum of distances to line (scaled)
+    f_dist: i64,
+    // For stale-entry skipping
+    g_steps: i32,
+    g_dist: i64,
+    node: Node,
 }
 
 impl Ord for QueueEntry {
     fn cmp(&self, other: &Self) -> Ordering {
         // Reverse for min-heap behavior with BinaryHeap
         other
-            .f
-            .cmp(&self.f)
-            .then_with(|| self.state.coord.x.cmp(&other.state.coord.x))
-            .then_with(|| self.state.coord.y.cmp(&other.state.coord.y))
-            .then_with(|| self.state.coord.z.cmp(&other.state.coord.z))
+            .f_steps
+            .cmp(&self.f_steps)
+            .then_with(|| other.f_dist.cmp(&self.f_dist))
+            .then_with(|| self.node.0.x.cmp(&other.node.0.x))
+            .then_with(|| self.node.0.y.cmp(&other.node.0.y))
+            .then_with(|| self.node.0.z.cmp(&other.node.0.z))
     }
 }
 
@@ -102,12 +102,39 @@ fn delta_to_dir(d: Coord) -> Option<MoveDir> {
     }
 }
 
-#[inline]
-fn move_dir_code(dir: Option<MoveDir>) -> i8 {
-    match dir {
-        Some(d) => d as i8,
-        None => -1,
-    }
+// Distance from point p to the line segment a-b, scaled by SCALE and rounded.
+fn dist_point_to_segment_scaled(p: Coord, a: Coord, b: Coord, scale: f64) -> i64 {
+    let ax = a.x as f64;
+    let ay = a.y as f64;
+    let az = a.z as f64;
+    let bx = b.x as f64;
+    let by = b.y as f64;
+    let bz = b.z as f64;
+    let px = p.x as f64;
+    let py = p.y as f64;
+    let pz = p.z as f64;
+
+    let vx = bx - ax;
+    let vy = by - ay;
+    let vz = bz - az;
+    let wx = px - ax;
+    let wy = py - ay;
+    let wz = pz - az;
+
+    let vv = vx * vx + vy * vy + vz * vz;
+    let t = if vv <= 1e-9 {
+        0.0
+    } else {
+        ((wx * vx + wy * vy + wz * vz) / vv).clamp(0.0, 1.0)
+    };
+    let cx = ax + t * vx;
+    let cy = ay + t * vy;
+    let cz = az + t * vz;
+    let dx = px - cx;
+    let dy = py - cy;
+    let dz = pz - cz;
+    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+    (dist * scale).round() as i64
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -126,7 +153,7 @@ impl AStarActionPlanner {
         }
     }
 
-    fn find_nearest_target(start: Coord, world: &VoxelGrid) -> Option<Coord> {
+    pub fn find_nearest_target(start: Coord, world: &VoxelGrid) -> Option<Coord> {
         let mut best: Option<(i32, Coord)> = None;
         for kv in world.cells().iter() {
             if kv.intersects(Cell::TARGET) {
@@ -170,6 +197,7 @@ impl super::ActionPlanner for AStarActionPlanner {
         dst: Coord,
         urgency: f64,
         yaw: f64,
+        next: Option<Box<ActionIntent>>,
     ) -> Result<ActionIntent, PlannerError> {
         if origin == dst {
             return Err(PlannerError::InvalidParams);
@@ -179,81 +207,82 @@ impl super::ActionPlanner for AStarActionPlanner {
             return Err(PlannerError::PathBlocked);
         }
 
-        // Direction-aware A*: include last direction in the state to prefer
-        // paths with more direction changes (i.e., fewer repeated straight steps).
+        // A* with lexicographic tie-breaker:
+        // 1) minimize number of steps
+        // 2) among equal-length paths, minimize sum of distances of visited centroids to the
+        //    straight segment (origin-dst)
         let mut open = BinaryHeap::<QueueEntry>::new();
-        let mut came_from: HashMap<StateKey, StateKey> = HashMap::new();
-        let mut g_score: HashMap<StateKey, i32> = HashMap::new();
-        let mut closed: HashSet<StateKey> = HashSet::new();
+        let mut came_from: HashMap<Coord, Coord> = HashMap::new();
+        let mut g_score: HashMap<Coord, (i32, i64)> = HashMap::new(); // (g_steps, g_dist_scaled)
 
-        // Scale costs to allow a small per-step penalty while keeping integers
-        const STEP_COST: i32 = 1000;
-        const STRAIGHT_PENALTY: i32 = 1; // applied when continuing in the same direction
+        // Scaling for distance sum to keep integer arithmetic stable
+        const DIST_SCALE: f64 = 1000.0;
 
-        let start = StateKey { coord: origin, last_dir_code: -1 };
-        g_score.insert(start, 0);
+        g_score.insert(origin, (0, 0));
         open.push(QueueEntry {
-            f: manhattan(origin, dst) * STEP_COST,
-            state: start,
+            f_steps: manhattan(origin, dst),
+            f_dist: 0,
+            g_steps: 0,
+            g_dist: 0,
+            node: Node(origin),
         });
 
         // Limit to avoid infinite search in degenerate inputs
         let max_expansions = 200_000;
         let mut expansions = 0;
 
-        while let Some(QueueEntry { state, .. }) = open.pop()
+        while let Some(QueueEntry {
+            f_steps: _,
+            f_dist: _,
+            g_steps,
+            g_dist,
+            node: Node(curr),
+        }) = open.pop()
         {
-            if state.coord == dst {
-                // Reconstruct using direction-aware came_from
-                let mut steps: Vec<MoveDir> = Vec::new();
-                let mut cur = state;
-                while cur.coord != origin {
-                    if let Some(prev) = came_from.get(&cur) {
-                        let delta = cur.coord - prev.coord;
-                        if let Some(dir) = delta_to_dir(delta) {
-                            steps.push(dir);
-                        }
-                        cur = *prev;
-                    } else {
-                        break;
-                    }
+            // Skip stale entries if we already have a better g_score recorded
+            if let Some(&(gs_best, gd_best)) = g_score.get(&curr) {
+                if (g_steps, g_dist) != (gs_best, gd_best) {
+                    continue;
                 }
-                steps.reverse();
-                let move_sequence = steps;
-                return Ok(ActionIntent::new(urgency, yaw, move_sequence));
             }
-            if !closed.insert(state) {
-                continue;
+
+            if curr == dst {
+                // Reconstruct path
+                let move_sequence = Self::reconstruct_path(&came_from, dst, origin);
+                return Ok(ActionIntent::new(urgency, yaw, move_sequence, next));
             }
             expansions += 1;
             if expansions > max_expansions {
                 break;
             }
 
-            for nb in neighbours6(state.coord) {
-                let next_dir = delta_to_dir(nb - state.coord);
+            for nb in neighbours6(curr) {
                 if is_blocked(world, &nb, self.padding) {
                     continue;
                 }
-                // Compute per-step cost with preference for direction change
-                let same_dir = match next_dir {
-                    Some(d) if state.last_dir_code >= 0 => (d as i8) == state.last_dir_code,
-                    _ => false,
-                };
-                let step_penalty = if same_dir { STRAIGHT_PENALTY } else { 0 };
-                let curr_g = g_score.get(&state).copied().unwrap_or(i32::MAX / 4);
-                let tentative_g = curr_g + STEP_COST + step_penalty;
+                let step_g_steps = g_steps + 1;
+                let step_g_dist =
+                    g_dist + dist_point_to_segment_scaled(nb, origin, dst, DIST_SCALE);
 
-                let next_state = StateKey { coord: nb, last_dir_code: move_dir_code(next_dir) };
-                if closed.contains(&next_state) {
-                    continue;
-                }
-                let g_old = g_score.get(&next_state).copied();
-                if g_old.is_none() || tentative_g < g_old.unwrap() {
-                    came_from.insert(next_state, state);
-                    g_score.insert(next_state, tentative_g);
-                    let f = tentative_g + manhattan(nb, dst) * STEP_COST;
-                    open.push(QueueEntry { f, state: next_state });
+                let better = match g_score.get(&nb) {
+                    None => true,
+                    Some(&(gs_old, gd_old)) => {
+                        // Lex compare: first by steps, then by distance
+                        (step_g_steps < gs_old) || (step_g_steps == gs_old && step_g_dist < gd_old)
+                    }
+                };
+                if better {
+                    came_from.insert(nb, curr);
+                    g_score.insert(nb, (step_g_steps, step_g_dist));
+                    let f_steps = step_g_steps + manhattan(nb, dst);
+                    let f_dist = step_g_dist; // admissible heuristic for dist is 0
+                    open.push(QueueEntry {
+                        f_steps,
+                        f_dist,
+                        g_steps: step_g_steps,
+                        g_dist: step_g_dist,
+                        node: Node(nb),
+                    });
                 }
             }
         }

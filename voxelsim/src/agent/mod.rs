@@ -3,10 +3,9 @@ use std::{error::Error, fmt::Display};
 use dashmap::DashSet;
 use nalgebra::{Unit, UnitQuaternion, Vector3};
 use serde::{Deserialize, Serialize};
-use tinyvec::ArrayVec;
 
 use crate::{
-    ActionPlanner, Coord,
+    Coord,
     trajectory::Trajectory,
     viewport::{CameraOrientation, CameraView},
 };
@@ -78,6 +77,8 @@ pub struct ActionIntent {
     pub move_sequence: MoveSequence,
     pub urgency: f64,
     pub yaw: f64,
+
+    pub next: Option<Box<Self>>,
 }
 
 /// When we carry out an action we need to pyo3ensure that we remove subsequent steps when we enter the
@@ -91,11 +92,17 @@ pub struct Action {
 }
 
 impl ActionIntent {
-    pub fn new(urgency: f64, yaw: f64, move_sequence: MoveSequence) -> Self {
+    pub fn new(
+        urgency: f64,
+        yaw: f64,
+        move_sequence: MoveSequence,
+        next: Option<Box<Self>>,
+    ) -> Self {
         Self {
             urgency,
             yaw,
             move_sequence,
+            next,
         }
     }
 
@@ -119,9 +126,86 @@ impl ActionIntent {
         self.relative_centroid_pos(self.move_sequence.len())
             .unwrap()
     }
+
+    pub fn set_next(&mut self, next: Option<Box<Self>>) -> Option<Box<Self>> {
+        let old = self.next.take();
+        self.next = next;
+        old
+    }
+
+    pub fn next(&self) -> Option<&Self> {
+        self.next.as_deref()
+    }
+
+    pub fn next_mut(&mut self) -> Option<&mut Self> {
+        self.next.as_deref_mut()
+    }
+
+    /// Can be used to feed a buffer of previous actions into an ML model.
+    pub fn sequence_desc(&self) -> Vec<ActionDesc> {
+        let mut a_buf = Some(self);
+        let mut descs = Vec::new();
+        while let Some(a) = a_buf {
+            a_buf = a.next();
+            descs.push(ActionDesc::from_intent(a));
+        }
+
+        descs
+    }
+
+    pub fn clone_next(&self) -> Option<Self> {
+        self.next.clone().map(|x| *x)
+    }
+
+    pub fn head_intent_mut<'a>(&'a mut self) -> &'a mut Self {
+        let mut a_buf: Option<&'a mut Self> = Some(self);
+        loop {
+            let next = a_buf.take().unwrap().next_mut();
+            if let Some(next) = next {
+                a_buf = Some(next);
+            } else {
+                return a_buf.take().unwrap();
+            }
+        }
+    }
+
+    pub fn push_intent(&mut self, intent: Box<ActionIntent>) {
+        self.head_intent_mut().next = Some(intent);
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
+pub struct ActionDesc {
+    pub target: Coord,
+    pub urgency: f64,
+    pub yaw: f64,
+}
+
+impl ActionDesc {
+    pub fn from_intent(intent: &ActionIntent) -> Self {
+        Self {
+            target: intent.relative_end_coord(),
+            urgency: intent.urgency,
+            yaw: intent.yaw,
+        }
+    }
 }
 
 impl Action {
+    pub fn new(intent: ActionIntent, origin: Coord) -> Result<Self, ActionError> {
+        if intent.move_sequence.is_empty() {
+            return Err(ActionError::NoCommands);
+        }
+        let cells = Action::centroids(&intent.move_sequence, origin)?;
+        let action = Action {
+            intent,
+            origin,
+            trajectory: Trajectory::new(origin, &cells),
+        };
+        Ok(action)
+    }
+
     pub fn centroids<'a, I: IntoIterator<Item = &'a MoveDir>>(
         move_sequence: I,
         origin: Vector3<i32>,
@@ -169,7 +253,7 @@ impl Agent {
     }
 
     pub fn camera_view(&self, orientation: &CameraOrientation) -> CameraView {
-        CameraView::from_pos_quat(self.pos, orientation.quat * self.attitude)
+        CameraView::from_pos_quat(self.pos, self.attitude * orientation.quat)
     }
 
     pub fn get_action(&self) -> Option<&Action> {
@@ -198,16 +282,7 @@ impl Agent {
     }
 
     pub fn perform(&mut self, intent: ActionIntent) -> Result<(), ActionError> {
-        if intent.move_sequence.is_empty() {
-            return Err(ActionError::NoCommands);
-        }
-        let origin = self.get_coord();
-        let cells = Action::centroids(&intent.move_sequence, origin)?;
-        let action = Action {
-            intent,
-            origin,
-            trajectory: Trajectory::generate(origin, &cells),
-        };
+        let action = Action::new(intent, self.get_coord())?;
         self.state = AgentState::Action(action);
         Ok(())
     }

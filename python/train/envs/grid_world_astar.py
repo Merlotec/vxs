@@ -263,7 +263,7 @@ class GridWorldAStarEnv(gym.Env):
                     failed = True
                     continue
                 if len(dirs) > 0:
-                    intent = vxs.ActionIntent(float(urgency), float(yaw), dirs)
+                    intent = vxs.ActionIntent(float(urgency), float(yaw), dirs, None)
                     try:
                         self.agent.perform_py(intent)
                         # record the actual relative offset used

@@ -1,6 +1,6 @@
 use nalgebra::Vector3;
 
-use crate::{Agent, AgentState};
+use crate::{Action, Agent, AgentState};
 
 pub trait TrajectoryChaser {
     /// It is the chaser's job to remove/update the move sequence of the agent as it moves along its spline.
@@ -116,10 +116,17 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                         s_updated
                     };
                     let progress = if overshot_end || s_next >= s_end {
-                        ActionProgress::Complete(AgentState::Hold {
-                            coord: action.end_coord(),
-                            yaw: action.intent.yaw,
-                        })
+                        ActionProgress::Complete(
+                            action
+                                .intent
+                                .clone_next()
+                                .and_then(|i| Action::new(i, action.end_coord()).ok())
+                                .map(|a| AgentState::Action(a))
+                                .unwrap_or(AgentState::Hold {
+                                    coord: action.end_coord(),
+                                    yaw: action.intent.yaw,
+                                }),
+                        )
                     } else {
                         ActionProgress::ProgressTo(s_next)
                     };

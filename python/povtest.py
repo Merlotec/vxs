@@ -1,5 +1,6 @@
 from pynput import keyboard, mouse
 import voxelsim as vxs, time
+import math
 
 # dynamics = vxs.AgentDynamics.default_drone()
 agent = vxs.Agent(0)
@@ -84,7 +85,9 @@ def world_update(world, timestamp):
     dtime = time.time() - upd_start
     print(f"upd_time: {dtime}")
 
-YAW_STEP = 0.3  # radians per key press (about 17°)
+YAW_STEP = math.pi * 0.125  # radians per key press (about 17°)
+
+yaw_delta = 0.0
 
 while listener.running:
     t0 = time.time()
@@ -111,7 +114,6 @@ while listener.running:
     commands_cl = list(commands)
 
     # Compute yaw delta from input this frame; Q = left (negative), E = right (positive)
-    yaw_delta = 0.0
     if 'q' in just_pressed:
         yaw_delta -= YAW_STEP
     if 'e' in just_pressed:
@@ -126,7 +128,7 @@ while listener.running:
     if 'shift' in just_pressed: commands.append(vxs.MoveDir.Down)
     if not action or commands != commands_cl:
         if len(commands) > 0:
-            intent = vxs.ActionIntent(0.8, 0.0, commands)
+            intent = vxs.ActionIntent(0.8, yaw_delta, commands, None)
             agent.perform_py(intent)
 
     # The point in space that the drone should be chasing.
