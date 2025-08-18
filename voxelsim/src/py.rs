@@ -12,7 +12,7 @@ use numpy::ndarray::ShapeError;
 use crate::{
     Cell, Coord,
     agent::{
-        Action, ActionIntent, Agent, AgentState, MAX_ACTIONS, MoveDir, MoveSequence,
+        Action, ActionIntent, Agent, AgentState, MoveDir, MoveSequence,
         viewport::{CameraProjection, CameraView},
     },
     chase::{ChaseTarget, FixedLookaheadChaser, TrajectoryChaser},
@@ -162,10 +162,22 @@ impl Agent {
         Self::new(id)
     }
 
-    /// Python-friendly method to perform a sequence of move commands
-    pub fn perform_py(&mut self, intent: ActionIntent) -> PyResult<()> {
+    /// Will overwrite any existing action and just perform this one intent.
+    pub fn perform_oneshot_py(&mut self, intent: ActionIntent) -> PyResult<()> {
         self.perform(intent)
-            .map_err(|e| PyException::new_err(format!("Could not perform sequence: {}", e)))
+            .map_err(|e| PyException::new_err(format!("Could not perform intent: {}", e)))
+    }
+
+    pub fn push_back_intent_py(&mut self, intent: ActionIntent) -> PyResult<()> {
+        if let AgentState::Action(action) = &mut self.state {
+            action
+                .push_back_intent(intent)
+                .map_err(|e| PyException::new_err(format!("Could not push back intent: {}", e)))
+        } else {
+            Err(PyException::new_err(format!(
+                "Could not push back intent: No currently active action to queue intent to."
+            )))
+        }
     }
 
     pub fn camera_view_py(&self, orientation: &CameraOrientation) -> CameraView {
@@ -191,10 +203,6 @@ impl Agent {
     pub fn set_hold_py(&mut self, coord: PyCoord, yaw: f64) {
         self.set_hold(coord.into(), yaw);
     }
-
-    pub fn max_command_count(&self) -> usize {
-        MAX_ACTIONS
-    }
 }
 
 #[pymethods]
@@ -209,11 +217,6 @@ impl Action {
     //     }
     // }
 
-    /// Get the number of commands in the sequence
-    pub fn len(&self) -> usize {
-        self.intent.move_sequence.len()
-    }
-
     /// Get the origin position as a tuple
     pub fn get_origin(&self) -> (i32, i32, i32) {
         (self.origin.x, self.origin.y, self.origin.z)
@@ -224,8 +227,12 @@ impl Action {
         self.origin = Vector3::new(x, y, z);
     }
 
-    pub fn get_intent(&self) -> ActionIntent {
-        self.intent.clone()
+    pub fn num_intents(&self) -> usize {
+        self.intent_queue.len()
+    }
+
+    pub fn get_intent_queue(&self) -> Vec<ActionIntent> {
+        self.intent_queue.clone().into()
     }
 }
 
@@ -238,7 +245,7 @@ impl ActionIntent {
         move_sequence: MoveSequence,
         next: Option<ActionIntent>,
     ) -> Self {
-        Self::new(urgency, yaw, move_sequence, next.map(|x| Box::new(x)))
+        Self::new(urgency, yaw, move_sequence)
     }
 
     pub fn get_move_sequence(&self) -> MoveSequence {

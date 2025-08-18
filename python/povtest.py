@@ -1,19 +1,57 @@
 from pynput import keyboard, mouse
 import voxelsim as vxs, time
-import math
+import math, json, sys
+from pathlib import Path
+
+def _load_world_from_json(path: Path):
+    data = json.loads(path.read_text())
+    cells = {}
+    filled = vxs.Cell.filled()
+    for item in data.get("cells", []):
+        x, y, z = int(item[0]), int(item[1]), int(item[2])
+        cells[(x, y, z)] = filled
+    if hasattr(vxs.VoxelGrid, "from_dict_py"):
+        vg = vxs.VoxelGrid.from_dict_py(cells)
+    else:
+        vg = vxs.VoxelGrid()
+        for k, cell in cells.items():
+            vg.set_cell_py(k, cell)
+    dims = data.get("dims", {})
+    nx = int(dims.get("x", 100))
+    ny = int(dims.get("y", 100))
+    nz = int(dims.get("z", 60))
+    return vg, (nx, ny, nz)
+
+# If a JSON world is provided as argv[1], load it; otherwise use generated terrain
+world = None
+nx = ny = 100
+nz = 60
+if len(sys.argv) > 1:
+    in_path = Path(sys.argv[1])
+    if in_path.exists():
+        try:
+            world, (nx, ny, nz) = _load_world_from_json(in_path)
+            print(f"Loaded world from {in_path} with dims=({nx},{ny},{nz})")
+        except Exception as e:
+            print(f"Failed to load world from {in_path}: {e}. Falling back to generated terrain.")
+if world is None:
+    generator = vxs.TerrainGenerator()
+    generator.generate_terrain_py(vxs.TerrainConfig.default_py())
+    world = generator.generate_world_py()
+    nx, ny, nz = 100, 100, 60
 
 # dynamics = vxs.AgentDynamics.default_drone()
 agent = vxs.Agent(0)
-agent.set_hold_py([50, 50, -20], 0.0)
+# Place agent near center of footprint and above ground
+cx, cy = nx // 2, ny // 2
+cz = max(5, nz // 3)
+agent.set_hold_py([cx, cy, -cz], 0.0)
 
 fw = vxs.FilterWorld()
 dynamics = vxs.px4.Px4Dynamics.default_py()
 
 chaser = vxs.FixedLookaheadChaser.default_py()
 planner = vxs.AStarActionPlanner(1)
-generator = vxs.TerrainGenerator()
-generator.generate_terrain_py(vxs.TerrainConfig.default_py())
-world = generator.generate_world_py()
 proj = vxs.CameraProjection.default_py()
 env = vxs.EnvState.default_py()
 
@@ -110,7 +148,7 @@ while listener.running:
     action = agent.get_action_py()
     commands = []
     if action:
-        commands = action.get_intent().get_move_sequence()
+        commands = action.get_intent_queue()[0].get_move_sequence()
     commands_cl = list(commands)
 
     # Compute yaw delta from input this frame; Q = left (negative), E = right (positive)
@@ -129,7 +167,7 @@ while listener.running:
     if not action or commands != commands_cl:
         if len(commands) > 0:
             intent = vxs.ActionIntent(0.8, yaw_delta, commands, None)
-            agent.perform_py(intent)
+            agent.perform_oneshot_py(intent)
 
     # The point in space that the drone should be chasing.
     chase_target = chaser.step_chase_py(agent, delta)

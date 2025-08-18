@@ -1,3 +1,5 @@
+#![feature(more_float_constants)]
+
 pub mod agent;
 pub mod env;
 pub mod network;

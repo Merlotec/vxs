@@ -23,7 +23,7 @@ pub struct ChaseTarget {
 #[derive(Debug, Default, Clone)]
 pub enum ActionProgress {
     /// Progress the current action to the specified progress.
-    ProgressTo(f64),
+    ProgressTo(f64, bool),
     /// End the current action and start the new state.
     Complete(AgentState),
     /// Do not update progress (this can be used if there is no currently active action).
@@ -41,9 +41,9 @@ pub struct FixedLookaheadChaser {
 impl Default for FixedLookaheadChaser {
     fn default() -> Self {
         Self {
-            v_max_base: 6.0,
-            s_lookahead_base: 0.4,
-            min_step: 1.0,
+            v_max_base: 10.0,
+            s_lookahead_base: 1.5,
+            min_step: 1.2,
         }
     }
 }
@@ -56,9 +56,9 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                 let x_act = agent.pos;
 
                 let s_cur = action.trajectory.progress;
-                let s_end = 1.0; // normalized trajectory domain
-                let urgency = action.intent.urgency;
-                let yaw = action.intent.yaw;
+                let s_end = action.trajectory.length(); // normalized trajectory domain
+                let urgency = action.trajectory.sample_urgencies(s_cur).unwrap_or(0.8);
+
                 let v_max_cur = self.v_max_base * urgency;
                 let ds_max = v_max_cur * delta;
                 let ds_min = self.min_step * delta * urgency;
@@ -101,13 +101,14 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                 };
 
                 let s_tgt = (s_updated + s_lookahead).min(s_end);
-                if let (Some(p_tgt), Some(v_tgt_nominal), Some(a_tgt_nominal)) = (
+                if let (Some(p_tgt), Some(v_tgt_nominal), Some(a_tgt_nominal), Some(yaw)) = (
                     action.trajectory.position(s_tgt),
                     action.trajectory.velocity(s_tgt),
                     action.trajectory.acceleration(s_tgt),
+                    action.trajectory.sample_yaw(s_tgt),
                 ) {
                     // 6) Scale velocity and accel targets by urgency uniformly
-                    let v_tgt = v_tgt_nominal * urgency;
+                    let v_tgt = v_tgt_nominal * 0.5 * urgency;
                     let a_tgt = a_tgt_nominal * 0.4 * urgency;
                     // Only enforce minimum step when we are allowed to advance
                     let s_next = if can_advance {
@@ -116,19 +117,12 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                         s_updated
                     };
                     let progress = if overshot_end || s_next >= s_end {
-                        ActionProgress::Complete(
-                            action
-                                .intent
-                                .clone_next()
-                                .and_then(|i| Action::new(i, action.end_coord()).ok())
-                                .map(|a| AgentState::Action(a))
-                                .unwrap_or(AgentState::Hold {
-                                    coord: action.end_coord(),
-                                    yaw: action.intent.yaw,
-                                }),
-                        )
+                        ActionProgress::Complete(AgentState::Hold {
+                            coord: action.end_coord(),
+                            yaw,
+                        })
                     } else {
-                        ActionProgress::ProgressTo(s_next)
+                        ActionProgress::ProgressTo(s_next, true)
                     };
 
                     return ChaseTarget {
@@ -142,7 +136,7 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                     return ChaseTarget {
                         progress: ActionProgress::Complete(AgentState::Hold {
                             coord: action.end_coord(),
-                            yaw: action.intent.yaw,
+                            yaw: 0.0,
                         }),
                         pos: action.end_coord().cast(),
                         vel: Vector3::zeros(),

@@ -133,12 +133,12 @@ impl AgentDynamics for QuadDynamics {
         chaser: ChaseTarget,
         delta: f64,
     ) {
-        let idle = !matches!(&chaser.progress, ActionProgress::ProgressTo(_));
+        let idle = !matches!(&chaser.progress, ActionProgress::ProgressTo(_, _));
         let (mut t_pos, mut t_vel, mut t_acc, pos_params_sel, _rate_params_sel, target_blend) =
             match chaser.progress {
-                ActionProgress::ProgressTo(p) => {
+                ActionProgress::ProgressTo(progress, trim_tail) => {
                     if let AgentState::Action(action) = &mut agent.state {
-                        action.trajectory.progress = p;
+                        action.update_progress(progress, trim_tail);
                     }
                     // Debug print removed to avoid runtime jitter
                     (

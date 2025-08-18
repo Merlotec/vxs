@@ -1,4 +1,8 @@
-use std::{error::Error, fmt::Display};
+use std::{
+    collections::{VecDeque, vec_deque},
+    error::Error,
+    fmt::Display,
+};
 
 use dashmap::DashSet;
 use nalgebra::{Unit, UnitQuaternion, Vector3};
@@ -12,6 +16,7 @@ use crate::{
 
 pub mod chase;
 pub mod trajectory;
+// pub mod uncertainty;
 pub mod viewport;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,8 +82,6 @@ pub struct ActionIntent {
     pub move_sequence: MoveSequence,
     pub urgency: f64,
     pub yaw: f64,
-
-    pub next: Option<Box<Self>>,
 }
 
 /// When we carry out an action we need to pyo3ensure that we remove subsequent steps when we enter the
@@ -86,23 +89,20 @@ pub struct ActionIntent {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct Action {
-    pub intent: ActionIntent,
+    /// The queue of action intents to complete.
+    pub intent_queue: VecDeque<ActionIntent>,
+    /// The current trajectory that the chaser is following.
     pub trajectory: Trajectory,
+    /// The current origin of the trajectory.
     pub origin: Vector3<i32>,
 }
 
 impl ActionIntent {
-    pub fn new(
-        urgency: f64,
-        yaw: f64,
-        move_sequence: MoveSequence,
-        next: Option<Box<Self>>,
-    ) -> Self {
+    pub fn new(urgency: f64, yaw: f64, move_sequence: MoveSequence) -> Self {
         Self {
             urgency,
             yaw,
             move_sequence,
-            next,
         }
     }
 
@@ -126,52 +126,6 @@ impl ActionIntent {
         self.relative_centroid_pos(self.move_sequence.len())
             .unwrap()
     }
-
-    pub fn set_next(&mut self, next: Option<Box<Self>>) -> Option<Box<Self>> {
-        let old = self.next.take();
-        self.next = next;
-        old
-    }
-
-    pub fn next(&self) -> Option<&Self> {
-        self.next.as_deref()
-    }
-
-    pub fn next_mut(&mut self) -> Option<&mut Self> {
-        self.next.as_deref_mut()
-    }
-
-    /// Can be used to feed a buffer of previous actions into an ML model.
-    pub fn sequence_desc(&self) -> Vec<ActionDesc> {
-        let mut a_buf = Some(self);
-        let mut descs = Vec::new();
-        while let Some(a) = a_buf {
-            a_buf = a.next();
-            descs.push(ActionDesc::from_intent(a));
-        }
-
-        descs
-    }
-
-    pub fn clone_next(&self) -> Option<Self> {
-        self.next.clone().map(|x| *x)
-    }
-
-    pub fn head_intent_mut<'a>(&'a mut self) -> &'a mut Self {
-        let mut a_buf: Option<&'a mut Self> = Some(self);
-        loop {
-            let next = a_buf.take().unwrap().next_mut();
-            if let Some(next) = next {
-                a_buf = Some(next);
-            } else {
-                return a_buf.take().unwrap();
-            }
-        }
-    }
-
-    pub fn push_intent(&mut self, intent: Box<ActionIntent>) {
-        self.head_intent_mut().next = Some(intent);
-    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
@@ -193,13 +147,14 @@ impl ActionDesc {
 }
 
 impl Action {
-    pub fn new(intent: ActionIntent, origin: Coord) -> Result<Self, ActionError> {
+    pub fn new_oneshot(intent: ActionIntent, origin: Coord) -> Result<Self, ActionError> {
         if intent.move_sequence.is_empty() {
             return Err(ActionError::NoCommands);
         }
-        let cells = Action::centroids(&intent.move_sequence, origin)?;
+        let intent_queue = VecDeque::from([intent]);
+        let cells = Action::chained_centroids(&intent_queue, origin)?;
         let action = Action {
-            intent,
+            intent_queue,
             origin,
             trajectory: Trajectory::new(origin, &cells),
         };
@@ -230,11 +185,97 @@ impl Action {
     }
 
     pub fn end_coord(&self) -> Coord {
-        self.origin + self.intent.relative_end_coord()
+        self.origin
+            + self
+                .intent_queue
+                .iter()
+                .map(|x| x.relative_end_coord())
+                .sum::<Vector3<i32>>()
+    }
+
+    pub fn chained_centroids<'a, I: IntoIterator<Item = &'a ActionIntent>>(
+        intents: I,
+        origin: Coord,
+    ) -> Result<Vec<(Coord, f64, f64)>, ActionError> {
+        let mut origin = origin;
+        let mut centroids = Vec::new();
+        for intent in intents {
+            let next_centroids = Self::centroids(&intent.move_sequence, origin)?;
+            origin = (next_centroids.last().copied()).unwrap_or(origin);
+            let mut action_centroids = next_centroids
+                .into_iter()
+                .map(|x| (x, intent.urgency, intent.yaw))
+                .collect();
+
+            centroids.append(&mut action_centroids);
+        }
+
+        Ok(centroids)
+    }
+
+    /// Gets the intent that is being executed if the progress is the given value.
+    pub fn intent_for_progress(&self, progress: f64) -> Option<usize> {
+        let mut pbuf = 0.0;
+        for (i, intent) in self.intent_queue.iter().enumerate() {
+            pbuf += intent.move_sequence.len() as f64;
+            if progress < pbuf {
+                return Some(i);
+            }
+        }
+
+        None
+    }
+
+    pub fn update_progress(&mut self, progress: f64, trim_tail: bool) {
+        self.trajectory.progress = progress.clamp(0.0, self.trajectory.length());
+
+        if trim_tail {
+            // Get the intent that we are in.
+            if let Some(i) = self.intent_for_progress(progress) {
+                let to_remove = i.saturating_sub(1);
+
+                for _ in 0..to_remove {
+                    self.pop_front_intent();
+                }
+            }
+        }
+    }
+
+    pub fn pop_front_intent(&mut self) -> Result<Option<ActionIntent>, ActionError> {
+        // We must update the trajectory...
+        // We can do this by determining the change in length, and then subtracting that from the current progress.
+        let progress = self.trajectory.progress;
+        let front = self.intent_queue.pop_front();
+        if let Some(front) = &front {
+            // Change origin
+            self.origin = self.origin + front.relative_end_coord();
+            // We have removed something so we need to update the trajectory.
+            self.trajectory = Trajectory::new(
+                self.origin,
+                &Self::chained_centroids(self.intent_queue.iter(), self.origin)?,
+            );
+
+            self.trajectory.progress = progress - front.move_sequence.len() as f64;
+        }
+        Ok(front)
+    }
+
+    pub fn push_back_intent(&mut self, intent: ActionIntent) -> Result<(), ActionError> {
+        // We must update the trajectory...
+        // We can do this by determining the change in length, and then subtracting that from the current progress.
+        self.intent_queue.push_back(intent);
+        let progress = self.trajectory.progress;
+        // We have added something so we need to update the trajectory.
+        self.trajectory = Trajectory::new(
+            self.origin,
+            &Self::chained_centroids(self.intent_queue.iter(), self.origin)?,
+        );
+
+        self.trajectory.progress = progress;
+
+        Ok(())
     }
 }
-
-pub const MAX_ACTIONS: usize = 6;
 
 impl Agent {
     pub fn new(id: usize) -> Self {
@@ -282,7 +323,7 @@ impl Agent {
     }
 
     pub fn perform(&mut self, intent: ActionIntent) -> Result<(), ActionError> {
-        let action = Action::new(intent, self.get_coord())?;
+        let action = Action::new_oneshot(intent, self.get_coord())?;
         self.state = AgentState::Action(action);
         Ok(())
     }

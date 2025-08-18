@@ -12,7 +12,7 @@ use crate::render::{
     self, ActionCell, AgentComponent, AgentReceiver, CellAssets, CellComponent, FocusedAgent,
     OriginCell, PovReceiver, QuitReceiver, VirtualCellComponent, WorldReceiver,
 };
-use voxelsim::{Agent, MoveDir, PovData, VoxelGrid};
+use voxelsim::{Action, Agent, MoveDir, PovData, VoxelGrid};
 
 use bevy::app::AppExit;
 use bevy::prelude::*;
@@ -299,11 +299,10 @@ fn synchronise_world(
         for (_id, agent) in agents_map.iter() {
             if let Some(action) = agent.get_action() {
                 origin_cells.push(action.origin);
-                let mut p = action.origin;
-                for cmd in &action.intent.move_sequence {
-                    if let Some(dir) = cmd.dir_vector() {
-                        p += dir;
-                        action_cells.push(p);
+                let p = action.origin;
+                if let Ok(centroids) = Action::chained_centroids(action.intent_queue.iter(), p) {
+                    for centroid in centroids {
+                        action_cells.push(centroid.0);
                     }
                 }
             }
@@ -485,14 +484,14 @@ fn update_pov_ui_text(
             let p = a.agent.pos;
             let v = a.agent.vel;
             let (roll, pitch, yaw) = a.agent.attitude.euler_angles();
-            let actions = a
+            let intents = a
                 .agent
                 .get_action()
-                .map(|act| act.intent.move_sequence.len())
+                .map(|act| act.intent_queue.len())
                 .unwrap_or(0);
 
             display = format!(
-                "Agent {}\nPos:  ({:.2}, {:.2}, {:.2})\nVel:  ({:.2}, {:.2}, {:.2})\nRot:  R:{:.1}° P:{:.1}° Y:{:.1}°\nActions: {}\nBlocks: {}",
+                "Agent {}\nPos:  ({:.2}, {:.2}, {:.2})\nVel:  ({:.2}, {:.2}, {:.2})\nRot:  R:{:.1}° P:{:.1}° Y:{:.1}°\nIntents: {}\nBlocks: {}",
                 a.agent.id,
                 p.x,
                 p.y,
@@ -503,7 +502,7 @@ fn update_pov_ui_text(
                 roll.to_degrees(),
                 pitch.to_degrees(),
                 yaw.to_degrees(),
-                actions,
+                intents,
                 pov_stats.voxel_count
             );
             break;

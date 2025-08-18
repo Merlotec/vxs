@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OSM → Voxel World</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <style>
+      html, body { height: 100%; margin: 0; }
+      #map { height: 100%; width: 100%; position: relative; z-index: 0; }
+      /* removed left toolbar */
+      .toolbar button { margin-top: 5px; width: 100%; }
+      .coord { font-size: 12px; color: #555; }
+      .footer { position: absolute; bottom: 8px; left: 10px; background: rgba(255,255,255,0.9); padding: 6px 8px; border-radius: 4px; font-size: 12px; color: #333; z-index: 3000; }
+      .panel { position: absolute; top: 10px; right: 10px; width: 260px; background: rgba(255,255,255,0.95); border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); padding: 10px; font-family: system-ui, -apple-system, Segoe UI, Roboto; z-index: 3000; }
+      .panel.hidden { display: none; }
+      .panel h4 { margin: 0 0 8px 0; font-size: 14px; }
+      .panel .row { display: flex; gap: 6px; margin-bottom: 6px; }
+      .panel .row label { flex: 1; font-size: 12px; color: #444; }
+      .panel .row input { width: 100%; padding: 4px; border: 1px solid #ccc; border-radius: 4px; }
+      .panel .actions { display: flex; gap: 6px; }
+      .panel button { flex: 1; padding: 6px; border: none; border-radius: 4px; cursor: pointer; background: #1d72b8; color: #fff; }
+      .panel button.secondary { background: #777; }
+      .panel .status {
+        margin-top: 6px; font-size: 12px; color: #333; min-height: 1em;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <div id="controlPanel" class="panel hidden">
+      <h4>Voxel Generator</h4>
+      <div id="panelCoord" class="coord" style="margin-bottom:6px;">lat: –, lon: –</div>
+      <div class="row">
+        <label>Size X
+          <input type="number" id="dimX" min="1" step="1" value="120" />
+        </label>
+        <label>Size Y
+          <input type="number" id="dimY" min="1" step="1" value="120" />
+        </label>
+        <label>Size Z
+          <input type="number" id="dimZ" min="1" step="1" value="60" />
+        </label>
+      </div>
+      <div class="row">
+        <label>Meters/voxel
+          <input type="number" id="metersPerVoxel" min="0.1" step="0.1" value="1.0" />
+        </label>
+        <label>Backend
+          <select id="backendSel">
+            <option value="python" selected>Python (extrude buildings)</option>
+            <option value="osm2world">OSM2World (Java)</option>
+          </select>
+        </label>
+      </div>
+      <div class="actions">
+        <button id="panelGenerate">Generate</button>
+        <button id="panelClose" class="secondary">Close</button>
+      </div>
+      <div id="panelStatus" class="status"></div>
+    </div>
+    <div class="footer">OSM2World path via env OSM2WORLD_JAR; meter size defaults to 1.0</div>
+
+    <script>
+      // Load Leaflet with fallback if primary CDN fails
+      function loadLeaflet(cb) {
+        const primary = document.createElement('script');
+        primary.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+        primary.crossOrigin = '';
+        primary.onload = cb;
+        primary.onerror = () => {
+          const alt = document.createElement('script');
+          alt.src = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js';
+          alt.onload = cb;
+          alt.onerror = () => {
+            document.getElementById('status').textContent = 'Failed to load Leaflet JS. Check internet or ad-blockers.';
+          };
+          document.body.appendChild(alt);
+        };
+        document.body.appendChild(primary);
+      }
+
+      function initMap() {
+        if (!window.L) {
+          document.getElementById('panelStatus').textContent = 'Leaflet not loaded.';
+          return;
+        }
+        const map = L.map('map').setView([37.7749, -122.4194], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+      let picked = null;
+      let marker = null;
+
+      const controlPanel = document.getElementById('controlPanel');
+      const panelCoord = document.getElementById('panelCoord');
+      const panelStatus = document.getElementById('panelStatus');
+
+      function showPanel() { controlPanel.classList.remove('hidden'); }
+      function hidePanel() { controlPanel.classList.add('hidden'); }
+      function setPanelBusy(msg) {
+        panelStatus.textContent = msg || '';
+        panelStatus.title = msg || '';
+      }
+
+      map.on('click', (e) => {
+        picked = { lat: e.latlng.lat, lon: e.latlng.lng };
+        panelCoord.textContent = `lat: ${picked.lat.toFixed(6)}, lon: ${picked.lon.toFixed(6)}`;
+        if (marker) marker.remove();
+        marker = L.marker([picked.lat, picked.lon]).addTo(map);
+        showPanel();
+      });
+
+      async function generateFromInputs() {
+        if (!picked) {
+          alert('Click on the map to choose a location first.');
+          return;
+        }
+        const x = parseInt(document.getElementById('dimX').value, 10);
+        const y = parseInt(document.getElementById('dimY').value, 10);
+        const z = parseInt(document.getElementById('dimZ').value, 10);
+        const m = parseFloat(document.getElementById('metersPerVoxel').value);
+        const backend = document.getElementById('backendSel').value;
+        if (!(x>0 && y>0 && z>0 && Number.isFinite(m) && m>0)) {
+          setPanelBusy('Please enter valid positive sizes and meters/voxel.');
+          return;
+        }
+        setPanelBusy('Generating... this can take a minute');
+        try {
+          const res = await fetch('/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat: picked.lat, lon: picked.lon, dims: { x, y, z }, meters_per_voxel: m, backend })
+          });
+          const j = await res.json();
+          if (j.status === 'ok') {
+            setPanelBusy(`Done. Saved to ${j.paths.world_json}`);
+            console.log('Meta:', j.meta);
+          } else {
+            setPanelBusy(`Error: ${j.message}`);
+          }
+        } catch (err) {
+          setPanelBusy(`Error: ${err}`);
+        }
+      }
+
+      document.getElementById('panelGenerate').addEventListener('click', generateFromInputs);
+      document.getElementById('panelClose').addEventListener('click', () => { hidePanel(); });
+
+      }
+
+      // Show initial status and load Leaflet
+      document.addEventListener('DOMContentLoaded', () => {
+        document.getElementById('panelStatus').textContent = 'Loading map...';
+        loadLeaflet(() => {
+          document.getElementById('panelStatus').textContent = '';
+          initMap();
+        });
+      });
+    </script>
+  </body>
+  </html>

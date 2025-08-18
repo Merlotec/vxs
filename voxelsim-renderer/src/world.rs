@@ -14,7 +14,7 @@ use crate::render::{
     self, ActionCell, AgentComponent, AgentReceiver, CellAssets, CellComponent, FocusedAgent,
     OriginCell, QuitReceiver, WorldReceiver,
 };
-use voxelsim::{Agent, Cell, MoveDir, VoxelGrid};
+use voxelsim::{Action, Agent, Cell, MoveDir, VoxelGrid};
 
 use crate::convert::*;
 
@@ -205,11 +205,10 @@ fn synchronise_world(
         for (_id, agent) in agents_map.iter() {
             if let Some(action) = agent.get_action() {
                 origin_cells.push(action.origin);
-                let mut p = action.origin;
-                for cmd in &action.intent.move_sequence {
-                    if let Some(dir) = cmd.dir_vector() {
-                        p += dir;
-                        action_cells.push(p);
+                let p = action.origin;
+                if let Ok(centroids) = Action::chained_centroids(action.intent_queue.iter(), p) {
+                    for centroid in centroids {
+                        action_cells.push(centroid.0);
                     }
                 }
             }

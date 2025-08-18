@@ -1,0 +1,8 @@
+Flask
+requests
+trimesh
+shapely
+numpy
+pywebview
+pyobjc; sys_platform == 'darwin'
+srtm.py

@@ -26,5 +26,6 @@ finitediff = "0.1.4"
 numpy = "0.25.0"
 ndarray = "0.16.1"
 num_enum = "0.7.4"
+num = "0.4.3"
 
 

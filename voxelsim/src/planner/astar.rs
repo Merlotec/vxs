@@ -249,7 +249,7 @@ impl super::ActionPlanner for AStarActionPlanner {
             if curr == dst {
                 // Reconstruct path
                 let move_sequence = Self::reconstruct_path(&came_from, dst, origin);
-                return Ok(ActionIntent::new(urgency, yaw, move_sequence, next));
+                return Ok(ActionIntent::new(urgency, yaw, move_sequence));
             }
             expansions += 1;
             if expansions > max_expansions {

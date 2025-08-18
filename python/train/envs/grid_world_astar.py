@@ -242,7 +242,7 @@ class GridWorldAStarEnv(gym.Env):
 
         ds_len = math.sqrt(dx**2 + dy**2 + dz**2)
         scaled_len = math.sqrt((self.action_gain*dx)**2 + (self.action_gain*dy)**2 + (self.action_gain*dz)**2)
-        print(f"requested_offset_len: {ds_len:.3f} | scaled_offset_len: {scaled_len:.3f} (gain {self.action_gain})")
+        # print(f"requested_offset_len: {ds_len:.3f} | scaled_offset_len: {scaled_len:.3f} (gain {self.action_gain})")
         # Plan if allowed (override or idle)
         curr = self.agent.get_action_py()
         if (not curr):# or (self.allow_override and (priority >= self.override_threshold)):
@@ -313,6 +313,8 @@ class GridWorldAStarEnv(gym.Env):
 
         # Update render client in the same way as grid_world.py
         self.render(update_fw)
+
+        terminated = self.world_time > 10.0
         return obs, reward, terminated, truncated, info
 
     # --------------- Utilities -----------------------------------------------

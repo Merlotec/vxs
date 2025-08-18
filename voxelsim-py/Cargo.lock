@@ -8833,6 +8833,7 @@ dependencies = [
  "nalgebra 0.33.2",
  "ndarray",
  "noise",
+ "num",
  "num_enum",
  "numpy",
  "pyo3",
