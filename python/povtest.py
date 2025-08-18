@@ -121,7 +121,7 @@ FRAME_DELTA_MAX = 0.13
 upd_start = 0.0
 def world_update(world, timestamp):
     dtime = time.time() - upd_start
-    print(f"upd_time: {dtime}")
+    # print(f"upd_time: {dtime}")
 
 YAW_STEP = math.pi * 0.125  # radians per key press (about 17°)
 

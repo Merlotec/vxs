@@ -1,6 +1,6 @@
 use nalgebra::Vector3;
 
-use crate::{Action, Agent, AgentState};
+use crate::{Agent, AgentState};
 
 pub trait TrajectoryChaser {
     /// It is the chaser's job to remove/update the move sequence of the agent as it moves along its spline.
@@ -43,7 +43,7 @@ impl Default for FixedLookaheadChaser {
         Self {
             v_max_base: 10.0,
             s_lookahead_base: 1.5,
-            min_step: 1.2,
+            min_step: 1.5,
         }
     }
 }
@@ -101,14 +101,21 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                 };
 
                 let s_tgt = (s_updated + s_lookahead).min(s_end);
-                if let (Some(p_tgt), Some(v_tgt_nominal), Some(a_tgt_nominal), Some(yaw)) = (
+                if let (
+                    Some(p_tgt),
+                    Some(v_tgt_nominal),
+                    Some(a_tgt_nominal),
+                    Some(yaw),
+                    Some(urgency),
+                ) = (
                     action.trajectory.position(s_tgt),
                     action.trajectory.velocity(s_tgt),
                     action.trajectory.acceleration(s_tgt),
                     action.trajectory.sample_yaw(s_tgt),
+                    action.trajectory.sample_urgencies(s_tgt),
                 ) {
                     // 6) Scale velocity and accel targets by urgency uniformly
-                    let v_tgt = v_tgt_nominal * 0.5 * urgency;
+                    let v_tgt = v_tgt_nominal * urgency;
                     let a_tgt = a_tgt_nominal * 0.4 * urgency;
                     // Only enforce minimum step when we are allowed to advance
                     let s_next = if can_advance {

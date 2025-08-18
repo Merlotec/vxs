@@ -3,8 +3,6 @@ use nalgebra::Vector3;
 
 use crate::Coord;
 
-// WOW! only 3 imports
-
 fn project_point_onto_segment(
     p: &Vector3<f64>,
     a: &Vector3<f64>,
@@ -128,10 +126,24 @@ pub fn solve_constrained_smoothing(cells: &[Coord], passes: usize) -> Vec<Vector
     points
 }
 
-pub fn path_length(path: &[Vector3<f64>]) -> f64 {
-    path.windows(2)
-        .map(|pair| (pair[1] - pair[0]).norm())
-        .sum::<f64>()
+// pub fn path_length(path: &[Vector3<f64>]) -> f64 {
+//     path.windows(2)
+//         .map(|pair| (pair[1] - pair[0]).norm())
+//         .sum::<f64>()
+// }
+
+pub fn control_waypoints(origin: Vector3<f64>, path: &[Vector3<f64>]) -> Vec<f64> {
+    let mut sum = 0.0;
+    let mut last = origin;
+    let mut wps = Vec::new();
+    for p in path {
+        let delta = p - last;
+        sum += delta.norm();
+        wps.push(sum);
+        last = *p;
+    }
+
+    wps
 }
 
 /// Signed distance to the unit cube centered at `coord`
@@ -197,9 +209,10 @@ pub fn generate_path_fit_spline(control_points: Vec<Vector3<f64>>) -> BSpline<Ve
 #[derive(Debug, Clone)]
 pub struct Trajectory {
     spline: BSpline<Vector3<f64>, f64>,
-    urgencies: Vec<f64>,
-    yaw_seq: Vec<f64>,
+    urgencies: Vec<(f64, f64)>,
+    yaw_seq: Vec<(f64, f64)>,
     pub progress: f64,
+    length: f64,
 }
 
 impl Default for Trajectory {
@@ -209,6 +222,7 @@ impl Default for Trajectory {
             urgencies: Vec::new(),
             yaw_seq: Vec::new(),
             progress: 0.0,
+            length: 0.0,
         }
     }
 }
@@ -230,13 +244,24 @@ impl Trajectory {
 
         let path = solve_constrained_smoothing(&cells, 20);
 
+        let waypoints = control_waypoints(origin.cast(), &path);
         let spline = generate_path_fit_spline(path);
 
+        let length = *waypoints.last().unwrap();
         Self {
             spline,
-            urgencies: times,
-            yaw_seq,
+            urgencies: times
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (waypoints[i + 1], *v))
+                .collect(),
+            yaw_seq: yaw_seq
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (waypoints[i + 1], *v))
+                .collect(),
             progress: 0.0,
+            length,
         }
     }
 
@@ -299,16 +324,8 @@ impl Trajectory {
             .collect()
     }
 
-    pub fn urgencies(&self) -> &[f64] {
-        &self.urgencies
-    }
-
-    pub fn yaw_seq(&self) -> &[f64] {
-        &self.yaw_seq
-    }
-
     pub fn length(&self) -> f64 {
-        self.urgencies.len() as f64
+        self.length
     }
 
     pub fn domain_t(&self, t: f64) -> Option<f64> {
@@ -319,33 +336,40 @@ impl Trajectory {
     }
 
     pub fn sample_urgencies(&self, t: f64) -> Option<f64> {
-        if self.urgencies.is_empty() {
-            return None;
-        }
-        let len = self.urgencies.len();
-        // Clamp t into valid index range [0, len-1]
-        let t_clamped = t.max(0.0).min((len - 1) as f64);
-        let i0 = t_clamped.floor() as usize;
-        let i1 = (t_clamped.ceil() as usize).min(len - 1);
-        let w = t_clamped - t_clamped.floor();
-        let u0 = self.urgencies[i0];
-        let u1 = self.urgencies[i1];
-        // Linear interpolation between neighboring samples
-        Some(u0 * (1.0 - w) + u1 * w)
+        Self::sample_aux(&self.urgencies, t)
     }
 
     pub fn sample_yaw(&self, t: f64) -> Option<f64> {
-        if self.yaw_seq.is_empty() {
+        Self::sample_aux(&self.yaw_seq, t)
+    }
+
+    fn sample_aux(seq: &[(f64, f64)], t: f64) -> Option<f64> {
+        if seq.is_empty() {
             return None;
         }
-        let len = self.yaw_seq.len();
-        let t_clamped = t.max(0.0).min((len - 1) as f64);
-        let i0 = t_clamped.floor() as usize;
-        let i1 = (t_clamped.ceil() as usize).min(len - 1);
-        let w = t_clamped - t_clamped.floor();
-        let y0 = self.yaw_seq[i0];
-        let y1 = self.yaw_seq[i1];
-        Some(y0 * (1.0 - w) + y1 * w)
+
+        // Indexing here is done starting at 1.
+        let mut i1 = seq.len();
+
+        for i in 0..seq.len() {
+            if seq[i].0 >= t {
+                i1 = i;
+                break;
+            }
+        }
+
+        if i1 == 0 {
+            Some(seq[i1].1)
+        } else if i1 < seq.len() {
+            let i0 = i1 - 1;
+            let u0 = seq[i0].1;
+            let u1 = seq[i1].1;
+            let w = t - seq[i0].0 / (seq[i1].0 - seq[i0].0);
+            // Linear interpolation between neighboring samples
+            Some(u0 * (1.0 - w) + u1 * w)
+        } else {
+            None
+        }
     }
 
     pub fn sample_spline(&self, t: f64) -> Option<Vector3<f64>> {
@@ -411,10 +435,11 @@ struct SplineData {
     knots: Vec<f64>,
     ctrl_pts: Vec<[f64; 3]>,
     // In knot domain.
-    urgencies: Vec<f64>,
-    yaw_seq: Vec<f64>,
+    urgencies: Vec<(f64, f64)>,
+    yaw_seq: Vec<(f64, f64)>,
     // In knot domain.
     progress: f64,
+    length: f64,
 }
 
 impl Serialize for Trajectory {
@@ -442,6 +467,7 @@ impl Serialize for Trajectory {
             urgencies: self.urgencies.clone(),
             yaw_seq: self.yaw_seq.clone(),
             progress: self.progress,
+            length: self.length,
         };
         data.serialize(serializer)
     }
@@ -470,6 +496,7 @@ impl<'de> Deserialize<'de> for Trajectory {
             urgencies: data.urgencies,
             yaw_seq: data.yaw_seq,
             progress: data.progress,
+            length: data.length,
         })
     }
 }

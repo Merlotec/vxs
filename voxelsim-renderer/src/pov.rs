@@ -491,7 +491,7 @@ fn update_pov_ui_text(
                 .unwrap_or(0);
 
             display = format!(
-                "Agent {}\nPos:  ({:.2}, {:.2}, {:.2})\nVel:  ({:.2}, {:.2}, {:.2})\nRot:  R:{:.1}° P:{:.1}° Y:{:.1}°\nIntents: {}\nBlocks: {}",
+                "Agent {}\nPos:  ({:.2}, {:.2}, {:.2})\nVel:  ({:.2}, {:.2}, {:.2}) [{:.2}]\nRot:  R:{:.1}° P:{:.1}° Y:{:.1}°\nIntents: {}\nBlocks: {}",
                 a.agent.id,
                 p.x,
                 p.y,
@@ -499,6 +499,7 @@ fn update_pov_ui_text(
                 v.x,
                 v.y,
                 v.z,
+                v.norm(),
                 roll.to_degrees(),
                 pitch.to_degrees(),
                 yaw.to_degrees(),
