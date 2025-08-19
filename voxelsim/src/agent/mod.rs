@@ -215,48 +215,59 @@ impl Action {
 
     /// Gets the intent that is being executed if the progress is the given value.
     pub fn intent_for_progress(&self, progress: f64) -> Option<usize> {
-        let mut pbuf = 0.0;
+        let mut move_buf = 0;
         for (i, intent) in self.intent_queue.iter().enumerate() {
-            pbuf += intent.move_sequence.len() as f64;
-            if progress < pbuf {
+            assert!(!intent.move_sequence.is_empty());
+            move_buf += intent.move_sequence.len() - 1;
+            let p = self.trajectory.progress_for_move_idx(move_buf)?;
+            if progress < p {
                 return Some(i);
             }
         }
-
         None
     }
 
-    pub fn update_progress(&mut self, progress: f64, trim_tail: bool) {
+    pub fn update_progress(&mut self, progress: f64, trim_tail: bool) -> Result<(), ActionError> {
         self.trajectory.progress = progress.clamp(0.0, self.trajectory.length());
 
         if trim_tail {
             // Get the intent that we are in.
             if let Some(i) = self.intent_for_progress(progress) {
                 let to_remove = i.saturating_sub(1);
-
                 for _ in 0..to_remove {
-                    self.pop_front_intent();
+                    self.pop_front_intent()?;
                 }
             }
         }
+
+        Ok(())
     }
 
-    pub fn pop_front_intent(&mut self) -> Result<Option<ActionIntent>, ActionError> {
+    pub fn pop_front_intent(&mut self) -> Result<ActionIntent, ActionError> {
         // We must update the trajectory...
         // We can do this by determining the change in length, and then subtracting that from the current progress.
         let progress = self.trajectory.progress;
-        let front = self.intent_queue.pop_front();
-        if let Some(front) = &front {
-            // Change origin
-            self.origin = self.origin + front.relative_end_coord();
-            // We have removed something so we need to update the trajectory.
-            self.trajectory = Trajectory::new(
-                self.origin,
-                &Self::chained_centroids(self.intent_queue.iter(), self.origin)?,
-            );
+        let old_len = self.trajectory.length();
+        let old_m = self
+            .trajectory
+            .move_for_progress(progress)
+            .ok_or(ActionError::InvalidProgress)?;
+        let front = self.intent_queue.pop_front().ok_or(ActionError::NoIntent)?;
+        // Change origin
+        self.origin = self.origin + front.relative_end_coord();
+        // We have removed something so we need to update the trajectory.
+        self.trajectory = Trajectory::new(
+            self.origin,
+            &Self::chained_centroids(self.intent_queue.iter(), self.origin)?,
+        );
 
-            self.trajectory.progress = progress - front.move_sequence.len() as f64;
-        }
+        let new_m = old_m - front.move_sequence.len() as f64;
+
+        self.trajectory.progress = self
+            .trajectory
+            .progress_for_move(new_m)
+            .ok_or(ActionError::InvalidProgress)?;
+
         Ok(front)
     }
 
@@ -333,6 +344,8 @@ impl Agent {
 pub enum ActionError {
     DuplicateCentroid,
     NoCommands,
+    NoIntent,
+    InvalidProgress,
 }
 
 impl Error for ActionError {}
@@ -342,6 +355,8 @@ impl Display for ActionError {
         match self {
             Self::DuplicateCentroid => f.write_str("Duplicate centroid"),
             Self::NoCommands => f.write_str("No commands"),
+            Self::NoIntent => f.write_str("No intent"),
+            Self::InvalidProgress => f.write_str("Invalid progress"),
         }
     }
 }

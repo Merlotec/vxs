@@ -63,9 +63,8 @@ renderer = vxs.AgentVisionRenderer(world, [200, 150], noise)
 
 # Client
 
-client = vxs.RendererClient.default_localhost_py()
+client = vxs.RendererClient.default_localhost_py(1)
 # Specify the number of agent renderers we want to connect to.
-client.connect_py(1)
 print("Controls: WASD=move, Space=up, Shift=down, ESC=quit")
 
 client.send_world_py(world)

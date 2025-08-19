@@ -1,6 +1,6 @@
 use nalgebra::Vector3;
 use pyo3::prelude::*;
-use voxelsim::chase::ChaseTarget;
+use voxelsim::chase::{ChaseTarget, FixedLookaheadChaser};
 use voxelsim::py::PyCoord;
 use voxelsim::{Agent, VoxelGrid};
 
@@ -77,6 +77,21 @@ impl Px4Dynamics {
     pub fn apply_px4_settings_py(&mut self, s: &crate::dynamics::px4::settings::Px4SettingsPy) {
         let native = s.to_native();
         self.apply_px4_settings(&native);
+    }
+
+    pub fn update_agent_fixed_lookahead_py(
+        &mut self,
+        agent: &mut Agent,
+        env: &EnvState,
+        chaser: &FixedLookaheadChaser,
+        delta: f64,
+        n: usize,
+    ) {
+        for _ in 0..n {
+            use voxelsim::chase::TrajectoryChaser;
+            let chase_target = chaser.step_chase(agent, delta);
+            self.update_agent_dynamics(agent, env, chase_target, delta);
+        }
     }
 }
 

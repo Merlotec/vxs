@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import random
 import time
+import threading
 from typing import Any, Dict, Optional, Tuple
 
 import gymnasium as gym
@@ -77,11 +78,12 @@ class GridWorldAStarEnv(gym.Env):
         allow_override: bool = False,
         start_pos: Tuple[int, int, int] = (0, 0, 0),
         delta_time: float = 0.01,
+        ticks_per_step: int = 25,
         filter_update_lag: float = 0.2,
         filter_delta: float = 0.25,
         reward: Optional[SimpleReward] = None,
-        render_client: Optional[vxs.RendererClient] = None,
-        dense_half_dims: Tuple[int, int, int] = (40, 40, 30),
+        render_client: Optional[vxs.AsyncRendererClient] = None,
+        dense_half_dims: Tuple[int, int, int] = (16, 16, 16),
         noise: Optional[vxs.NoiseParams] = None,
     ):
         super().__init__()
@@ -153,6 +155,15 @@ class GridWorldAStarEnv(gym.Env):
         self.world_time: float = 0.0
         self.next_changeset: Optional[vxs.WorldChangeset] = None
         self.filter_world_upd_ts: Optional[float] = None
+        self.ticks_per_step = ticks_per_step
+
+        self.start_rt = time.time()
+        self.graphics_time = 0
+        self.step_time = 0
+
+        self.render_queue = []
+        # Should contain world time and world data.
+        self.obs_queue = []
 
         self._last_action = np.zeros(6, dtype=np.float32)
 
@@ -174,25 +185,41 @@ class GridWorldAStarEnv(gym.Env):
         self.world = terrain.generate_world_py()
 
     def _render_agent_vision(self):
-        self.filter_world_upd_ts = self.world_time
+        render_time = self.world_time
+        # Clone the world so that we can update in parallel.
+        self.render_queue.append(render_time)
         self.vision.render_changeset_py(
             self.agent.camera_view_py(self.camera_orientation),
             self.camera_proj,
             self.filter_world,
-            self.filter_world_upd_ts,
+            render_time,
             lambda ch: self._update_callback(ch),
         )
 
     def _update_callback(self, changeset: vxs.WorldChangeset):
-        self.next_changeset = changeset
+        # We need to wait for the next world to be ready else we will overwrite previous changes.
+        # So we must have our timestamp at the end of the render queue.
+        try:
+            while self.render_queue[0] != changeset.timestamp_py():
+                time.sleep(0.00001)
 
-    def _await_changeset(self) -> vxs.WorldChangeset:
-        while self.next_changeset is None:
-            time.sleep(0.00001)
-        ch = self.next_changeset
-        self.next_changeset = None
-        self.filter_world_upd_ts = None
-        return ch
+            changeset.update_filter_world_py(self.filter_world)
+            # Write world.
+            grid = self._build_grid()
+            # Now we push to the queue.
+            self.obs_queue.append((changeset.timestamp_py, grid))
+            self.render_queue.pop(0)
+        except ValueError:
+            print(f"Failed to update world: {e}")
+
+
+    # def _await_changeset(self) -> vxs.WorldChangeset:
+    #     while self.next_changeset is None:
+    #         time.sleep(0.00001)
+    #     ch = self.next_changeset
+    #     self.next_changeset = None
+    #     self.filter_world_upd_ts = None
+    #     return ch
 
     # --------------- RL API ---------------------------------------------------
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
@@ -205,20 +232,25 @@ class GridWorldAStarEnv(gym.Env):
         self.agent = vxs.Agent(0)
         self.agent.set_hold_py(self.start_pos, 0.0)
         self.world_time = 0.0
+        self.start_rt = 0
+        self.graphics_time = 0
+        self.step_time = 0
         self._last_action[:] = 0.0
         self.chaser = vxs.FixedLookaheadChaser.default_py()
         self.dynamics = vxs.px4.Px4Dynamics.default_py()
+        self.start_rt = time.time()
 
 
         # Prime first dense snapshot
-        self._render_agent_vision()
-        ch = self._await_changeset()
-        ch.update_filter_world_py(self.filter_world)
-        obs = self._build_observation()
+        # self._render_agent_vision()
+        # ch = self._await_changeset()
+        # ch.update_filter_world_py(self.filter_world)
+        obs = {"grid": self._empty_grid(), "last_action": self._last_action.copy()}                
         info: Dict[str, Any] = {}
         return obs, info
 
     def step(self, action: np.ndarray):
+        step_start = time.time()
         action = np.asarray(action, dtype=np.float32).reshape(-1)
         assert action.shape[0] == 6
         dx, dy, dz, urgency, yaw, priority = action
@@ -245,59 +277,50 @@ class GridWorldAStarEnv(gym.Env):
         # print(f"requested_offset_len: {ds_len:.3f} | scaled_offset_len: {scaled_len:.3f} (gain {self.action_gain})")
         # Plan if allowed (override or idle)
         curr = self.agent.get_action_py()
-        if (not curr):# or (self.allow_override and (priority >= self.override_threshold)):
+        if (curr is None) or curr.intent_count() < 3:# or (self.allow_override and (priority >= self.override_threshold)):
             if curr and priority >= self.override_threshold:
                 overridden = True
 
+            off = np.round(offset).astype(np.int32)
             # Try planning, penalise on exceptions and fall back by reducing offset
             # Try progressively smaller offsets if planning fails
-            attempts = [np.round(offset * s).astype(np.int32) for s in self.attempt_scales]
-
-            planned = False
-            chosen_plan_len = 0
-            for off in attempts:
-                dst_try = tuple((origin + off).tolist())
-                try:
-                    dirs = self.astar.plan_action_py(self.world, tuple(origin.tolist()), dst_try, urgency, yaw).get_move_sequence()
-                except Exception:
-                    failed = True
-                    continue
+            dst_try = tuple((origin + off).tolist())
+            try:
+                dirs = self.astar.plan_action_py(self.world, tuple(origin.tolist()), dst_try, urgency, yaw).get_move_sequence()
                 if len(dirs) > 0:
                     intent = vxs.ActionIntent(float(urgency), float(yaw), dirs, None)
                     try:
-                        self.agent.perform_py(intent)
+                        self.agent.push_back_intent_py(intent)
                         # record the actual relative offset used
                         self._last_action[:3] = [float(off[0]), float(off[1]), float(off[2])]
-                        chosen_plan_len = len(dirs)
-                        planned = True
-                        break
-                    except Exception:
+                    except ValueError:
                         failed = True
-                        continue
-            if not planned and not failed:
-                # Planning returned empty list without exception -> treat as failure for shaping
+            except Exception:
                 failed = True
 
         # Advance simulation one tick
-        chase = self.chaser.step_chase_py(self.agent, self.delta_time)
-        self.dynamics.update_agent_dynamics_py(self.agent, vxs.EnvState.default_py(), chase, self.delta_time)
 
-        self.world_time += self.delta_time
+        
+        # chase = self.chaser.step_chase_py(self.agent, self.delta_time)
+        # self.dynamics.update_agent_dynamics_py(self.agent, vxs.EnvState.default_py(), chase, self.delta_time)
 
-        # Filter world update/render scheduling (delay then process)
-        update_fw = False
-        if (self.filter_world_upd_ts is not None) and (
-            self.world_time - self.filter_world_upd_ts >= self.filter_update_lag
-        ):
-            ch = self._await_changeset()
-            ch.update_filter_world_py(self.filter_world)
-            update_fw = True
+        self.dynamics.update_agent_fixed_lookahead_py(self.agent, vxs.EnvState.default_py(), self.chaser, self.delta_time, self.ticks_per_step)
+        
+        self.world_time += self.delta_time * self.ticks_per_step
 
-        fw_ts = self.filter_world.timestamp_py()
-        if (fw_ts is None) or (
-            (self.world_time - fw_ts >= self.filter_delta) and (self.next_changeset is None)
-        ):
-            self._render_agent_vision()
+        # # Filter world update/render scheduling (delay then process)
+        # if (self.filter_world_upd_ts is not None) and (
+        #     self.world_time - self.filter_world_upd_ts >= self.filter_update_lag
+        # ):
+        #     ch = self._await_changeset()
+        #     ch.update_filter_world_py(self.filter_world)
+        #     update_fw = True
+
+        # fw_ts = self.filter_world.timestamp_py()
+        # if (fw_ts is None) or (
+        #     (self.world_time - fw_ts >= self.filter_delta) and (self.next_changeset is None)
+        # ):
+        #     self._render_agent_vision()
 
         # Collisions
         collisions = self.world.collisions_py(self.agent.get_pos(), self.agent_bounds)
@@ -305,18 +328,60 @@ class GridWorldAStarEnv(gym.Env):
         terminated = bool(collided)
         truncated = False
 
-        obs = self._build_observation()
+        # obs = self._build_observation()
         reward = self.reward_fn.compute(
             collided=collided, overridden=overridden, failed=failed, plan_len=int(locals().get("chosen_plan_len", 0))
         )
         info: Dict[str, Any] = {"overridden": overridden, "collided": collided, "failed": failed}
 
-        # Update render client in the same way as grid_world.py
-        self.render(update_fw)
 
-        terminated = self.world_time > 10.0
+        # Now await next frame (if required).
+        if len(self.obs_queue) + len(self.render_queue) > 1:
+            # We should await.
+            # We shouldnt actually need to check the time because there should always be a 2 delay on the queue.
+            astart = time.time()
+            while len(self.obs_queue) == 0:
+                time.sleep(0.000001)
+
+            self.graphics_time += (time.time() - astart)
+            obs = {"grid": self.obs_queue[0][1], "last_action": self._last_action.copy()}                
+            self.obs_queue.pop(0)
+        else:
+            obs = {"grid": self._empty_grid(), "last_action": self._last_action.copy()}                
+            
+        
+        # Update render client in the same way as grid_world.py
+        self.render(True)
+        
+        step_end = time.time()
+        # Begin a new render pass.
+        self._render_agent_vision()
+
+        self.step_time += step_end - step_start
+        
+        time_ratio = self.world_time / (time.time() - self.start_rt)
+        graphics_ratio = self.graphics_time / (time.time() - self.start_rt)
+        step_ratio = self.step_time / (time.time() - self.start_rt)
+
+        print(f"speedup: {time_ratio}, graphics: {graphics_ratio}, step: {step_ratio}")
+        
         return obs, reward, terminated, truncated, info
 
+
+    def _build_grid(self) -> Any:
+        hx, hy, hz = self.dense_half_dims
+        expected = (2 * hx + 1, 2 * hy + 1, 2 * hz + 1)
+        vc = self.agent.get_coord_py()
+        grid = self.filter_world.dense_snapshot_py(vc, (hx, hy, hz)).data_py()
+        grid = np.asarray(grid, dtype=np.int32).reshape(expected)
+        return grid
+
+    def _empty_grid(self):
+        hx, hy, hz = self.dense_half_dims
+        expected = (2 * hx + 1, 2 * hy + 1, 2 * hz + 1)
+        grid = np.zeros(expected)
+        return grid
+        
     # --------------- Utilities -----------------------------------------------
     def _build_observation(self) -> Dict[str, Any]:
         hx, hy, hz = self.dense_half_dims
@@ -332,7 +397,7 @@ class GridWorldAStarEnv(gym.Env):
             self.client.send_agents_py({0: self.agent})
             # Send POV updates when the filter world was updated this tick
             if update_fw:
-                self.filter_world.send_pov_py(
+                self.filter_world.send_pov_async_py(
                     self.client, 0, 0, self.camera_proj, self.camera_orientation
                 )
         # headless by default

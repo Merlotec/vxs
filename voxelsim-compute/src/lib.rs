@@ -12,7 +12,9 @@ use std::ops::{Deref, DerefMut};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use voxelsim::viewport::{CameraOrientation, CameraProjection};
-use voxelsim::{Coord, DenseSnapshot, PovDataRef, RendererClient, VoxelGrid};
+use voxelsim::{
+    AsyncRendererClient, Coord, DenseSnapshot, PovData, PovDataRef, RendererClient, VoxelGrid,
+};
 
 use crate::rasterizer::noise::NoiseParams;
 use crate::{pipeline::WorldChangeset, rasterizer::camera::CameraMatrix};
@@ -145,6 +147,25 @@ impl FilterWorld {
             stream_idx,
             &PovDataRef {
                 virtual_world: self.world.lock().unwrap().deref(),
+                agent_id,
+                proj,
+                orientation,
+            },
+        )
+    }
+
+    pub fn send_pov_async(
+        &self,
+        client: &AsyncRendererClient,
+        stream_idx: usize,
+        agent_id: usize,
+        proj: CameraProjection,
+        orientation: CameraOrientation,
+    ) {
+        client.send_pov(
+            stream_idx,
+            PovData {
+                virtual_world: self.world.lock().unwrap().clone(),
                 agent_id,
                 proj,
                 orientation,

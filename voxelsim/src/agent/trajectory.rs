@@ -209,6 +209,7 @@ pub fn generate_path_fit_spline(control_points: Vec<Vector3<f64>>) -> BSpline<Ve
 #[derive(Debug, Clone)]
 pub struct Trajectory {
     spline: BSpline<Vector3<f64>, f64>,
+    waypoints: Vec<f64>,
     urgencies: Vec<(f64, f64)>,
     yaw_seq: Vec<(f64, f64)>,
     pub progress: f64,
@@ -219,6 +220,7 @@ impl Default for Trajectory {
     fn default() -> Self {
         Self {
             spline: BSpline::new(0, Vec::new(), Vec::new()),
+            waypoints: Vec::new(),
             urgencies: Vec::new(),
             yaw_seq: Vec::new(),
             progress: 0.0,
@@ -262,6 +264,7 @@ impl Trajectory {
                 .collect(),
             progress: 0.0,
             length,
+            waypoints,
         }
     }
 
@@ -324,6 +327,50 @@ impl Trajectory {
             .collect()
     }
 
+    pub fn progress_for_move_idx(&self, i: usize) -> Option<f64> {
+        self.waypoints.get(i).copied()
+    }
+
+    pub fn progress_for_move(&self, m: f64) -> Option<f64> {
+        assert!(m >= 0.0);
+        if m == 0.0 {
+            return Some(0.0);
+        }
+        let i0 = m.floor() as usize;
+        let i1 = m.ceil() as usize;
+
+        if i1 >= self.waypoints.len() {
+            return None;
+        }
+
+        let p0 = self.waypoints[i0];
+        let p1 = self.waypoints[i1];
+
+        let sub = (m % 1.0) * (p1 - p0);
+
+        Some(p0 as f64 + sub)
+    }
+
+    pub fn move_for_progress(&self, progress: f64) -> Option<f64> {
+        assert!(progress >= 0.0);
+        if progress == 0.0 {
+            return Some(0.0);
+        }
+        let (i1, p1) = self
+            .waypoints
+            .iter()
+            .enumerate()
+            .find(|(i, p)| *p > &progress)?;
+
+        assert!(i1 > 0);
+        let i0 = i1 - 1;
+        let p0 = self.waypoints[i0];
+
+        let sub = (progress - p0) / (p1 - p0);
+
+        Some(i0 as f64 + sub)
+    }
+
     pub fn length(&self) -> f64 {
         self.length
     }
@@ -364,7 +411,8 @@ impl Trajectory {
             let i0 = i1 - 1;
             let u0 = seq[i0].1;
             let u1 = seq[i1].1;
-            let w = t - seq[i0].0 / (seq[i1].0 - seq[i0].0);
+            let w = (t - seq[i0].0) / (seq[i1].0 - seq[i0].0);
+
             // Linear interpolation between neighboring samples
             Some(u0 * (1.0 - w) + u1 * w)
         } else {
@@ -388,6 +436,7 @@ impl Trajectory {
         end: f64,
         point: &Vector3<f64>,
     ) -> Option<f64> {
+        assert!(start >= 0.0);
         // Coarse uniform sampling to find initial guess
         let samples = 100;
         let mut best_t = start;
@@ -437,6 +486,7 @@ struct SplineData {
     // In knot domain.
     urgencies: Vec<(f64, f64)>,
     yaw_seq: Vec<(f64, f64)>,
+    waypoints: Vec<f64>,
     // In knot domain.
     progress: f64,
     length: f64,
@@ -466,6 +516,7 @@ impl Serialize for Trajectory {
             ctrl_pts,
             urgencies: self.urgencies.clone(),
             yaw_seq: self.yaw_seq.clone(),
+            waypoints: self.waypoints.clone(),
             progress: self.progress,
             length: self.length,
         };
@@ -496,6 +547,7 @@ impl<'de> Deserialize<'de> for Trajectory {
             urgencies: data.urgencies,
             yaw_seq: data.yaw_seq,
             progress: data.progress,
+            waypoints: data.waypoints,
             length: data.length,
         })
     }

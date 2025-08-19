@@ -5,12 +5,46 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::TcpStream;
+use std::sync::Arc;
 
 pub struct PovStream {
     virtual_world_stream: TcpStream,
     agent_stream: TcpStream,
 }
 
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
+pub struct AsyncRendererClient {
+    inner: Arc<RendererClient>,
+}
+
+impl AsyncRendererClient {
+    pub fn new(client: RendererClient) -> Self {
+        Self {
+            inner: Arc::new(client),
+        }
+    }
+
+    pub fn send_world(&self, data: VoxelGrid) {
+        let inner = self.inner.clone();
+        std::thread::spawn(move || {
+            let _ = inner.send_world(&data);
+        });
+    }
+
+    pub fn send_agents(&self, data: HashMap<usize, Agent>) {
+        let inner = self.inner.clone();
+        std::thread::spawn(move || {
+            let _ = inner.send_agents(&data);
+        });
+    }
+
+    pub fn send_pov(&self, stream_idx: usize, data: PovData) {
+        let inner = self.inner.clone();
+        std::thread::spawn(move || {
+            let _ = inner.send_pov(stream_idx, &data);
+        });
+    }
+}
 /// Network client for sending data to the renderer
 #[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
 pub struct RendererClient {
@@ -32,8 +66,9 @@ impl RendererClient {
         agent_port: u16,
         pov_start_port: u16,
         pov_agent_start_port: u16,
-    ) -> Self {
-        Self {
+        pov_count: u16,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut client = Self {
             pov_streams: Vec::new(),
             world_stream: None,
             agent_stream: None,
@@ -42,10 +77,14 @@ impl RendererClient {
             agent_port,
             pov_start_port,
             pov_agent_start_port,
-        }
+        };
+
+        client.connect(pov_count)?;
+
+        Ok(client)
     }
 
-    pub fn connect(&mut self, pov_count: u16) -> Result<(), Box<dyn std::error::Error>> {
+    fn connect(&mut self, pov_count: u16) -> Result<(), Box<dyn std::error::Error>> {
         // Connect to world port
         self.world_stream = Some(TcpStream::connect(format!(
             "{}:{}",
@@ -78,8 +117,8 @@ impl RendererClient {
         Ok(())
     }
 
-    pub fn send_world(&mut self, data: &VoxelGrid) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(ref mut stream) = self.world_stream {
+    pub fn send_world(&self, data: &VoxelGrid) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(ref stream) = self.world_stream {
             Self::send_data(data, stream)
         } else {
             Err("Not connected to world port".into())
@@ -87,44 +126,44 @@ impl RendererClient {
     }
 
     pub fn send_agents(
-        &mut self,
+        &self,
         data: &HashMap<usize, Agent>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(ref mut stream) = self.agent_stream {
+        if let Some(ref stream) = self.agent_stream {
             Self::send_data(data, stream)?;
         } else {
             return Err("Not connected to agent port".into());
         }
-        for stream in self.pov_streams.iter_mut() {
-            Self::send_data(data, &mut stream.agent_stream)?;
+        for stream in self.pov_streams.iter() {
+            Self::send_data(data, &stream.agent_stream)?;
         }
         Ok(())
     }
 
     pub fn send_pov(
-        &mut self,
+        &self,
         stream_idx: usize,
         data: &PovData,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(ref mut stream) = self.pov_streams.get_mut(stream_idx) {
-            Self::send_data(data, &mut stream.virtual_world_stream)
+        if let Some(ref mut stream) = self.pov_streams.get(stream_idx) {
+            Self::send_data(data, &stream.virtual_world_stream)
         } else {
             Err("Not connected to pov port".into())
         }
     }
 
     pub fn send_pov_ref(
-        &mut self,
+        &self,
         stream_idx: usize,
         data: &PovDataRef,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(ref mut stream) = self.pov_streams.get_mut(stream_idx) {
-            Self::send_data(data, &mut stream.virtual_world_stream)
+        if let Some(ref mut stream) = self.pov_streams.get(stream_idx) {
+            Self::send_data(data, &stream.virtual_world_stream)
         } else {
             Err("Not connected to pov port".into())
         }
     }
-    pub fn send_data<D>(data: D, stream: &mut TcpStream) -> Result<(), Box<dyn std::error::Error>>
+    pub fn send_data<D>(data: D, mut stream: &TcpStream) -> Result<(), Box<dyn std::error::Error>>
     where
         D: serde::Serialize,
     {

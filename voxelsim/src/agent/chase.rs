@@ -41,9 +41,9 @@ pub struct FixedLookaheadChaser {
 impl Default for FixedLookaheadChaser {
     fn default() -> Self {
         Self {
-            v_max_base: 10.0,
-            s_lookahead_base: 1.5,
-            min_step: 1.5,
+            v_max_base: 20.0,
+            s_lookahead_base: 2.0,
+            min_step: 2.5,
         }
     }
 }
@@ -63,7 +63,6 @@ impl TrajectoryChaser for FixedLookaheadChaser {
                 let ds_max = v_max_cur * delta;
                 let ds_min = self.min_step * delta * urgency;
                 let s_lookahead = self.s_lookahead_base * urgency;
-
                 let s_star = action
                     .trajectory
                     .find_nearest_param_in_range(s_cur, s_end, &x_act)

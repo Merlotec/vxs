@@ -12,6 +12,7 @@ use std::ops::Deref;
 use voxelsim::Cell;
 use voxelsim::RendererClient;
 use voxelsim::env::{DenseSnapshot, VoxelGrid};
+use voxelsim::network::AsyncRendererClient;
 use voxelsim::viewport::CameraOrientation;
 use voxelsim::viewport::{CameraProjection, CameraView};
 
@@ -45,6 +46,17 @@ impl FilterWorld {
     ) -> PyResult<()> {
         self.send_pov(client, stream_idx, agent_id, proj, orientation)
             .map_err(|e| PyException::new_err(format!("Could not send pov: {}", e)))
+    }
+
+    pub fn send_pov_async_py(
+        &self,
+        client: &AsyncRendererClient,
+        stream_idx: usize,
+        agent_id: usize,
+        proj: CameraProjection,
+        orientation: CameraOrientation,
+    ) {
+        self.send_pov_async(client, stream_idx, agent_id, proj, orientation)
     }
 
     pub fn dense_snapshot_py(&self, centre: [i32; 3], half_dims: [i32; 3]) -> DenseSnapshot {

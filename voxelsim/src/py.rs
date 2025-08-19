@@ -17,7 +17,7 @@ use crate::{
     },
     chase::{ChaseTarget, FixedLookaheadChaser, TrajectoryChaser},
     env::{DenseSnapshot, VoxelGrid},
-    network::RendererClient,
+    network::{AsyncRendererClient, RendererClient},
     planner::ActionPlanner,
     planner::astar::AStarActionPlanner,
     viewport::CameraOrientation,
@@ -38,6 +38,7 @@ pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CameraOrientation>()?;
     m.add_class::<DenseSnapshot>()?;
     m.add_class::<AStarActionPlanner>()?;
+    m.add_class::<AsyncRendererClient>()?;
     Ok(())
 }
 
@@ -132,6 +133,10 @@ impl VoxelGrid {
     pub fn dense_snapshot_py(&self, centre: [i32; 3], dims: [i32; 3]) -> DenseSnapshot {
         self.dense_snapshot(centre.into(), dims.into())
     }
+
+    pub fn clone_py(&self) -> Self {
+        self.clone()
+    }
 }
 
 #[pymethods]
@@ -174,9 +179,11 @@ impl Agent {
                 .push_back_intent(intent)
                 .map_err(|e| PyException::new_err(format!("Could not push back intent: {}", e)))
         } else {
-            Err(PyException::new_err(format!(
-                "Could not push back intent: No currently active action to queue intent to."
-            )))
+            self.state =
+                AgentState::Action(Action::new_oneshot(intent, self.get_coord()).map_err(|e| {
+                    PyException::new_err(format!("Could not perform intent: {}", e))
+                })?);
+            Ok(())
         }
     }
 
@@ -227,7 +234,7 @@ impl Action {
         self.origin = Vector3::new(x, y, z);
     }
 
-    pub fn num_intents(&self) -> usize {
+    pub fn intent_count(&self) -> usize {
         self.intent_queue.len()
     }
 
@@ -374,25 +381,25 @@ impl RendererClient {
         agent_port: u16,
         pov_start_port: u16,
         pov_agent_start_port: u16,
-    ) -> Self {
+        pov_count: u16,
+    ) -> PyResult<Self> {
         Self::new(
-            &host,
+            host.as_str(),
             world_port,
             agent_port,
             pov_start_port,
             pov_agent_start_port,
+            pov_count,
         )
+        .map_err(|e| PyException::new_err(format!("Failed to create render client: {}", e)))
     }
 
     #[staticmethod]
-    pub fn default_localhost_py() -> Self {
-        Self::new("127.0.0.1", 8080, 8081, 8090, 9090)
+    pub fn default_localhost_py(pov_count: u16) -> PyResult<Self> {
+        Self::new("127.0.0.1", 8080, 8081, 8090, 9090, pov_count)
+            .map_err(|e| PyException::new_err(format!("Failed to create render client: {}", e)))
     }
 
-    fn connect_py(&mut self, pov_count: u16) -> PyResult<()> {
-        self.connect(pov_count)
-            .map_err(|e| PyException::new_err(e.to_string()))
-    }
     pub fn send_agents_py(&mut self, agents: HashMap<usize, Agent>) -> PyResult<()> {
         self.send_agents(&agents)
             .map_err(|e| PyException::new_err(format!("Failed to send agents: {}", e)))
@@ -400,6 +407,41 @@ impl RendererClient {
     pub fn send_world_py(&mut self, world: &VoxelGrid) -> PyResult<()> {
         self.send_world(world)
             .map_err(|e| PyException::new_err(format!("Failed to send world: {}", e)))
+    }
+}
+
+#[pymethods]
+impl AsyncRendererClient {
+    #[new]
+    fn new_py(
+        host: String,
+        world_port: u16,
+        agent_port: u16,
+        pov_start_port: u16,
+        pov_agent_start_port: u16,
+        pov_count: u16,
+    ) -> PyResult<Self> {
+        Ok(Self::new(RendererClient::new_py(
+            host,
+            world_port,
+            agent_port,
+            pov_start_port,
+            pov_agent_start_port,
+            pov_count,
+        )?))
+    }
+
+    #[staticmethod]
+    pub fn default_localhost_py(pov_count: u16) -> PyResult<Self> {
+        Ok(Self::new(RendererClient::default_localhost_py(pov_count)?))
+    }
+
+    pub fn send_agents_py(&self, agents: HashMap<usize, Agent>) {
+        self.send_agents(agents)
+    }
+
+    pub fn send_world_py(&self, world: VoxelGrid) {
+        self.send_world(world)
     }
 }
 

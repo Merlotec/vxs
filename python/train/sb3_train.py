@@ -11,10 +11,9 @@ import voxelsim as vxs;
 #     entry_point="gymnasium_env.envs:GridWorldEnv",
 # )
 
-client = vxs.RendererClient.default_localhost_py()
+client = vxs.AsyncRendererClient.default_localhost_py(1)
 
 # one agent
-client.connect_py(1)
 
 env = GridWorldAStarEnv(
     reward=SimpleReward(
@@ -22,7 +21,7 @@ env = GridWorldAStarEnv(
         distance_bonus_per_step=0.02,
     ),
     render_client=client,
-    start_pos=[100, 100, -20],  # NED coordinate system
+    start_pos=[100, 100, -40],  # NED coordinate system
     action_gain=3.0,
     attempt_scales=(1.0, 0.85, 0.6, 0.4),
     allow_override=True,
