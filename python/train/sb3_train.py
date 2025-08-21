@@ -4,6 +4,7 @@ from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
 import os
 
 from gymnasium.envs.registration import register
+import torch
 from envs.grid_world_astar import GridWorldAStarEnv
 from rewards.target_locate import RewardTargetLocate
 from models.vox_features import VoxGridExtractor
@@ -52,6 +53,17 @@ ckpt_cb = CheckpointCallback(
     save_freq=50_000, save_path=os.path.join(logdir, "ckpts"), name_prefix="ppo_vox"
 )
 
+def _select_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    # MPS (Metal) on macOS
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+device = _select_device()
+print(f"[sb3_train] Using device: {device}")
+
 model = PPO(
     policy="MultiInputPolicy",
     env=train_env,
@@ -70,7 +82,7 @@ model = PPO(
         features_extractor_class=VoxGridExtractor,
         features_extractor_kwargs=dict(grid_key="grid"),
     ),
-    device="mps",
+    device=device,
 )
 
 model.learn(total_timesteps=1_000_000, callback=[ckpt_cb])
