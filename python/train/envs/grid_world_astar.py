@@ -5,11 +5,13 @@ import random
 import time
 import threading
 from typing import Any, Dict, Optional, Tuple
+from collections import deque
 from abc import ABC, abstractmethod
 
 import gymnasium as gym
 import numpy as np
 import voxelsim as vxs
+import os
 
 
 class RewardBase(ABC):
@@ -185,13 +187,19 @@ class GridWorldAStarEnv(gym.Env):
         self.graphics_time = 0
         self.step_time = 0
 
-        self.render_queue = []
-        # Should contain world time and world data.
-        self.obs_queue = []
+        # Queues for async vision/render pipeline (use O(1) pops)
+        self.render_queue = deque()
+        # Should contain (timestamp, world data)
+        self.obs_queue = deque()
 
         self._last_action = np.zeros(6, dtype=np.float32)
 
         self._init_world()
+        # Pre-cache env state and grid metadata for performance
+        self.env_state = vxs.EnvState.default_py()
+        hx, hy, hz = self.dense_half_dims
+        self._grid_shape = (2 * hx + 1, 2 * hy + 1, 2 * hz + 1)
+        self._zero_grid = np.zeros(self._grid_shape, dtype=np.int32)
 
     # --------------- World setup / rendering ---------------------------------
     def _init_world(self):
@@ -229,16 +237,18 @@ class GridWorldAStarEnv(gym.Env):
         # We need to wait for the next world to be ready else we will overwrite previous changes.
         # So we must have our timestamp at the end of the render queue.
         try:
-            while self.render_queue[0] != changeset.timestamp_py():
+            ts = changeset.timestamp_py()
+            # Busy-wait minimally until the expected timestamp is at head
+            while not self.render_queue or self.render_queue[0] != ts:
                 time.sleep(0.00001)
 
             changeset.update_filter_world_py(self.filter_world)
-            # Write world.
+            # Write world snapshot and enqueue it
             grid = self._build_grid()
-            # Now we push to the queue.
-            self.obs_queue.append((changeset.timestamp_py, grid))
-            self.render_queue.pop(0)
-        except ValueError:
+            self.obs_queue.append((ts, grid))
+            self.render_queue.popleft()
+        except Exception as e:
+            # Be resilient to timing/race errors in async callback
             print(f"Failed to update world: {e}")
 
 
@@ -266,12 +276,16 @@ class GridWorldAStarEnv(gym.Env):
         if self.client:
             self.client.send_world_py(self.world)
         self.world_time = 0.0
-        self.start_rt = 0
         self.graphics_time = 0
         self.step_time = 0
         self._last_action[:] = 0.0
         self.chaser = vxs.FixedLookaheadChaser.default_py()
         self.dynamics = vxs.px4.Px4Dynamics.default_py()
+        self.env_state = getattr(self, "env_state", None) or vxs.EnvState.default_py()
+        # Cache grid shape and a zero-grid for fast empty observations
+        hx, hy, hz = self.dense_half_dims
+        self._grid_shape = (2 * hx + 1, 2 * hy + 1, 2 * hz + 1)
+        self._zero_grid = np.zeros(self._grid_shape, dtype=np.int32)
         self.start_rt = time.time()
 
 
@@ -294,14 +308,23 @@ class GridWorldAStarEnv(gym.Env):
         # yaw = 0
         priority = float(np.clip(priority, 0.0, 1.0))
         # Compute destination voxel coord relative to current voxel
-        origin = np.array(self.agent.get_coord_py())
-        # Use action offsets directly; model outputs are assumed to be correctly scaled
-        raw = np.array([dx, dy, dz], dtype=np.float32)
-        offset = np.round(np.clip(raw, -self.max_offset, self.max_offset)).astype(np.int32)
-        dst = tuple((origin + offset).tolist())
+        origin = self.agent.get_coord_py()
+        # Fast per-axis clamp+round without NumPy overhead
+        def clamp_round(v: float, lim: int) -> int:
+            r = int(round(float(v)))
+            if r > lim:
+                return lim
+            if r < -lim:
+                return -lim
+            return r
+        ox = clamp_round(dx, self.max_offset)
+        oy = clamp_round(dy, self.max_offset)
+        oz = clamp_round(dz, self.max_offset)
+        offset = (ox, oy, oz)
+        dst = (origin[0] + ox, origin[1] + oy, origin[2] + oz)
 
         # Record last action as the relative offset requested (updated to actual used below)
-        self._last_action[:] = [float(offset[0]), float(offset[1]), float(offset[2]), urgency, yaw, priority]
+        self._last_action[:] = [float(ox), float(oy), float(oz), urgency, yaw, priority]
 
         overridden = False
         failed = False
@@ -309,26 +332,25 @@ class GridWorldAStarEnv(gym.Env):
         # No additional scaling; RL policy should emit offsets at the correct scale
         # Plan if allowed (override or idle)
         curr = self.agent.get_action_py()
-        if (curr is None) or curr.intent_count() < 3:# or (self.allow_override and (priority >= self.override_threshold)):
+        if (curr is None) or curr.intent_count() < 3:
             if curr and priority >= self.override_threshold:
                 overridden = True
-
-            off = np.round(offset).astype(np.int32)
-            # Try planning, penalise on exceptions and fall back by reducing offset
-            # Try progressively smaller offsets if planning fails
-            dst_try = tuple((origin + off).tolist())
-            try:
-                dirs = self.astar.plan_action_py(self.world, tuple(origin.tolist()), dst_try, urgency, yaw).get_move_sequence()
-                if len(dirs) > 0:
-                    intent = vxs.ActionIntent(float(urgency), float(yaw), dirs, None)
-                    try:
-                        self.agent.push_back_intent_py(intent)
-                        # record the actual relative offset used
-                        self._last_action[:3] = [float(off[0]), float(off[1]), float(off[2])]
-                    except ValueError:
-                        failed = True
-            except Exception:
-                failed = True
+            # Skip planning if no movement requested
+            if (ox != 0) or (oy != 0) or (oz != 0):
+                try:
+                    dirs = self.astar.plan_action_py(self.world, origin, dst, urgency, yaw).get_move_sequence()
+                    if len(dirs) > 0:
+                        intent = vxs.ActionIntent(float(urgency), float(yaw), dirs, None)
+                        try:
+                            self.agent.push_back_intent_py(intent)
+                            # record the actual relative offset used
+                            self._last_action[0] = float(ox)
+                            self._last_action[1] = float(oy)
+                            self._last_action[2] = float(oz)
+                        except ValueError:
+                            failed = True
+                except Exception:
+                    failed = True
 
         # Advance simulation one tick
 
@@ -336,7 +358,7 @@ class GridWorldAStarEnv(gym.Env):
         # chase = self.chaser.step_chase_py(self.agent, self.delta_time)
         # self.dynamics.update_agent_dynamics_py(self.agent, vxs.EnvState.default_py(), chase, self.delta_time)
 
-        self.dynamics.update_agent_fixed_lookahead_py(self.agent, vxs.EnvState.default_py(), self.chaser, self.delta_time, self.ticks_per_step)
+        self.dynamics.update_agent_fixed_lookahead_py(self.agent, self.env_state, self.chaser, self.delta_time, self.ticks_per_step)
         
         self.world_time += self.delta_time * self.ticks_per_step
 
@@ -361,25 +383,23 @@ class GridWorldAStarEnv(gym.Env):
         truncated = False
 
         # obs = self._build_observation()
-        reward = self.reward_fn.compute(
-            collided=collided, overridden=overridden, failed=failed, plan_len=int(locals().get("chosen_plan_len", 0))
-        )
+        reward = self.reward_fn.compute(collided=collided, overridden=overridden, failed=failed, plan_len=0)
         info: Dict[str, Any] = {"overridden": overridden, "collided": collided, "failed": failed}
 
 
         # Now await next frame (if required).
-        if len(self.obs_queue) + len(self.render_queue) > 1:
+        if (len(self.obs_queue) + len(self.render_queue)) > 1:
             # We should await.
             # We shouldnt actually need to check the time because there should always be a 2 delay on the queue.
             astart = time.time()
-            while len(self.obs_queue) == 0:
+            while not self.obs_queue:
                 time.sleep(0.000001)
 
             self.graphics_time += (time.time() - astart)
-            obs = {"grid": self.obs_queue[0][1], "last_action": self._last_action.copy()}                
-            self.obs_queue.pop(0)
+            obs = {"grid": self.obs_queue[0][1], "last_action": self._last_action.copy()}
+            self.obs_queue.popleft()
         else:
-            obs = {"grid": self._empty_grid(), "last_action": self._last_action.copy()}                
+            obs = {"grid": self._empty_grid(), "last_action": self._last_action.copy()}
             
         
         # Update render client in the same way as grid_world.py
@@ -391,33 +411,37 @@ class GridWorldAStarEnv(gym.Env):
 
         self.step_time += step_end - step_start
         
-        time_ratio = self.world_time / (time.time() - self.start_rt)
-        graphics_ratio = self.graphics_time / (time.time() - self.start_rt)
-        step_ratio = self.step_time / (time.time() - self.start_rt)
-
-        print(f"speedup: {time_ratio}, graphics: {graphics_ratio}, step: {step_ratio}")
+        if os.environ.get("VXS_LOG_TRAIN", "0") == "1":
+            elapsed = max(1e-9, (time.time() - self.start_rt))
+            time_ratio = self.world_time / elapsed
+            graphics_ratio = self.graphics_time / elapsed
+            step_ratio = self.step_time / elapsed
+            print(f"speedup: {time_ratio}, graphics: {graphics_ratio}, step: {step_ratio}")
         
         return obs, reward, terminated, truncated, info
 
 
     def _build_grid(self) -> Any:
         hx, hy, hz = self.dense_half_dims
-        expected = (2 * hx + 1, 2 * hy + 1, 2 * hz + 1)
+        expected = getattr(self, "_grid_shape", None) or (2 * hx + 1, 2 * hy + 1, 2 * hz + 1)
         vc = self.agent.get_coord_py()
         grid = self.filter_world.dense_snapshot_py(vc, (hx, hy, hz)).data_py()
         grid = np.asarray(grid, dtype=np.int32).reshape(expected)
         return grid
 
     def _empty_grid(self):
-        hx, hy, hz = self.dense_half_dims
-        expected = (2 * hx + 1, 2 * hy + 1, 2 * hz + 1)
-        grid = np.zeros(expected)
-        return grid
+        # Reuse cached zero grid and copy to avoid unintended mutation
+        zg = getattr(self, "_zero_grid", None)
+        if zg is None:
+            hx, hy, hz = self.dense_half_dims
+            zg = np.zeros((2 * hx + 1, 2 * hy + 1, 2 * hz + 1), dtype=np.int32)
+            self._zero_grid = zg
+        return zg.copy()
         
     # --------------- Utilities -----------------------------------------------
     def _build_observation(self) -> Dict[str, Any]:
         hx, hy, hz = self.dense_half_dims
-        expected = (2 * hx + 1, 2 * hy + 1, 2 * hz + 1)
+        expected = getattr(self, "_grid_shape", None) or (2 * hx + 1, 2 * hy + 1, 2 * hz + 1)
         vc = self.agent.get_coord_py()
         grid = self.filter_world.dense_snapshot_py(vc, (hx, hy, hz)).data_py()
         grid = np.asarray(grid, dtype=np.int32).reshape(expected)
