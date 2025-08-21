@@ -94,6 +94,7 @@ class RewardTargetLocate(RewardBase):
         if self._just_reached:
             r += self.reach_reward
             self._just_reached = False
+            print("REACHED!!!")
         return r
 
     # ----- Env integration hook (optional) -----

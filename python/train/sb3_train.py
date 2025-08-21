@@ -6,6 +6,7 @@ import os
 from gymnasium.envs.registration import register
 from envs.grid_world_astar import GridWorldAStarEnv
 from rewards.target_locate import RewardTargetLocate
+from models.vox_features import VoxGridExtractor
 import voxelsim as vxs;
 # register(
 #     id="gymnasium_env/GridWorld-v0",
@@ -24,6 +25,9 @@ env = GridWorldAStarEnv(
     action_gain=3.0,
     attempt_scales=(1.0, 0.85, 0.6, 0.4),
     allow_override=True,
+    semantic_grid=True,
+    include_goal_vector=True,
+    max_world_time=30.0,
 )
 
 
@@ -61,7 +65,11 @@ model = PPO(
     gae_lambda=0.95,
     clip_range=0.2,
     ent_coef=0.01,
-    policy_kwargs=dict(log_std_init=1.0),
+    policy_kwargs=dict(
+        log_std_init=1.0,
+        features_extractor_class=VoxGridExtractor,
+        features_extractor_kwargs=dict(grid_key="grid"),
+    ),
     device="mps",
 )
 

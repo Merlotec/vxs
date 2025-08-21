@@ -112,6 +112,11 @@ class GridWorldAStarEnv(gym.Env):
         render_client: Optional[vxs.AsyncRendererClient] = None,
         dense_half_dims: Tuple[int, int, int] = (16, 16, 16),
         noise: Optional[vxs.NoiseParams] = None,
+        # Optional extras (off by default to preserve original behavior)
+        semantic_grid: bool = False,
+        include_goal_vector: bool = False,
+        # Optional episode time limit in world seconds
+        max_world_time: Optional[float] = None,
     ):
         super().__init__()
 
@@ -129,6 +134,9 @@ class GridWorldAStarEnv(gym.Env):
         self.action_gain = 1.0  # no-op; model outputs are used as-is
         self.attempt_scales = tuple(float(s) for s in attempt_scales)  # retained for compatibility
         self.allow_override = bool(allow_override)
+        self.semantic_grid = bool(semantic_grid)
+        self.include_goal_vector = bool(include_goal_vector)
+        self.max_world_time = float(max_world_time) if max_world_time is not None else None
 
         # Continuous action space: [dx,dy,dz,urgency,yaw,priority]
         low = np.array(
@@ -144,12 +152,17 @@ class GridWorldAStarEnv(gym.Env):
         # Observation: grid + last_action
         hx, hy, hz = self.dense_half_dims
         grid_shape = (2 * hx + 1, 2 * hy + 1, 2 * hz + 1)
-        grid_space = gym.spaces.Box(
-            low=np.iinfo(np.int32).min,
-            high=np.iinfo(np.int32).max,
-            shape=grid_shape,
-            dtype=np.int32,
-        )
+        if not self.semantic_grid:
+            grid_space = gym.spaces.Box(
+                low=np.iinfo(np.int32).min,
+                high=np.iinfo(np.int32).max,
+                shape=grid_shape,
+                dtype=np.int32,
+            )
+        else:
+            # Two float channels: [occupancy, target] in [0,1], channels-first for Conv3D
+            c_first_shape = (2, grid_shape[0], grid_shape[1], grid_shape[2])
+            grid_space = gym.spaces.Box(low=0.0, high=1.0, shape=c_first_shape, dtype=np.float32)
         # Record relative offsets for last_action (not absolute voxels)
         la_low = np.array(
             [-self.max_offset, -self.max_offset, -self.max_offset, 0.0, -math.pi, 0.0],
@@ -160,12 +173,16 @@ class GridWorldAStarEnv(gym.Env):
             dtype=np.float32,
         )
         last_action_space = gym.spaces.Box(low=la_low, high=la_high, dtype=np.float32)
-        self.observation_space = gym.spaces.Dict(
-            {
-                "grid": grid_space,
-                "last_action": last_action_space,
-            }
-        )
+        obs_dict = {
+            "grid": grid_space,
+            "last_action": last_action_space,
+        }
+        if self.include_goal_vector:
+            # Goal vector as relative voxel offset (tx-ax, ty-ay, tz-az)
+            # Bounds: conservative, within ±(2*max_offset) to allow farther targets
+            gv_lim = float(max(2 * self.max_offset, 1))
+            obs_dict["goal_rel"] = gym.spaces.Box(low=-gv_lim, high=gv_lim, shape=(3,), dtype=np.float32)
+        self.observation_space = gym.spaces.Dict(obs_dict)
 
         # World/agent state
         self.world: Optional[vxs.World] = None
@@ -200,7 +217,10 @@ class GridWorldAStarEnv(gym.Env):
         self.env_state = vxs.EnvState.default_py()
         hx, hy, hz = self.dense_half_dims
         self._grid_shape = (2 * hx + 1, 2 * hy + 1, 2 * hz + 1)
-        self._zero_grid = np.zeros(self._grid_shape, dtype=np.int32)
+        if not self.semantic_grid:
+            self._zero_grid = np.zeros(self._grid_shape, dtype=np.int32)
+        else:
+            self._zero_grid = np.zeros((2, *self._grid_shape), dtype=np.float32)
 
     # --------------- World setup / rendering ---------------------------------
     def _init_world(self):
@@ -294,7 +314,10 @@ class GridWorldAStarEnv(gym.Env):
         # Cache grid shape and a zero-grid for fast empty observations
         hx, hy, hz = self.dense_half_dims
         self._grid_shape = (2 * hx + 1, 2 * hy + 1, 2 * hz + 1)
-        self._zero_grid = np.zeros(self._grid_shape, dtype=np.int32)
+        if not self.semantic_grid:
+            self._zero_grid = np.zeros(self._grid_shape, dtype=np.int32)
+        else:
+            self._zero_grid = np.zeros((2, *self._grid_shape), dtype=np.float32)
         self.start_rt = time.time()
 
 
@@ -302,7 +325,9 @@ class GridWorldAStarEnv(gym.Env):
         # self._render_agent_vision()
         # ch = self._await_changeset()
         # ch.update_filter_world_py(self.filter_world)
-        obs = {"grid": self._empty_grid(), "last_action": self._last_action.copy()}                
+        obs = {"grid": self._empty_grid(), "last_action": self._last_action.copy()}
+        if self.include_goal_vector:
+            obs["goal_rel"] = self._goal_rel_vector()
         info: Dict[str, Any] = {}
         return obs, info
 
@@ -391,9 +416,15 @@ class GridWorldAStarEnv(gym.Env):
         terminated = bool(collided)
         truncated = False
 
+        # Time-limit truncation by world time
+        if (self.max_world_time is not None) and (self.world_time >= self.max_world_time):
+            truncated = True
+
         # obs = self._build_observation()
         reward = self.reward_fn.compute(collided=collided, overridden=overridden, failed=failed, plan_len=0)
         info: Dict[str, Any] = {"overridden": overridden, "collided": collided, "failed": failed}
+        if truncated and not terminated:
+            info["TimeLimit.truncated"] = True
 
 
         # Now await next frame (if required).
@@ -406,9 +437,13 @@ class GridWorldAStarEnv(gym.Env):
 
             self.graphics_time += (time.time() - astart)
             obs = {"grid": self.obs_queue[0][1], "last_action": self._last_action.copy()}
+            if self.include_goal_vector:
+                obs["goal_rel"] = self._goal_rel_vector()
             self.obs_queue.popleft()
         else:
             obs = {"grid": self._empty_grid(), "last_action": self._last_action.copy()}
+            if self.include_goal_vector:
+                obs["goal_rel"] = self._goal_rel_vector()
             
         
         # Update render client in the same way as grid_world.py
@@ -434,27 +469,55 @@ class GridWorldAStarEnv(gym.Env):
         hx, hy, hz = self.dense_half_dims
         expected = getattr(self, "_grid_shape", None) or (2 * hx + 1, 2 * hy + 1, 2 * hz + 1)
         vc = self.agent.get_coord_py()
-        grid = self.filter_world.dense_snapshot_py(vc, (hx, hy, hz)).data_py()
-        grid = np.asarray(grid, dtype=np.int32).reshape(expected)
-        return grid
+        raw = self.filter_world.dense_snapshot_py(vc, (hx, hy, hz)).data_py()
+        raw = np.asarray(raw).reshape(expected)
+        if not self.semantic_grid:
+            return raw.astype(np.int32)
+        # Semantic channels
+        occ = (raw != 0).astype(np.float32)
+        tgt = np.zeros_like(occ, dtype=np.float32)
+        # Mark target voxel if within window
+        target_voxel = getattr(self.reward_fn, "_target_voxel", None)
+        if target_voxel is not None:
+            dx = target_voxel[0] - vc[0]
+            dy = target_voxel[1] - vc[1]
+            dz = target_voxel[2] - vc[2]
+            if (-hx <= dx <= hx) and (-hy <= dy <= hy) and (-hz <= dz <= hz):
+                ix = hx + dx
+                iy = hy + dy
+                iz = hz + dz
+                tgt[int(ix), int(iy), int(iz)] = 1.0
+        # Channels-first
+        return np.stack([occ, tgt], axis=0)
 
     def _empty_grid(self):
         # Reuse cached zero grid and copy to avoid unintended mutation
         zg = getattr(self, "_zero_grid", None)
         if zg is None:
             hx, hy, hz = self.dense_half_dims
-            zg = np.zeros((2 * hx + 1, 2 * hy + 1, 2 * hz + 1), dtype=np.int32)
+            if not self.semantic_grid:
+                zg = np.zeros((2 * hx + 1, 2 * hy + 1, 2 * hz + 1), dtype=np.int32)
+            else:
+                zg = np.zeros((2, 2 * hx + 1, 2 * hy + 1, 2 * hz + 1), dtype=np.float32)
             self._zero_grid = zg
         return zg.copy()
         
     # --------------- Utilities -----------------------------------------------
     def _build_observation(self) -> Dict[str, Any]:
         hx, hy, hz = self.dense_half_dims
-        expected = getattr(self, "_grid_shape", None) or (2 * hx + 1, 2 * hy + 1, 2 * hz + 1)
-        vc = self.agent.get_coord_py()
-        grid = self.filter_world.dense_snapshot_py(vc, (hx, hy, hz)).data_py()
-        grid = np.asarray(grid, dtype=np.int32).reshape(expected)
-        return {"grid": grid, "last_action": self._last_action.copy()}
+        grid = self._build_grid()
+        obs = {"grid": grid, "last_action": self._last_action.copy()}
+        if self.include_goal_vector:
+            obs["goal_rel"] = self._goal_rel_vector()
+        return obs
+
+    def _goal_rel_vector(self) -> np.ndarray:
+        tgt = getattr(self.reward_fn, "_target_voxel", None)
+        if tgt is None:
+            return np.zeros(3, dtype=np.float32)
+        ac = self.agent.get_coord_py()
+        rel = np.array([tgt[0] - ac[0], tgt[1] - ac[1], tgt[2] - ac[2]], dtype=np.float32)
+        return rel
 
     def render(self, update_fw: bool):
         if self.client:

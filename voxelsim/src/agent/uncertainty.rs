@@ -41,25 +41,16 @@ impl UncertaintyField {
         }
     }
 }
+
+const SQRT_3: f64 = 1.732050807568877293527446341505872367_f64;
+
 impl UncertaintyField {
     pub const fn dir(i: usize) -> UnitVector3<f64> {
-        let x: f64 = if i < 4 {
-            std::f64::consts::SQRT_3
-        } else {
-            -std::f64::consts::SQRT_3
-        };
+        let x: f64 = if i < 4 { SQRT_3 } else { -SQRT_3 };
 
-        let y: f64 = if i % 4 < 2 {
-            std::f64::consts::SQRT_3
-        } else {
-            -std::f64::consts::SQRT_3
-        };
+        let y: f64 = if i % 4 < 2 { SQRT_3 } else { -SQRT_3 };
 
-        let z: f64 = if i % 2 == 0 {
-            std::f64::consts::SQRT_3
-        } else {
-            -std::f64::consts::SQRT_3
-        };
+        let z: f64 = if i % 2 == 0 { SQRT_3 } else { -SQRT_3 };
 
         UnitVector3::new_unchecked(Vector3::new(x, y, z))
     }
