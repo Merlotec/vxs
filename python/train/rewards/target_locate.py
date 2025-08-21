@@ -98,29 +98,29 @@ class RewardTargetLocate(RewardBase):
         return r
 
     # ----- Env integration hook (optional) -----
-    # def update(self, *, world: vxs.World, agent: vxs.Agent, agent_bounds) -> None:
-    #     """Called by the environment each step to update internal state.
+    def update(self, *, world: vxs.World, agent: vxs.Agent, agent_bounds) -> None:
+        """Called by the environment each step to update internal state.
 
-    #     Spawns a target if none exists. Checks whether the agent has reached the target voxel.
-    #     """
-    #     if self._world is None:
-    #         self._world = world
+        Spawns a target if none exists. Checks whether the agent has reached the target voxel.
+        """
+        if self._world is None:
+            self._world = world
 
-    #     if self._target_voxel is None:
-    #         # Spawn relative to the agent's current voxel for better reachability
-    #         ac = agent.get_coord_py()
-    #         tx, ty, tz = self._sample_target_voxel(center=ac)
-    #         self._place_target((tx, ty, tz))
+        if self._target_voxel is None:
+            # Spawn relative to the agent's current voxel for better reachability
+            ac = agent.get_coord_py()
+            tx, ty, tz = self._sample_target_voxel(center=ac)
+            self._place_target((tx, ty, tz))
 
-    #     # Check reach: compare voxel coordinates
-    #     if self._target_voxel is not None:
-    #         ac = agent.get_coord_py()
-    #         if (ac[0], ac[1], ac[2]) == self._target_voxel:
-    #             self._just_reached = True
-    #             if self.respawn_on_reach:
-    #                 # Immediately respawn a new target near the current position
-    #                 tx, ty, tz = self._sample_target_voxel(center=ac)
-    #                 self._place_target((tx, ty, tz))
+        # Check reach: compare voxel coordinates
+        if self._target_voxel is not None:
+            ac = agent.get_coord_py()
+            if (ac[0], ac[1], ac[2]) == self._target_voxel:
+                self._just_reached = True
+                if self.respawn_on_reach:
+                    # Immediately respawn a new target near the current position
+                    tx, ty, tz = self._sample_target_voxel(center=ac)
+                    self._place_target((tx, ty, tz))
 
     # ----- Internals -----
     def _sample_target_voxel(self, center: Optional[Tuple[int, int, int]] = None) -> Tuple[int, int, int]:
