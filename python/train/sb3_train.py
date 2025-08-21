@@ -4,7 +4,8 @@ from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
 import os
 
 from gymnasium.envs.registration import register
-from envs.grid_world_astar import GridWorldAStarEnv, SimpleReward
+from envs.grid_world_astar import GridWorldAStarEnv
+from rewards.target_locate import RewardTargetLocate
 import voxelsim as vxs;
 # register(
 #     id="gymnasium_env/GridWorld-v0",
@@ -16,10 +17,8 @@ client = vxs.AsyncRendererClient.default_localhost_py(1)
 # one agent
 
 env = GridWorldAStarEnv(
-    reward=SimpleReward(
-        plan_success_bonus=0.2,
-        distance_bonus_per_step=0.02,
-    ),
+    # Start with a modest distance to keep the target within view; increase over time for curriculum
+    reward=RewardTargetLocate(max_distance=12),
     render_client=client,
     start_pos=[100, 100, -40],  # NED coordinate system
     action_gain=3.0,

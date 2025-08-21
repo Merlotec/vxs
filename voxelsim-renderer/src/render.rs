@@ -86,7 +86,12 @@ impl CellAssets {
         }
     }
 
-    pub fn spawn_agent_with_model(&self, commands: &mut Commands, agent: Agent, transform: Transform) {
+    pub fn spawn_agent_with_model(
+        &self,
+        commands: &mut Commands,
+        agent: Agent,
+        transform: Transform,
+    ) {
         if let Some(ref drone_scene) = self.drone_scene {
             // Spawn GLTF scene
             commands.spawn((
@@ -129,7 +134,7 @@ pub fn setup(
 
     let solid_mat = materials.add(Color::srgb(0.4, 0.3, 0.3));
     let target_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.8, 0.1, 0.3, 0.3),
+        base_color: Color::srgba(1.0, 0.0, 0.0, 0.8),
         alpha_mode: AlphaMode::Blend,
         ..default()
     });
@@ -153,14 +158,14 @@ pub fn setup(
 
     let cube_mesh = meshes.add(Cuboid::default());
     let drone_mesh = meshes.add(Torus::default());
-    
+
     // Try to load drone GLTF, fallback to None if it doesn't exist
     let drone_scene = if std::path::Path::new("assets/drone.gltf").exists() {
         Some(asset_server.load("drone.gltf#Scene0"))
     } else {
         None
     };
-    
+
     commands.insert_resource(CellAssets {
         cube_mesh: cube_mesh.clone(),
         drone_mesh,
@@ -188,10 +193,10 @@ pub fn setup(
         affects_lightmapped_meshes: true,
         ..Default::default()
     });
-    
+
     // Set clear color to black
     commands.insert_resource(ClearColor(Color::BLACK));
-    
+
     // Spawn PanOrbitCamera
     commands.spawn((
         PanOrbitCamera::default(),

@@ -15,7 +15,7 @@ import os
 
 
 class RewardBase(ABC):
-    """Abstract reward with optional world post-processing after reset."""
+    """Abstract reward with optional world/agent post-processing after reset."""
 
     @abstractmethod
     def compute(
@@ -29,10 +29,11 @@ class RewardBase(ABC):
         """Return scalar reward for the last step."""
         raise NotImplementedError
 
-    def post_reset(self, world: vxs.VoxelGrid) -> None:
-        """Hook to edit the world immediately after reset and before rendering.
+    def post_reset(self, world: vxs.VoxelGrid, agent: "vxs.Agent") -> None:
+        """Hook to edit the world/agent immediately after reset and before rendering.
 
-        Default: no-op. Subclasses can modify `world` (e.g., add targets/obstacles).
+        Default: no-op. Subclasses can modify `world` (e.g., add targets/obstacles)
+        and/or inspect/change the `agent` position/state.
         """
         return None
 
@@ -204,13 +205,14 @@ class GridWorldAStarEnv(gym.Env):
     # --------------- World setup / rendering ---------------------------------
     def _init_world(self):
         self._gen_world(seed=random.randint(1, 10**6))
-        # Allow reward to edit the world before renderer/client setup
-        try:
-            self.reward_fn.post_reset(self.world)
-        except Exception as e:
-            print(f"Reward post_reset failed, continuing: {e}")
+        # Create agent first so reward can inspect/change position
         self.agent = vxs.Agent(0)
         self.agent.set_hold_py(self.start_pos, 0.0)
+        # Allow reward to edit the world/agent before renderer/client setup
+        try:
+            self.reward_fn.post_reset(self.world, self.agent)
+        except Exception as e:
+            print(f"Reward post_reset failed, continuing: {e}")
         self.filter_world = vxs.FilterWorld()
         self.vision = vxs.AgentVisionRenderer(self.world, (160, 100), self.noise)
         if self.client:
@@ -243,6 +245,13 @@ class GridWorldAStarEnv(gym.Env):
                 time.sleep(0.00001)
 
             changeset.update_filter_world_py(self.filter_world)
+            # Update reward only when the (filtered) world was updated
+            try:
+                upd = getattr(self.reward_fn, "update", None)
+                if callable(upd):
+                    upd(world=self.world, agent=self.agent, agent_bounds=self.agent_bounds)
+            except Exception:
+                pass
             # Write world snapshot and enqueue it
             grid = self._build_grid()
             self.obs_queue.append((ts, grid))
@@ -264,15 +273,15 @@ class GridWorldAStarEnv(gym.Env):
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
         super().reset(seed=seed)
         self._gen_world(seed or random.randint(1, 10**6))
-        # Reward can modify world prior to any renderer/client setup.
-        try:
-            self.reward_fn.post_reset(self.world)
-        except Exception as e:
-            print(f"Reward post_reset failed, continuing: {e}")
         self.filter_world = vxs.FilterWorld()
         self.vision = vxs.AgentVisionRenderer(self.world, (160, 100), self.noise)
         self.agent = vxs.Agent(0)
         self.agent.set_hold_py(self.start_pos, 0.0)
+        # Reward can modify world/agent prior to any renderer/client setup.
+        try:
+            self.reward_fn.post_reset(self.world, self.agent)
+        except Exception as e:
+            print(f"Reward post_reset failed, continuing: {e}")
         if self.client:
             self.client.send_world_py(self.world)
         self.world_time = 0.0
