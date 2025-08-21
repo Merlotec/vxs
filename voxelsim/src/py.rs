@@ -20,12 +20,14 @@ use crate::{
     network::{AsyncRendererClient, RendererClient},
     planner::ActionPlanner,
     planner::astar::AStarActionPlanner,
+    uncertainty::UncertaintyWorld,
     viewport::CameraOrientation,
 };
 
 #[pymodule]
 pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<VoxelGrid>()?;
+    m.add_class::<UncertaintyWorld>()?;
     m.add_class::<Cell>()?;
     m.add_class::<Agent>()?;
     m.add_class::<MoveDir>()?;
@@ -136,6 +138,38 @@ impl VoxelGrid {
 
     pub fn clone_py(&self) -> Self {
         self.clone()
+    }
+
+    pub fn add_target_cell(&mut self, coord: [i32; 3]) {
+        self.cells().insert(coord.into(), Cell::TARGET);
+    }
+}
+
+#[pymethods]
+impl UncertaintyWorld {
+    #[new]
+    pub fn new_py(world_origin: [f64; 3], node_size: f64) -> Self {
+        Self::new(world_origin.into(), node_size.into())
+    }
+
+    #[staticmethod]
+    pub fn default_py() -> Self {
+        Self::new(Vector3::zeros(), 10.0)
+    }
+
+    pub fn update_view_frustum_py(
+        &mut self,
+        cam_pos_world: [f64; 3],
+        cam_orientation: CameraOrientation,
+        cam_proj: CameraProjection,
+        max_dist: f64,
+    ) {
+        self.update_view_frustum(
+            cam_pos_world.into(),
+            cam_orientation.quat,
+            cam_proj.fov_vertical * 0.5,
+            max_dist,
+        )
     }
 }
 

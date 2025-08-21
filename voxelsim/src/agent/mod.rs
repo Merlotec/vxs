@@ -16,7 +16,7 @@ use crate::{
 
 pub mod chase;
 pub mod trajectory;
-// pub mod uncertainty;
+pub mod uncertainty;
 pub mod viewport;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,7 +261,7 @@ impl Action {
             &Self::chained_centroids(self.intent_queue.iter(), self.origin)?,
         );
 
-        let new_m = old_m - front.move_sequence.len() as f64;
+        let new_m = (old_m - front.move_sequence.len() as f64).max(0.0);
 
         self.trajectory.progress = self
             .trajectory

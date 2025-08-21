@@ -8,6 +8,7 @@ use crate::rasterizer::{CellInstance, InstanceBuffer};
 use bytemuck::{Pod, Zeroable};
 use nalgebra::Vector2;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use voxelsim::uncertainty::{UncertaintyField, UncertaintyWorld};
 use voxelsim::{Cell, Coord, VoxelGrid};
 
 #[repr(C)]
@@ -95,6 +96,7 @@ impl State {
         camera_matrix: &CameraMatrix,
         filter_world: &VoxelGrid,
         timestamp: f64,
+        cam_dir_world: nalgebra::Vector3<f64>,
     ) -> Result<WorldChangeset, wgpu::SurfaceError> {
         let profile_enabled = std::env::var("VXS_COMPUTE_PROFILE").is_ok();
         let total_start = if profile_enabled {
@@ -154,17 +156,14 @@ impl State {
         }
 
         // Encode BOTH culling passes into a single encoder and submit once
-        let mut cull_encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Frustum Culling Encoder (Combined)"),
-            });
+        let mut cull_encoder =
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Frustum Culling Encoder (Combined)"),
+                });
 
-        self.rasterizer_state.encode_frustum_culling(
-            &mut cull_encoder,
-            &self.queue,
-            camera_matrix,
-        );
+        self.rasterizer_state
+            .encode_frustum_culling(&mut cull_encoder, &self.queue, camera_matrix);
 
         self.rasterizer_state.encode_filter_frustum_culling(
             &mut cull_encoder,
@@ -212,12 +211,8 @@ impl State {
             });
 
         // Encode main rasterizer pass using culled instances with indirect draw
-        self.rasterizer_state.encode_rasterizer(
-            &mut encoder,
-            camera_matrix,
-            true,
-            None,
-        );
+        self.rasterizer_state
+            .encode_rasterizer(&mut encoder, camera_matrix, true, None);
 
         let main_submit_start = if profile_enabled {
             Some(std::time::Instant::now())
@@ -433,6 +428,12 @@ impl State {
             to_remove,
             to_insert,
             timestamp,
+            cam_pos: nalgebra::Vector3::new(
+                camera_matrix.pos[0] as f64,
+                camera_matrix.pos[1] as f64,
+                camera_matrix.pos[2] as f64,
+            ),
+            cam_dir: cam_dir_world,
         })
     }
 }
@@ -443,6 +444,8 @@ pub struct WorldChangeset {
     pub to_insert: Vec<(Coord, Cell)>,
     pub to_remove: Vec<FilterCoord>,
     pub timestamp: f64,
+    pub cam_pos: nalgebra::Vector3<f64>,
+    pub cam_dir: nalgebra::Vector3<f64>,
 }
 
 impl WorldChangeset {
@@ -450,6 +453,7 @@ impl WorldChangeset {
         self.timestamp
     }
     pub fn update_world(&self, world: &mut VoxelGrid) {
+        // Backward-compatible path: no uncertainty gating
         self.to_insert.par_iter().for_each(|(coord, cell)| {
             if !cell.is_empty() {
                 world.cells().insert(*coord, *cell);
@@ -460,9 +464,88 @@ impl WorldChangeset {
         });
     }
 
+    /// Update world conditioned on uncertainty derived from camera pose: only apply a change
+    /// if the observation uncertainty (based on distance and FOV) is below the current sampled
+    /// field value at the cell position.
+    pub fn update_world_with_uncertainty(
+        &self,
+        world: &mut VoxelGrid,
+        unc_world: &UncertaintyWorld,
+    ) {
+        // Use camera pose from this changeset for sampling/observation uncertainty
+        let cam_pos = self.cam_pos;
+        let in_dir = nalgebra::Unit::new_normalize(self.cam_dir);
+        let half_fov = 0.4_f64; // approx half vertical FOV in radians
+        let cos_thresh = half_fov.cos();
+        let max_dist = 40.0_f64; // limit range considered
+
+        self.to_insert.par_iter().for_each(|(coord, cell)| {
+            if cell.is_empty() {
+                return;
+            }
+            let pos = nalgebra::Vector3::new(coord.x as f64, coord.y as f64, coord.z as f64);
+            let dvec = pos - cam_pos;
+            let dist = dvec.norm();
+            if dist <= 1e-6 || dist > max_dist {
+                return;
+            }
+            let dir = nalgebra::Unit::new_normalize(dvec);
+            if dir.dot(&in_dir) < cos_thresh {
+                return;
+            }
+            // Observation uncertainty increases with distance (0 near → 1 at max)
+            let obs_uncertainty = dist / max_dist;
+            if let Some(current) = unc_world.sample_field(pos, in_dir) {
+                if obs_uncertainty < current {
+                    world.cells().insert(*coord, *cell);
+                }
+            }
+        });
+
+        self.to_remove.par_iter().for_each(|coord| {
+            let pos = nalgebra::Vector3::new(
+                coord.coord.x as f64,
+                coord.coord.y as f64,
+                coord.coord.z as f64,
+            );
+            let dvec = pos - cam_pos;
+            let dist = dvec.norm();
+            if dist <= 1e-6 || dist > max_dist {
+                return;
+            }
+            let dir = nalgebra::Unit::new_normalize(dvec);
+            if dir.dot(&in_dir) < cos_thresh {
+                return;
+            }
+            let obs_uncertainty = dist / max_dist;
+            if let Some(current) = unc_world.sample_field(pos, in_dir) {
+                if obs_uncertainty < current {
+                    world.cells().remove(&coord.coord);
+                }
+            }
+        });
+    }
+
     pub fn update_filter_world(&self, filter_world: &crate::FilterWorld) {
         let mut vgrid = filter_world.world.lock().unwrap();
         self.update_world(vgrid.deref_mut());
+        filter_world
+            .frames
+            .lock()
+            .unwrap()
+            .retain(|x| *x != self.timestamp);
+        *filter_world.timestamp.lock().unwrap() = Some(self.timestamp);
+    }
+
+    /// Same as `update_filter_world`, but with uncertainty gating. Uses `uncertainty_level`
+    /// as the candidate level to compare against the field's sampled level.
+    pub fn update_filter_world_with_uncertainty(
+        &self,
+        filter_world: &crate::FilterWorld,
+        unc_world: &UncertaintyWorld,
+    ) {
+        let mut vgrid = filter_world.world.lock().unwrap();
+        self.update_world_with_uncertainty(vgrid.deref_mut(), unc_world);
         filter_world
             .frames
             .lock()

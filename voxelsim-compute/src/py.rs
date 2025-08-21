@@ -2,6 +2,7 @@ use crate::AgentVisionRenderer;
 use crate::FilterWorld;
 use crate::WorldChangeset;
 use crate::rasterizer::noise::NoiseParams;
+use voxelsim::uncertainty::UncertaintyWorld;
 
 use numpy::ndarray::Array2;
 use numpy::ndarray::ShapeError;
@@ -133,6 +134,32 @@ impl AgentVisionRenderer {
         });
     }
 
+    pub fn update_filter_world_with_uncertainty_py(
+        &self,
+        py: Python<'_>,
+        camera: CameraView,
+        proj: CameraProjection,
+        filter_world: Py<FilterWorld>,
+        uncertainty_world: UncertaintyWorld,
+        timestamp: f64,
+        callback: PyObject,
+    ) {
+        let fw_clone = filter_world.borrow(py).deref().clone();
+        py.allow_threads(move || {
+            self.update_filter_world_with_uncertainty(
+                camera.view_matrix(),
+                proj.projection_matrix(),
+                fw_clone,
+                uncertainty_world,
+                timestamp,
+                move |fw, ts| {
+                    Python::with_gil(|py| {
+                        let _ = callback.call(py, (filter_world.clone_ref(py), ts), None);
+                    });
+                },
+            )
+        });
+    }
     pub fn render_changeset_py(
         &self,
         py: Python<'_>,
@@ -180,5 +207,22 @@ impl WorldChangeset {
 
     pub fn update_filter_world_py(&self, filter_world: &FilterWorld) {
         self.update_filter_world(filter_world)
+    }
+
+    /// Python binding for gated updates with uncertainty.
+    pub fn update_filter_world_uncertainty_py(
+        &self,
+        filter_world: &FilterWorld,
+        unc_world: &UncertaintyWorld,
+    ) {
+        self.update_filter_world_with_uncertainty(filter_world, unc_world)
+    }
+
+    pub fn camera_pos_py(&self) -> [f64; 3] {
+        [self.cam_pos.x, self.cam_pos.y, self.cam_pos.z]
+    }
+
+    pub fn camera_dir_py(&self) -> [f64; 3] {
+        [self.cam_dir.x, self.cam_dir.y, self.cam_dir.z]
     }
 }

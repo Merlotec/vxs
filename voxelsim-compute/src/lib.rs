@@ -11,6 +11,7 @@ use pipeline::State;
 use std::ops::{Deref, DerefMut};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
+use voxelsim::uncertainty::UncertaintyWorld;
 use voxelsim::viewport::{CameraOrientation, CameraProjection};
 use voxelsim::{
     AsyncRendererClient, Coord, DenseSnapshot, PovData, PovDataRef, RendererClient, VoxelGrid,
@@ -222,12 +223,17 @@ impl AgentVisionRenderer {
                     timestamp,
                 } => {
                     let camera_matrix = CameraMatrix::from_view_proj(view.cast(), proj.cast());
+                    // Compute camera forward in world space from the view matrix: fwd = R^T * (0,0,-1)
+                    let rot3 = view.fixed_view::<3, 3>(0, 0).into_owned();
+                    let fwd_cam = nalgebra::Vector3::new(0.0f64, 0.0f64, -1.0f64);
+                    let cam_dir = rot3.transpose() * fwd_cam;
                     // let camera_matrix = CameraMatrix::default();
                     if let Ok(changeset) = state
                         .run(
                             &camera_matrix,
                             filter_world.lock().unwrap().deref(),
                             timestamp,
+                            cam_dir,
                         )
                         .await
                     {
@@ -253,6 +259,27 @@ impl AgentVisionRenderer {
         std::thread::spawn(move || {
             if let Ok(change) = rx.recv() {
                 change.update_filter_world(&filter_world);
+                on_update(&filter_world, timestamp);
+            }
+        });
+    }
+
+    pub fn update_filter_world_with_uncertainty<F>(
+        &self,
+        view: Matrix4<f64>,
+        proj: Matrix4<f64>,
+        filter_world: FilterWorld,
+        uncertainty_world: UncertaintyWorld,
+        timestamp: f64,
+        on_update: F,
+    ) where
+        F: FnOnce(&FilterWorld, f64) + Send + 'static,
+    {
+        filter_world.frames.lock().unwrap().push(timestamp);
+        let rx = self.render(view, proj, filter_world.world.clone(), timestamp);
+        std::thread::spawn(move || {
+            if let Ok(change) = rx.recv() {
+                change.update_filter_world_with_uncertainty(&filter_world, &uncertainty_world);
                 on_update(&filter_world, timestamp);
             }
         });

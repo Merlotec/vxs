@@ -55,7 +55,7 @@ impl Default for CameraProjection {
         Self {
             aspect: 1.4,
             fov_vertical: 0.8,
-            max_distance: 1_000.0,
+            max_distance: 50.0,
             near_distance: 0.5,
         }
     }

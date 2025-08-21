@@ -116,7 +116,7 @@ impl CellInstance {
                 wgpu::VertexAttribute {
                     offset: 0,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Sint32x3,  // Changed from x4 to x3 to match Vector3<i32>
+                    format: wgpu::VertexFormat::Sint32x3, // Changed from x4 to x3 to match Vector3<i32>
                 },
                 wgpu::VertexAttribute {
                     offset: std::mem::size_of::<[i32; 3]>() as wgpu::BufferAddress,
@@ -131,7 +131,10 @@ impl CellInstance {
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Instance Buffer"),
             size: (std::mem::size_of::<Self>() * len) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
@@ -176,12 +179,14 @@ impl CellInstance {
         }
         for r in world.cells().iter() {
             let (p, v) = r.pair();
-            scratch.push(CellInstance { position: *p, value: v.bits() });
+            scratch.push(CellInstance {
+                position: *p,
+                value: v.bits(),
+            });
         }
         assert!(scratch.len() <= instance.len as usize);
         queue.write_buffer(&instance.buf, 0, bytemuck::cast_slice(&scratch));
     }
-
 
     pub fn create_instance_buffer(device: &wgpu::Device, world: &VoxelGrid) -> InstanceBuffer {
         let instance_data = world
@@ -200,7 +205,9 @@ impl CellInstance {
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Instance Buffer"),
             contents: bytemuck::cast_slice(&instance_data),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC,
         });
 
         InstanceBuffer {
@@ -352,7 +359,7 @@ pub struct RasterizerState {
     pub noise: NoiseBuffer,
     pub frustum_culling: FrustumCulling,
     pub filter_frustum_culling: FrustumCulling, // Separate culling for filter stage
-    filter_bind_group_buffer_id: Option<u64>, // Track which buffer the bind group was created for
+    filter_bind_group_buffer_id: Option<u64>,   // Track which buffer the bind group was created for
     rasterizer_pipeline: RasterizerPipeline,
     filter_pipeline: RasterizerPipeline,
     depth: TextureSet,
@@ -371,7 +378,7 @@ impl RasterizerState {
     pub fn instance_count(&self) -> u32 {
         self.instances.len
     }
-    
+
     pub fn instances_buffer(&self) -> &wgpu::Buffer {
         &self.instances.buf
     }
@@ -416,10 +423,10 @@ impl RasterizerState {
         let noise_buffer = NoiseBuffer::create_buffer(device, noise);
 
         // Create frustum culling system with a generous buffer size
-        let max_instances = (instances.len * 2).max(10000); // Allow for growth
+        let max_instances = (instances.len * 2).max(100000); // Allow for growth
         let mut frustum_culling = FrustumCulling::new(device, max_instances);
         frustum_culling.create_bind_group(device, &instances.buf);
-        
+
         // Create separate frustum culling for filter stage
         // Filter typically has fewer instances, but use same max for safety
         let mut filter_frustum_culling = FrustumCulling::new(device, max_instances);
@@ -480,12 +487,8 @@ impl RasterizerState {
         camera_uniform: &CameraMatrix,
     ) {
         // Pass the camera matrix directly (matches voxelcoord.wgsl approach)
-        self.frustum_culling.dispatch_culling(
-            encoder,
-            queue,
-            camera_uniform,
-            self.instances.len,
-        );
+        self.frustum_culling
+            .dispatch_culling(encoder, queue, camera_uniform, self.instances.len);
         // Copy visible_count (offset 4) into indirect args' instance_count (offset 4)
         encoder.copy_buffer_to_buffer(
             &self.frustum_culling.cull_params_buffer,
@@ -509,17 +512,14 @@ impl RasterizerState {
         // Use buffer address as unique identifier (safe since buffer lives for entire program)
         let buffer_id = filter_instance_buffer as *const wgpu::Buffer as usize as u64;
         if self.filter_bind_group_buffer_id != Some(buffer_id) {
-            self.filter_frustum_culling.create_bind_group(device, filter_instance_buffer);
+            self.filter_frustum_culling
+                .create_bind_group(device, filter_instance_buffer);
             self.filter_bind_group_buffer_id = Some(buffer_id);
         }
-        
+
         // Dispatch filter frustum culling
-        self.filter_frustum_culling.dispatch_culling(
-            encoder,
-            queue,
-            camera_uniform,
-            filter_len,
-        );
+        self.filter_frustum_culling
+            .dispatch_culling(encoder, queue, camera_uniform, filter_len);
         // Copy filter visible_count into filter indirect args
         encoder.copy_buffer_to_buffer(
             &self.filter_frustum_culling.cull_params_buffer,
@@ -577,26 +577,21 @@ impl RasterizerState {
 
         // The rest of the drawing logic - choose between original and culled instances
         render_pass.set_vertex_buffer(0, self.cube_buffer.vertex.slice(..));
-        
+
         let (instance_buffer, instance_count) = if use_culled_instances {
             (&self.frustum_culling.culled_instance_buffer, 0)
         } else {
             (&self.instances.buf, self.instances.len)
         };
-        
+
         render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
         render_pass.set_index_buffer(self.cube_buffer.index.slice(..), wgpu::IndexFormat::Uint16);
         if use_culled_instances {
             render_pass.draw_indexed_indirect(&self.main_indirect_args, 0);
         } else {
-            render_pass.draw_indexed(
-                0..Vertex::CUBE_INDICES.len() as u32,
-                0,
-                0..instance_count,
-            );
+            render_pass.draw_indexed(0..Vertex::CUBE_INDICES.len() as u32, 0, 0..instance_count);
         }
     }
-
 
     pub fn encode_filter(
         &self,
@@ -635,13 +630,13 @@ impl RasterizerState {
 
         // The rest of the drawing logic - choose between original and culled instances
         render_pass.set_vertex_buffer(0, self.cube_buffer.vertex.slice(..));
-        
+
         let (instance_buffer, instance_count) = if use_culled_instances {
             (&self.filter_frustum_culling.culled_instance_buffer, 0)
         } else {
             (filter_instance_buffer, filter_len)
         };
-        
+
         render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
         render_pass.set_index_buffer(self.cube_buffer.index.slice(..), wgpu::IndexFormat::Uint16);
         if use_culled_instances {
@@ -652,7 +647,11 @@ impl RasterizerState {
     }
 
     /// Batched readback of both main and filter culling results (more efficient than separate calls)
-    pub fn get_culling_counts_batched(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> (u32, u32) {
+    pub fn get_culling_counts_batched(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> (u32, u32) {
         // Single command encoder for both readbacks
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Batched Culling Readback Encoder"),
@@ -679,16 +678,22 @@ impl RasterizerState {
         queue.submit(Some(encoder.finish()));
 
         // Read both results
-        let main_count = self.read_staging_buffer_sync(device, &self.frustum_culling.readback_staging_buffer);
-        let filter_count = self.read_staging_buffer_sync(device, &self.filter_frustum_culling.readback_staging_buffer);
+        let main_count =
+            self.read_staging_buffer_sync(device, &self.frustum_culling.readback_staging_buffer);
+        let filter_count = self
+            .read_staging_buffer_sync(device, &self.filter_frustum_culling.readback_staging_buffer);
 
         (main_count, filter_count)
     }
 
     /// Helper to read a staging buffer synchronously
-    fn read_staging_buffer_sync(&self, device: &wgpu::Device, staging_buffer: &wgpu::Buffer) -> u32 {
+    fn read_staging_buffer_sync(
+        &self,
+        device: &wgpu::Device,
+        staging_buffer: &wgpu::Buffer,
+    ) -> u32 {
         let buffer_slice = staging_buffer.slice(..);
-        
+
         use std::sync::{Arc, Mutex};
         let result_flag = Arc::new(Mutex::new(None));
         let flag_clone = result_flag.clone();
@@ -718,5 +723,4 @@ impl RasterizerState {
         staging_buffer.unmap();
         visible_count
     }
-
 }

@@ -5,13 +5,37 @@ import random
 import time
 import threading
 from typing import Any, Dict, Optional, Tuple
+from abc import ABC, abstractmethod
 
 import gymnasium as gym
 import numpy as np
 import voxelsim as vxs
 
 
-class SimpleReward:
+class RewardBase(ABC):
+    """Abstract reward with optional world post-processing after reset."""
+
+    @abstractmethod
+    def compute(
+        self,
+        *,
+        collided: bool,
+        overridden: bool,
+        failed: bool,
+        plan_len: int = 0,
+    ) -> float:
+        """Return scalar reward for the last step."""
+        raise NotImplementedError
+
+    def post_reset(self, world: vxs.VoxelGrid) -> None:
+        """Hook to edit the world immediately after reset and before rendering.
+
+        Default: no-op. Subclasses can modify `world` (e.g., add targets/obstacles).
+        """
+        return None
+
+
+class SimpleReward(RewardBase):
     def __init__(
         self,
         living_cost: float = -0.02,
@@ -73,8 +97,8 @@ class GridWorldAStarEnv(gym.Env):
         planner_padding: int = 1,
         override_threshold: float = 0.8,
         max_offset: int = 12,
-        action_gain: float = 1.0,
-        attempt_scales: Tuple[float, ...] = (1.0, 0.75, 0.5, 0.25),
+        action_gain: float = 1.0,  # deprecated: actions are assumed pre-scaled by the model
+        attempt_scales: Tuple[float, ...] = (1.0, 0.75, 0.5, 0.25),  # unused
         allow_override: bool = False,
         start_pos: Tuple[int, int, int] = (0, 0, 0),
         delta_time: float = 0.01,
@@ -94,13 +118,13 @@ class GridWorldAStarEnv(gym.Env):
         self.delta_time = float(delta_time)
         self.filter_update_lag = float(filter_update_lag)
         self.filter_delta = float(filter_delta)
-        self.reward_fn = reward or SimpleReward()
+        self.reward_fn: RewardBase = reward or SimpleReward()
         self.start_pos = tuple(start_pos)
         self.dense_half_dims = tuple(int(x) for x in dense_half_dims)
         self.client = render_client
         self.noise = noise or vxs.NoiseParams.default_with_seed_py([0, 0, 0])
-        self.action_gain = float(action_gain)
-        self.attempt_scales = tuple(float(s) for s in attempt_scales)
+        self.action_gain = 1.0  # no-op; model outputs are used as-is
+        self.attempt_scales = tuple(float(s) for s in attempt_scales)  # retained for compatibility
         self.allow_override = bool(allow_override)
 
         # Continuous action space: [dx,dy,dz,urgency,yaw,priority]
@@ -172,6 +196,11 @@ class GridWorldAStarEnv(gym.Env):
     # --------------- World setup / rendering ---------------------------------
     def _init_world(self):
         self._gen_world(seed=random.randint(1, 10**6))
+        # Allow reward to edit the world before renderer/client setup
+        try:
+            self.reward_fn.post_reset(self.world)
+        except Exception as e:
+            print(f"Reward post_reset failed, continuing: {e}")
         self.agent = vxs.Agent(0)
         self.agent.set_hold_py(self.start_pos, 0.0)
         self.filter_world = vxs.FilterWorld()
@@ -225,12 +254,17 @@ class GridWorldAStarEnv(gym.Env):
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
         super().reset(seed=seed)
         self._gen_world(seed or random.randint(1, 10**6))
-        if self.client:
-            self.client.send_world_py(self.world)
+        # Reward can modify world prior to any renderer/client setup.
+        try:
+            self.reward_fn.post_reset(self.world)
+        except Exception as e:
+            print(f"Reward post_reset failed, continuing: {e}")
         self.filter_world = vxs.FilterWorld()
         self.vision = vxs.AgentVisionRenderer(self.world, (160, 100), self.noise)
         self.agent = vxs.Agent(0)
         self.agent.set_hold_py(self.start_pos, 0.0)
+        if self.client:
+            self.client.send_world_py(self.world)
         self.world_time = 0.0
         self.start_rt = 0
         self.graphics_time = 0
@@ -261,9 +295,9 @@ class GridWorldAStarEnv(gym.Env):
         priority = float(np.clip(priority, 0.0, 1.0))
         # Compute destination voxel coord relative to current voxel
         origin = np.array(self.agent.get_coord_py())
-        # Optional gain to make proposed offsets larger (clamped to bounds)
-        scaled = self.action_gain * np.array([dx, dy, dz], dtype=np.float32)
-        offset = np.round(np.clip(scaled, -self.max_offset, self.max_offset)).astype(np.int32)
+        # Use action offsets directly; model outputs are assumed to be correctly scaled
+        raw = np.array([dx, dy, dz], dtype=np.float32)
+        offset = np.round(np.clip(raw, -self.max_offset, self.max_offset)).astype(np.int32)
         dst = tuple((origin + offset).tolist())
 
         # Record last action as the relative offset requested (updated to actual used below)
@@ -272,9 +306,7 @@ class GridWorldAStarEnv(gym.Env):
         overridden = False
         failed = False
 
-        ds_len = math.sqrt(dx**2 + dy**2 + dz**2)
-        scaled_len = math.sqrt((self.action_gain*dx)**2 + (self.action_gain*dy)**2 + (self.action_gain*dz)**2)
-        # print(f"requested_offset_len: {ds_len:.3f} | scaled_offset_len: {scaled_len:.3f} (gain {self.action_gain})")
+        # No additional scaling; RL policy should emit offsets at the correct scale
         # Plan if allowed (override or idle)
         curr = self.agent.get_action_py()
         if (curr is None) or curr.intent_count() < 3:# or (self.allow_override and (priority >= self.override_threshold)):
