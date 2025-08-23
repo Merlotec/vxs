@@ -1,41 +1,72 @@
 from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
+from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv, VecMonitor
 import os
+import multiprocessing as mp
 
 from gymnasium.envs.registration import register
 import torch
 from envs.grid_world_astar import GridWorldAStarEnv
 from rewards.target_locate import RewardTargetLocate
 from models.vox_features import VoxGridExtractor
-import voxelsim as vxs;
+import voxelsim as vxs
 # register(
 #     id="gymnasium_env/GridWorld-v0",
 #     entry_point="gymnasium_env.envs:GridWorldEnv",
 # )
 
-client = vxs.AsyncRendererClient.default_localhost_py(1)
+def _truthy_env(name: str, default: str = "0") -> bool:
+    val = os.getenv(name, default)
+    return str(val).lower() in ("1", "true", "yes", "y", "on")
 
-# one agent
 
-env = GridWorldAStarEnv(
-    # Start with a modest distance to keep the target within view; increase over time for curriculum
-    reward=RewardTargetLocate(max_distance=12),
-    render_client=client,
-    start_pos=[100, 100, -40],  # NED coordinate system
-    action_gain=3.0,
-    attempt_scales=(1.0, 0.85, 0.6, 0.4),
-    allow_override=True,
-    semantic_grid=True,
-    include_goal_vector=True,
-    max_world_time=30.0,
-)
+run_rendered = _truthy_env("VXS_RUN_RENDERED", "0")
+num_envs = int(os.getenv("VXS_NUM_ENVS", "8"))
+use_subproc = _truthy_env("VXS_USE_SUBPROC", "1") and os.name != "nt"
 
+
+def make_env_fn(seed_offset: int = 0):
+    def _thunk():
+        env = GridWorldAStarEnv(
+            reward=RewardTargetLocate(max_distance=1),
+            render_client=None,
+            start_pos=[100, 100, -40],
+            action_gain=3.0,
+            attempt_scales=(1.0, 0.85, 0.6, 0.4),
+            allow_override=True,
+            semantic_grid=True,
+            max_world_time=30.0,
+        )
+        return env
+    return _thunk
+
+
+if run_rendered:
+    # Single rendered env (legacy behavior)
+    client = vxs.AsyncRendererClient.default_localhost_py(1)
+    env = GridWorldAStarEnv(
+        reward=RewardTargetLocate(max_distance=1),
+        render_client=client,
+        start_pos=[100, 100, -40],  # NED coordinate system
+        action_gain=3.0,
+        attempt_scales=(1.0, 0.85, 0.6, 0.4),
+        allow_override=True,
+        semantic_grid=True,
+        max_world_time=30.0,
+    )
+    train_env = Monitor(env)
+else:
+    # Headless vectorized envs for parallel training
+    if use_subproc and num_envs > 1:
+        train_env = SubprocVecEnv([make_env_fn(i) for i in range(num_envs)], start_method="fork")
+    else:
+        train_env = DummyVecEnv([make_env_fn(i) for i in range(max(1, num_envs))])
+    train_env = VecMonitor(train_env)
 
 
 logdir = "logs/voxelsim_ppo"
 os.makedirs(logdir, exist_ok=True)
-train_env = Monitor(env)
 
 # Optional eval env (no rendering for speed)
 # eval_env = Monitor(GridWorldEnv(reward_fn=SimpleReqard(), start_pos = [100, 100, 20]))

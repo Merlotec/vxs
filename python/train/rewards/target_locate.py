@@ -5,6 +5,7 @@ import math
 from typing import Optional, Tuple
 
 import numpy as np
+import gymnasium as gym
 import voxelsim as vxs
 
 # Import the base reward class used by the GridWorldAStarEnv
@@ -30,15 +31,15 @@ class RewardTargetLocate(RewardBase):
         self,
         *,
         living_cost: float = -0.02,
-        collision_penalty: float = -100.0,
+        collision_penalty: float = -1000.0,
         override_penalty: float = -5.0,
         plan_fail_penalty: float = -2.0,
-        reach_reward: float = 50.0,
+        reach_reward: float = 1000.0,
         respawn_on_reach: bool = True,
         # Random placement controls
         # Preferred: place within max_distance of the drone (center).
         max_distance: Optional[int] = None,
-        min_distance: int = 2,
+        min_distance: int = 1,
         # Back-compat: if max_distance is None, fall back to annulus [rmin, rmax].
         xy_radius: Tuple[int, int] = (40, 120),  # min,max radius for XY displacement from origin
         z_level: Optional[int] = -40,
@@ -82,20 +83,56 @@ class RewardTargetLocate(RewardBase):
         overridden: bool,
         failed: bool,
         plan_len: int = 0,
-    ) -> float:
+    ) -> tuple[float, bool]:
         r = self.living_cost
-        if collided:
+        terminated = False
+        if self._just_reached:
+            # We also need to terminate when we get here.
+            r += self.reach_reward
+            terminated = True
+            self._just_reached = False
+            print("Hit target block!")
+        elif collided:
             r += self.collision_penalty
+            terminated = True
         if overridden:
             r += self.override_penalty
         if failed:
             r += self.plan_fail_penalty
         # Add reach reward once when we detect it
         if self._just_reached:
+            # We also need to terminate when we get here.
             r += self.reach_reward
+            terminated = True
             self._just_reached = False
-            print("REACHED!!!")
-        return r
+            print("Hit target block!")
+        return (r, terminated)
+
+    # ----- Observation augmentation -----
+    def get_extra_observation_space(self, *, env) -> dict:
+        # Provide relative target position vector for the policy to reason over.
+        gv_lim = float(max(2 * getattr(env, "max_offset", 16), 1))
+        return {
+            "target_rel": gym.spaces.Box(low=-gv_lim, high=gv_lim, shape=(3,), dtype=np.float32)
+        }
+
+    def build_extra_observation(self, *, env) -> dict:
+        # Compute relative vector from agent voxel to target voxel if available.
+        try:
+            if self._target_voxel is None or env.agent is None:
+                return {"target_rel": np.zeros(3, dtype=np.float32)}
+            ac = env.agent.get_coord_py()
+            rel = np.array(
+                [
+                    float(self._target_voxel[0] - ac[0]),
+                    float(self._target_voxel[1] - ac[1]),
+                    float(self._target_voxel[2] - ac[2]),
+                ],
+                dtype=np.float32,
+            )
+            return {"target_rel": rel}
+        except Exception:
+            return {"target_rel": np.zeros(3, dtype=np.float32)}
 
     # ----- Env integration hook (optional) -----
     def update(self, *, world: vxs.World, agent: vxs.Agent, agent_bounds) -> None:
@@ -115,9 +152,12 @@ class RewardTargetLocate(RewardBase):
         # Check reach: compare voxel coordinates
         if self._target_voxel is not None:
             ac = agent.get_coord_py()
-            if (ac[0], ac[1], ac[2]) == self._target_voxel:
+            ac_tup = (ac[0], ac[1], ac[2])
+            # print(f"ac: {ac_tup}, t: {self._target_voxel}")
+            if ac_tup == self._target_voxel:
                 self._just_reached = True
                 if self.respawn_on_reach:
+                    print(f"TARGET HIT!!, {ac_tup}, {self._target_voxel}")
                     # Immediately respawn a new target near the current position
                     tx, ty, tz = self._sample_target_voxel(center=ac)
                     self._place_target((tx, ty, tz))

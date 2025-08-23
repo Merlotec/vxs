@@ -25,7 +25,7 @@ class RewardBase(ABC):
         overridden: bool,
         failed: bool,
         plan_len: int = 0,
-    ) -> float:
+    ) -> tuple[float, bool]:
         """Return scalar reward for the last step."""
         raise NotImplementedError
 
@@ -36,6 +36,22 @@ class RewardBase(ABC):
         and/or inspect/change the `agent` position/state.
         """
         return None
+
+    # --- Optional observation customization hooks ---
+    def get_extra_observation_space(self, *, env: "GridWorldAStarEnv") -> Dict[str, gym.Space]:
+        """Return extra observation spaces to merge into the env's observation_space.
+
+        Default: no additional keys.
+        """
+        return {}
+
+    def build_extra_observation(self, *, env: "GridWorldAStarEnv") -> Dict[str, Any]:
+        """Build extra observation values that match `get_extra_observation_space`.
+
+        Called at reset() and each step() when assembling the observation dict.
+        Default: return empty dict.
+        """
+        return {}
 
 
 class SimpleReward(RewardBase):
@@ -63,9 +79,11 @@ class SimpleReward(RewardBase):
         overridden: bool,
         failed: bool,
         plan_len: int = 0,
-    ) -> float:
+    ) -> tuple[float, bool]:
         r = self.living_cost
+        terminated = False
         if collided:
+            terminated = True
             r += self.collision_penalty
         if overridden:
             r += self.override_penalty
@@ -75,7 +93,7 @@ class SimpleReward(RewardBase):
             if plan_len > 0:
                 r += self.plan_success_bonus
                 r += self.distance_bonus_per_step * float(plan_len)
-        return r
+        return (r, terminated)
 
 
 class GridWorldAStarEnv(gym.Env):
@@ -114,7 +132,6 @@ class GridWorldAStarEnv(gym.Env):
         noise: Optional[vxs.NoiseParams] = None,
         # Optional extras (off by default to preserve original behavior)
         semantic_grid: bool = False,
-        include_goal_vector: bool = False,
         # Optional episode time limit in world seconds
         max_world_time: Optional[float] = None,
     ):
@@ -135,7 +152,6 @@ class GridWorldAStarEnv(gym.Env):
         self.attempt_scales = tuple(float(s) for s in attempt_scales)  # retained for compatibility
         self.allow_override = bool(allow_override)
         self.semantic_grid = bool(semantic_grid)
-        self.include_goal_vector = bool(include_goal_vector)
         self.max_world_time = float(max_world_time) if max_world_time is not None else None
 
         # Continuous action space: [dx,dy,dz,urgency,yaw,priority]
@@ -177,11 +193,13 @@ class GridWorldAStarEnv(gym.Env):
             "grid": grid_space,
             "last_action": last_action_space,
         }
-        if self.include_goal_vector:
-            # Goal vector as relative voxel offset (tx-ax, ty-ay, tz-az)
-            # Bounds: conservative, within ±(2*max_offset) to allow farther targets
-            gv_lim = float(max(2 * self.max_offset, 1))
-            obs_dict["goal_rel"] = gym.spaces.Box(low=-gv_lim, high=gv_lim, shape=(3,), dtype=np.float32)
+        # Allow reward to add custom observation channels/keys
+        try:
+            extra_spaces = self.reward_fn.get_extra_observation_space(env=self)
+            if isinstance(extra_spaces, dict):
+                obs_dict.update(extra_spaces)
+        except Exception as e:
+            print(f"Reward get_extra_observation_space failed, continuing: {e}")
         self.observation_space = gym.spaces.Dict(obs_dict)
 
         # World/agent state
@@ -266,12 +284,6 @@ class GridWorldAStarEnv(gym.Env):
 
             changeset.update_filter_world_py(self.filter_world)
             # Update reward only when the (filtered) world was updated
-            try:
-                upd = getattr(self.reward_fn, "update", None)
-                if callable(upd):
-                    upd(world=self.world, agent=self.agent, agent_bounds=self.agent_bounds)
-            except Exception:
-                pass
             # Write world snapshot and enqueue it
             grid = self._build_grid()
             self.obs_queue.append((ts, grid))
@@ -326,8 +338,8 @@ class GridWorldAStarEnv(gym.Env):
         # ch = self._await_changeset()
         # ch.update_filter_world_py(self.filter_world)
         obs = {"grid": self._empty_grid(), "last_action": self._last_action.copy()}
-        if self.include_goal_vector:
-            obs["goal_rel"] = self._goal_rel_vector()
+        # Reward-provided observation extras
+        obs.update(self._reward_extra_obs())
         info: Dict[str, Any] = {}
         return obs, info
 
@@ -420,8 +432,16 @@ class GridWorldAStarEnv(gym.Env):
         if (self.max_world_time is not None) and (self.world_time >= self.max_world_time):
             truncated = True
 
+
+        # Perform the update before the compute.        
+        try:
+            upd = getattr(self.reward_fn, "update", None)
+            if callable(upd):
+                upd(world=self.world, agent=self.agent, agent_bounds=self.agent_bounds)
+        except Exception:
+            pass
         # obs = self._build_observation()
-        reward = self.reward_fn.compute(collided=collided, overridden=overridden, failed=failed, plan_len=0)
+        (reward, terminated) = self.reward_fn.compute(collided=collided, overridden=overridden, failed=failed, plan_len=0)
         info: Dict[str, Any] = {"overridden": overridden, "collided": collided, "failed": failed}
         if truncated and not terminated:
             info["TimeLimit.truncated"] = True
@@ -437,13 +457,11 @@ class GridWorldAStarEnv(gym.Env):
 
             self.graphics_time += (time.time() - astart)
             obs = {"grid": self.obs_queue[0][1], "last_action": self._last_action.copy()}
-            if self.include_goal_vector:
-                obs["goal_rel"] = self._goal_rel_vector()
+            obs.update(self._reward_extra_obs())
             self.obs_queue.popleft()
         else:
             obs = {"grid": self._empty_grid(), "last_action": self._last_action.copy()}
-            if self.include_goal_vector:
-                obs["goal_rel"] = self._goal_rel_vector()
+            obs.update(self._reward_extra_obs())
             
         
         # Update render client in the same way as grid_world.py
@@ -507,17 +525,9 @@ class GridWorldAStarEnv(gym.Env):
         hx, hy, hz = self.dense_half_dims
         grid = self._build_grid()
         obs = {"grid": grid, "last_action": self._last_action.copy()}
-        if self.include_goal_vector:
-            obs["goal_rel"] = self._goal_rel_vector()
+        obs.update(self._reward_extra_obs())
         return obs
 
-    def _goal_rel_vector(self) -> np.ndarray:
-        tgt = getattr(self.reward_fn, "_target_voxel", None)
-        if tgt is None:
-            return np.zeros(3, dtype=np.float32)
-        ac = self.agent.get_coord_py()
-        rel = np.array([tgt[0] - ac[0], tgt[1] - ac[1], tgt[2] - ac[2]], dtype=np.float32)
-        return rel
 
     def render(self, update_fw: bool):
         if self.client:
@@ -530,3 +540,13 @@ class GridWorldAStarEnv(gym.Env):
                 )
         # headless by default
         return None
+
+    # --- Reward-provided observation helpers ---
+    def _reward_extra_obs(self) -> Dict[str, Any]:
+        try:
+            extras = self.reward_fn.build_extra_observation(env=self)
+            if isinstance(extras, dict):
+                return extras
+        except Exception:
+            pass
+        return {}
