@@ -27,7 +27,13 @@ class VoxGridExtractor(BaseFeaturesExtractor):
 
         grid_space = observation_space[self.grid_key]
         last_action_space = observation_space["last_action"]
-        self.has_goal = "goal_rel" in observation_space
+        # Accept either legacy "goal_rel" or new "target_rel"
+        if "goal_rel" in observation_space:
+            self.goal_key = "goal_rel"
+        elif "target_rel" in observation_space:
+            self.goal_key = "target_rel"
+        else:
+            self.goal_key = None
 
         if isinstance(grid_space, spaces.Box) and len(grid_space.shape) == 4:
             # (C,D,H,W)
@@ -60,8 +66,8 @@ class VoxGridExtractor(BaseFeaturesExtractor):
         conv_dim = enc.view(1, -1).shape[1]
 
         low_dim = last_action_space.shape[0]
-        if self.has_goal:
-            low_dim += observation_space["goal_rel"].shape[0]
+        if self.goal_key is not None:
+            low_dim += observation_space[self.goal_key].shape[0]
 
         self._features_dim = conv_dim + low_dim
 
@@ -85,8 +91,7 @@ class VoxGridExtractor(BaseFeaturesExtractor):
         enc = torch.flatten(enc, 1)
 
         low = observations["last_action"].float()
-        if self.has_goal:
-            low = torch.cat([low, observations["goal_rel"].float()], dim=1)
+        if self.goal_key is not None:
+            low = torch.cat([low, observations[self.goal_key].float()], dim=1)
 
         return torch.cat([enc, low], dim=1)
-

@@ -21,9 +21,12 @@ def _truthy_env(name: str, default: str = "0") -> bool:
     return str(val).lower() in ("1", "true", "yes", "y", "on")
 
 
-run_rendered = _truthy_env("VXS_RUN_RENDERED", "0")
-num_envs = int(os.getenv("VXS_NUM_ENVS", "8"))
-use_subproc = _truthy_env("VXS_USE_SUBPROC", "1") and os.name != "nt"
+run_rendered = _truthy_env("VXS_RUN_RENDERED", "1")
+# run_rendered = True
+# Force single-env, single-process to avoid GPU device loss with multiprocessing
+num_envs = int(os.getenv("VXS_NUM_ENVS", "1"))
+# Explicitly disable SubprocVecEnv usage
+use_subproc = False
 
 
 def make_env_fn(seed_offset: int = 0):
@@ -57,12 +60,10 @@ if run_rendered:
     )
     train_env = Monitor(env)
 else:
-    # Headless vectorized envs for parallel training
-    if use_subproc and num_envs > 1:
-        train_env = SubprocVecEnv([make_env_fn(i) for i in range(num_envs)], start_method="fork")
-    else:
-        train_env = DummyVecEnv([make_env_fn(i) for i in range(max(1, num_envs))])
+    # Headless single-env training (parallel disabled to prevent GPU device loss)
+    train_env = DummyVecEnv([make_env_fn(0)])
     train_env = VecMonitor(train_env)
+    print("[sb3_train] Parallel training disabled: using single DummyVecEnv")
 
 
 logdir = "logs/voxelsim_ppo"

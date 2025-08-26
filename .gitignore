@@ -7,4 +7,6 @@ target
 /python/Experiments/runs
 /runs
 logs
-
+test.sh
+/logs
+CLAUDE.md
