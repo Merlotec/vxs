@@ -40,7 +40,7 @@ cargo run --release
 The renderer listens locally for simulation data (world/agents) on TCP ports 8080/8081 by default.
 
 The renderer can also be configured to render the world that the agent sees (called the filter world).
-This can be done by passing the `--virtual <channel_idx>` flat to `voxelsim-renderer`.
+This can be done by passing the `--virtual <channel_idx>` flag to `voxelsim-renderer`.
 
 ### 2) Send a world + agents from the simulator (Rust)
 ```
