@@ -3,13 +3,18 @@
 use std::f64::consts::FRAC_PI_2;
 
 use bevy::platform::collections::HashMap;
+use bevy::render::RenderPlugin;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::{Normed, UnitQuaternion, Vector3};
 use voxelsim::trajectory::Trajectory;
 use voxelsim::viewport::CameraOrientation;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::network::NetworkSubscriber;
+
+#[cfg(target_arch = "wasm32")]
+use crate::network_wasm::NetworkSubscriber;
 use crate::render::{
     self, ActionCell, AgentComponent, AgentReceiver, CellAssets, CellComponent, FocusedAgent,
     OriginCell, QuitReceiver, WorldReceiver,
@@ -20,6 +25,7 @@ use crate::convert::*;
 
 use bevy::app::AppExit;
 use bevy::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run_world_server() {
     let (mut world_sub, world_receiver) = NetworkSubscriber::<VoxelGrid>::new(
         std::env::var("VXS_WORLD_PORT").unwrap_or("0.0.0.0".to_string()),
@@ -80,6 +86,15 @@ pub fn begin_render(
                         title: "World View".into(),
                         ..Default::default()
                     }),
+                    ..Default::default()
+                })
+                .set(RenderPlugin {
+                    render_creation: bevy::render::settings::RenderCreation::Automatic(
+                        bevy::render::settings::WgpuSettings {
+                            backends: Some(bevy::render::settings::Backends::BROWSER_WEBGPU),
+                            ..Default::default()
+                        },
+                    ),
                     ..Default::default()
                 }),
             PanOrbitCameraPlugin,
@@ -327,4 +342,35 @@ fn draw_spline(gizmos: &mut Gizmos, spline: &Trajectory) {
         .map(|(_t, p)| client_to_bevy_f32(p.cast::<f32>()))
         .collect();
     gizmos.linestrip(pts.into_iter(), Color::Srgba(Srgba::BLUE));
+}
+
+/// WASM mode: Connect to WebSocket proxy for live simulation data
+///
+/// This replaces the old static demo with real network connectivity.
+/// The proxy server bridges TCP (Python) to WebSocket (browser).
+#[cfg(target_arch = "wasm32")]
+pub fn run_world_demo() {
+    web_sys::console::log_1(&"Starting VoxelSim Renderer (WASM WebSocket Mode)...".into());
+
+    // Create WebSocket subscribers (connects to proxy server)
+    let (world_sub, world_receiver) = NetworkSubscriber::<VoxelGrid>::new(
+        "ws://localhost:9080".to_string() // Proxy translates TCP :8080 → WebSocket :9080
+    );
+
+    let (agent_sub, agent_receiver) = NetworkSubscriber::<HashMap<usize, Agent>>::new(
+        "ws://localhost:9081".to_string() // Proxy translates TCP :8081 → WebSocket :9081
+    );
+
+    // Start WebSocket connections
+    world_sub.start();
+    agent_sub.start();
+
+    let (gui_sender, _gui_receiver) = crossbeam_channel::unbounded::<GuiCommand>();
+    let (_quit_sender, quit_receiver) = crossbeam_channel::unbounded::<()>();
+
+    web_sys::console::log_1(&"WebSocket connections initiated. Waiting for Python simulation data...".into());
+
+    // Start Bevy with the same function as native version!
+    // The rendering code is identical - only the network layer changed
+    begin_render(world_receiver, agent_receiver, gui_sender, quit_receiver);
 }
