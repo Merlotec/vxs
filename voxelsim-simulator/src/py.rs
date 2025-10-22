@@ -128,6 +128,10 @@ impl TerrainConfig {
         let s = sizev.max(1); // clamp to ≥1
         self.size = Vector3::new(s, s, s);
     }
+
+    pub fn set_world_dimensions_py(&mut self, x: i32, y: i32, z: i32) {
+        self.size = Vector3::new(x.max(1), y.max(1), z.max(1));
+    }
 }
 
 #[pymethods]
