@@ -540,10 +540,10 @@ impl AStarActionPlanner {
         world: &VoxelGrid,
         origin: PyCoord,
         dst: PyCoord,
-        yaw: f64,
         urgency: f64,
+        yaw: f64,
     ) -> PyResult<ActionIntent> {
-        self.plan_action(world, origin.into(), dst.into(), yaw, urgency, None)
+        self.plan_action(world, origin.into(), dst.into(), urgency, yaw)
             .map_err(|e| PyException::new_err(format!("Failed to create action intent: {}", e)))
     }
 }

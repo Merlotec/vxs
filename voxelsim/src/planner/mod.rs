@@ -31,6 +31,5 @@ pub trait ActionPlanner {
         dst: Coord,
         urgency: f64,
         yaw: f64,
-        next: Option<Box<ActionIntent>>,
     ) -> Result<ActionIntent, PlannerError>;
 }

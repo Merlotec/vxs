@@ -100,12 +100,27 @@ def run_episode(
 
         # Policy control
         try:
-            intent = policy.act(t, agent, world, fw, env, helpers)
+            result = policy.act(t, agent, world, fw, env, helpers)
         except Exception as e:
             # Fail closed: stop episode on policy error
             break
+        # Support returning either an intent, or (intent, command) where command is "Replace" or "Push".
+        intent = None
+        queue_cmd = "Replace"
+        if result is not None:
+            if isinstance(result, tuple) and len(result) == 2:
+                intent, queue_cmd = result
+            else:
+                intent = result
         if intent is not None:
-            agent.perform_oneshot_py(intent)
+            try:
+                if str(queue_cmd).lower().startswith("push"):
+                    agent.push_back_intent_py(intent)
+                else:
+                    agent.perform_oneshot_py(intent)
+            except Exception:
+                # Ignore invalid intents
+                pass
 
         # Dynamics step
         # Guard against empty/no action trajectories (can cause Rust-side bspline panics)
@@ -237,7 +252,10 @@ def main() -> None:
     ap.add_argument("--render", action="store_true", help="Enable renderer updates")
     ap.add_argument("--pov-size", type=str, default="200x150")
     ap.add_argument("--target", type=str, default=None, help="Target coord as x,y,z (grid coord with z negative above ground)")
-    ap.add_argument("--px4", action="store_true", help="Use PX4 dynamics if available")
+    grp = ap.add_mutually_exclusive_group()
+    grp.add_argument("--px4", dest="px4", action="store_true", help="Use PX4 dynamics if available (default)")
+    grp.add_argument("--no-px4", dest="px4", action="store_false", help="Disable PX4; use QuadDynamics")
+    ap.set_defaults(px4=True)
     args = ap.parse_args()
 
     pov_wh = tuple(map(int, args.pov_size.lower().split("x")))

@@ -4,8 +4,9 @@ Policy Template Contract
 
 Functions to implement:
   - init(config) -> None (optional): one-time setup per episode.
-  - act(t, agent, world, fw, env, helpers) -> vxs.ActionIntent | None:
-      Return a new intent to perform (or None to keep current action).
+  - act(t, agent, world, fw, env, helpers) -> vxs.ActionIntent | tuple[vxs.ActionIntent, str] | None:
+      Return either an ActionIntent or (ActionIntent, cmd) where cmd is
+      "Replace" (overwrite current action) or "Push" (queue behind current).
   - collect(step_ctx) -> dict[str, str]: return small, human-readable logs for the step.
   - finalize(ep_ctx) -> dict[str, str]: episode summary text fields.
 
@@ -36,7 +37,7 @@ def act(
     fw: vxs.FilterWorld,
     env: vxs.EnvState,
     helpers: Any,
-) -> Optional[vxs.ActionIntent]:
+) -> Optional[object]:  # vxs.ActionIntent or (vxs.ActionIntent, Literal["Replace","Push"]) or None
     """Called every step. Return a new ActionIntent or None.
 
     Recommendation: use A* to generate a path when idle; keep sequences small and replan as needed.
@@ -46,9 +47,10 @@ def act(
         target = _TARGET or [55, 55, -20]
         origin = agent.get_coord_py()
         try:
-            return helpers.plan_to(world, origin, target, yaw=0.0, urgency=0.8, padding=1)
+            # Example: queue a planned path without disrupting any current action
+            return helpers.plan_to(world, origin, target, yaw=0.0, urgency=0.8, padding=1), "Replace"
         except Exception:
-            return helpers.intent(urgency=0.6, yaw=0.0, moves=[vxs.MoveDir.Forward])
+            return helpers.intent(urgency=0.6, yaw=0.0, moves=[vxs.MoveDir.Forward]), "Replace"
     return None
 
 

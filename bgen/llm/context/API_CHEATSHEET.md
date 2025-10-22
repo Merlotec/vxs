@@ -51,3 +51,8 @@ Notes
 Recommended for Behaviors
 - Prefer path generation with `vxs.AStarActionPlanner(...).plan_action_py(...)` to build `ActionIntent`s.
 - Use short move sequences and replan as needed; avoid long blocking loops inside `act()`.
+
+Policy Runner Return Convention
+- `act(...)` may return either an `ActionIntent`, or `(ActionIntent, cmd)` where `cmd` is one of:
+  - `"Replace"`: overwrite current action with the new intent (default behavior)
+  - `"Push"`: append the intent behind the current action using `agent.push_back_intent_py(...)`

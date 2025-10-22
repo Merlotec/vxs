@@ -99,6 +99,7 @@ pub struct Action {
 
 impl ActionIntent {
     pub fn new(urgency: f64, yaw: f64, move_sequence: MoveSequence) -> Self {
+        assert!(urgency > 0.0);
         Self {
             urgency,
             yaw,

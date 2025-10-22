@@ -203,6 +203,7 @@ def _start_training_thread(
     existing_code: Optional[str],
     enable_ws_proxy: bool,
     policy_code: Optional[str],
+    use_px4: bool = True,
     max_steps: int = 500,
     delta: float = 0.01,
     provider: str = "anthropic",
@@ -277,7 +278,7 @@ def _start_training_thread(
                     enable_render=enable_render,
                     pov_size=(200, 150),
                     target=None,
-                    use_px4=False,
+                    use_px4=use_px4,
                     on_step=on_step,
                     on_summary=on_summary,
                     stop_event=stop_event,
@@ -317,6 +318,8 @@ def run_training() -> Any:
     provider = str(data.get("provider", "anthropic")).lower()
     provider_url = data.get("provider_url")
     model = data.get("model")
+    # Dynamics selection flag (support both keys for compatibility)
+    use_px4 = bool(data.get("px4", data.get("use_px4", True)))
     # Allow request to override; otherwise fall back to server default
     if "ws_proxy" in data:
         enable_ws_proxy = bool(data.get("ws_proxy"))
@@ -336,6 +339,7 @@ def run_training() -> Any:
         existing_code,
         enable_ws_proxy,
         policy_code,
+        use_px4=use_px4,
         max_steps=max_steps,
         delta=delta,
         provider=provider,

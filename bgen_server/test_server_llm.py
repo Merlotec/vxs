@@ -117,7 +117,7 @@ def main() -> None:
         # Kick off a run using the LLM (no policy_code), headless, 0 episodes to skip dynamics
         url = f"http://{SERVER_HOST}:{SERVER_PORT}/run"
         body = {
-            "user_goal": "Generate a minimal valid policy using A*.",
+            "user_goal": "Generate a minimal valid policy using A*, which moves the agent to the block with coords (0, 0, 0).",
             "iterations": 1,
             "episodes": 1,
             "render": bool(args.render),
