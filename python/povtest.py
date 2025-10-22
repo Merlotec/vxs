@@ -3,6 +3,12 @@ import voxelsim as vxs, time
 import math, json, sys
 from pathlib import Path
 
+# ============ WORLD SIZE CONFIGURATION ============
+# Set this to control the world size (e.g., 10, 30, 100)
+# Smaller values = faster performance for testing
+# NOTE: Very small worlds (< 20) may cause GPU buffer errors
+WORLD_SIZE = 30  # Change this value (20 = minimum, 30 = small, 100 = default)
+
 def _load_world_from_json(path: Path):
     data = json.loads(path.read_text())
     cells = {}
@@ -24,8 +30,7 @@ def _load_world_from_json(path: Path):
 
 # If a JSON world is provided as argv[1], load it; otherwise use generated terrain
 world = None
-nx = ny = 100
-nz = 60
+nx = ny = nz = WORLD_SIZE
 if len(sys.argv) > 1:
     in_path = Path(sys.argv[1])
     if in_path.exists():
@@ -36,9 +41,11 @@ if len(sys.argv) > 1:
             print(f"Failed to load world from {in_path}: {e}. Falling back to generated terrain.")
 if world is None:
     generator = vxs.TerrainGenerator()
-    generator.generate_terrain_py(vxs.TerrainConfig.default_py())
+    config = vxs.TerrainConfig.default_py()
+    config.set_world_size_py(WORLD_SIZE)
+    generator.generate_terrain_py(config)
     world = generator.generate_world_py()
-    nx, ny, nz = 100, 100, 60
+    print(f"Created world: {WORLD_SIZE}x{WORLD_SIZE}x{WORLD_SIZE}")
 
 # dynamics = vxs.AgentDynamics.default_drone()
 agent = vxs.Agent(0)

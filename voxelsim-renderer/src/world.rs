@@ -11,6 +11,9 @@ use voxelsim::viewport::CameraOrientation;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::network::NetworkSubscriber;
+
+#[cfg(target_arch = "wasm32")]
+use crate::network_wasm::NetworkSubscriber;
 use crate::render::{
     self, ActionCell, AgentComponent, AgentReceiver, CellAssets, CellComponent, FocusedAgent,
     OriginCell, QuitReceiver, WorldReceiver,
@@ -331,54 +334,33 @@ fn draw_spline(gizmos: &mut Gizmos, spline: &Trajectory) {
     gizmos.linestrip(pts.into_iter(), Color::Srgba(Srgba::BLUE));
 }
 
-/// WASM demo mode: Static voxel world with no networking
+/// WASM mode: Connect to WebSocket proxy for live simulation data
 ///
-/// This creates the same crossbeam channels as the network version,
-/// but sends static demo data once instead of receiving from TCP.
-/// Later we'll replace this with WebSocket-based NetworkSubscriber.
+/// This replaces the old static demo with real network connectivity.
+/// The proxy server bridges TCP (Python) to WebSocket (browser).
 #[cfg(target_arch = "wasm32")]
 pub fn run_world_demo() {
-    use voxelsim::Coord;
+    web_sys::console::log_1(&"Starting VoxelSim Renderer (WASM WebSocket Mode)...".into());
 
-    // Create crossbeam channels (same interface as network version)
-    let (world_tx, world_receiver) = crossbeam_channel::unbounded::<VoxelGrid>();
-    let (agent_tx, agent_receiver) = crossbeam_channel::unbounded::<HashMap<usize, Agent>>();
+    // Create WebSocket subscribers (connects to proxy server)
+    let (world_sub, world_receiver) = NetworkSubscriber::<VoxelGrid>::new(
+        "ws://localhost:9080".to_string() // Proxy translates TCP :8080 → WebSocket :9080
+    );
+
+    let (agent_sub, agent_receiver) = NetworkSubscriber::<HashMap<usize, Agent>>::new(
+        "ws://localhost:9081".to_string() // Proxy translates TCP :8081 → WebSocket :9081
+    );
+
+    // Start WebSocket connections
+    world_sub.start();
+    agent_sub.start();
+
     let (gui_sender, _gui_receiver) = crossbeam_channel::unbounded::<GuiCommand>();
     let (_quit_sender, quit_receiver) = crossbeam_channel::unbounded::<()>();
 
-    // Create a simple demo world
-    let mut demo_world = VoxelGrid::new();
+    web_sys::console::log_1(&"WebSocket connections initiated. Waiting for Python simulation data...".into());
 
-    // Add a floor (5x5 grid)
-    for x in -2..=2 {
-        for z in -2..=2 {
-            demo_world.set(Coord::from([x, 0, z]), Cell::GROUND | Cell::FILLED);
-        }
-    }
-
-    // Add some walls to make it interesting
-    for y in 1..=3 {
-        demo_world.set(Coord::from([-2, y, -2]), Cell::FILLED);
-        demo_world.set(Coord::from([2, y, -2]), Cell::FILLED);
-        demo_world.set(Coord::from([-2, y, 2]), Cell::FILLED);
-        demo_world.set(Coord::from([2, y, 2]), Cell::FILLED);
-    }
-
-    // Add a target block in the center
-    demo_world.set(Coord::from([0, 1, 0]), Cell::TARGET | Cell::FILLED);
-
-    // Create a demo agent floating above the floor
-    let mut demo_agents = HashMap::new();
-    let mut demo_agent = Agent::new(0);
-    demo_agent.pos = Vector3::new(0.0, 2.0, 0.0);
-    demo_agents.insert(0, demo_agent);
-
-    // Send the static data once through the channels
-    world_tx.send(demo_world).unwrap();
-    agent_tx.send(demo_agents).unwrap();
-
-    // Start Bevy with the same function as network version!
-    // The rendering code doesn't know (or care) if data came from network or static demo
-    println!("Starting Bevy with static demo world...");
+    // Start Bevy with the same function as native version!
+    // The rendering code is identical - only the network layer changed
     begin_render(world_receiver, agent_receiver, gui_sender, quit_receiver);
 }

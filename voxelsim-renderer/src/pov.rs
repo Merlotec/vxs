@@ -9,6 +9,9 @@ use voxelsim::viewport::{CameraOrientation, CameraProjection};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::network::NetworkSubscriber;
+
+#[cfg(target_arch = "wasm32")]
+use crate::network_wasm::NetworkSubscriber;
 use crate::render::{
     self, ActionCell, AgentComponent, AgentReceiver, CellAssets, CellComponent, FocusedAgent,
     OriginCell, PovReceiver, QuitReceiver, VirtualCellComponent, WorldReceiver,
