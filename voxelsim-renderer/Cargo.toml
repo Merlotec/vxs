@@ -43,12 +43,12 @@ web-sys = { version = "0.3.81", features = [
 
 
 [profile.release]
-opt-level = 0      # Optimize for speed (not size)
+opt-level = 3      # Optimize for speed (not size)
 lto = "thin"         # Full link-time optimization
 codegen-units = 1   # Better optimization
 strip = true        # Strip symbols
 
 # Optimize dependencies even in dev mode for faster iteration
 [profile.dev.package."*"]
-opt-level = 0
+opt-level = 3
 
