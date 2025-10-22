@@ -4769,10 +4769,13 @@ dependencies = [
  "console_error_panic_hook",
  "crossbeam-channel",
  "getrandom 0.3.4",
+ "js-sys",
  "nalgebra 0.33.2",
  "serde",
  "tokio",
  "voxelsim",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

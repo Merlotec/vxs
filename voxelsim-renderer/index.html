@@ -16,6 +16,7 @@
             background: #1a1a1a;
             font-family: monospace;
             color: #fff;
+            overflow: hidden;
         }
 
         canvas {
@@ -30,6 +31,34 @@
             left: 50%;
             transform: translate(-50%, -50%);
             text-align: center;
+            z-index: 1000;
+        }
+
+        #status {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 999;
+        }
+
+        .status-item {
+            margin: 5px 0;
+        }
+
+        .connected {
+            color: #4caf50;
+        }
+
+        .disconnected {
+            color: #f44336;
+        }
+
+        .waiting {
+            color: #ff9800;
         }
     </style>
 </head>
@@ -38,5 +67,54 @@
         <h1>Loading VoxelSim Renderer...</h1>
         <p>Initializing WebAssembly and Bevy...</p>
     </div>
+    <div id="status">
+        <div class="status-item">Proxy Server: <span id="proxy-status" class="waiting">Checking...</span></div>
+        <div class="status-item">WebSocket: <span id="ws-status" class="waiting">Waiting...</span></div>
+        <div class="status-item">Simulation: <span id="sim-status" class="waiting">Waiting...</span></div>
+    </div>
+
+    <script type="module">
+        import init from './wasm/voxelsim-renderer.js';
+
+        async function run() {
+            try {
+                // Check if proxy is running (via WebSocket test)
+                try {
+                    const testWs = new WebSocket('ws://localhost:9080');
+                    testWs.onopen = () => {
+                        document.getElementById('proxy-status').textContent = 'Running';
+                        document.getElementById('proxy-status').className = 'connected';
+                        testWs.close();
+                    };
+                    testWs.onerror = () => {
+                        document.getElementById('proxy-status').textContent = 'Not running';
+                        document.getElementById('proxy-status').className = 'disconnected';
+                        console.warn('Proxy server not detected. Make sure to run: cd proxy && npm start');
+                    };
+                } catch (e) {
+                    document.getElementById('proxy-status').textContent = 'Error';
+                    document.getElementById('proxy-status').className = 'disconnected';
+                }
+
+                // Initialize WASM
+                await init();
+
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('ws-status').textContent = 'Connected';
+                document.getElementById('ws-status').className = 'connected';
+
+                console.log('VoxelSim Renderer initialized!');
+                console.log('Waiting for Python simulation data on WebSocket...');
+            } catch (error) {
+                console.error('Failed to initialize:', error);
+                document.getElementById('loading').innerHTML =
+                    '<h1>Error Loading Renderer</h1>' +
+                    '<p>' + error + '</p>' +
+                    '<p>Check console for details</p>';
+            }
+        }
+
+        run();
+    </script>
 </body>
 </html>
