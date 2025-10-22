@@ -7,7 +7,7 @@ from pathlib import Path
 # Set this to control the world size (e.g., 10, 30, 100)
 # Smaller values = faster performance for testing
 # NOTE: Very small worlds (< 20) may cause GPU buffer errors
-WORLD_SIZE = 30  # Change this value (20 = minimum, 30 = small, 100 = default)
+WORLD_SIZE = 200  # Change this value (20 = minimum, 30 = small, 100 = default)
 
 def _load_world_from_json(path: Path):
     data = json.loads(path.read_text())
@@ -30,7 +30,9 @@ def _load_world_from_json(path: Path):
 
 # If a JSON world is provided as argv[1], load it; otherwise use generated terrain
 world = None
-nx = ny = nz = WORLD_SIZE
+nx = WORLD_SIZE
+ny=WORLD_SIZE
+nz = 30
 if len(sys.argv) > 1:
     in_path = Path(sys.argv[1])
     if in_path.exists():
@@ -42,10 +44,10 @@ if len(sys.argv) > 1:
 if world is None:
     generator = vxs.TerrainGenerator()
     config = vxs.TerrainConfig.default_py()
-    config.set_world_size_py(WORLD_SIZE)
+    config.set_world_dimensions_py(WORLD_SIZE, 30 , WORLD_SIZE)  # (x, y/height, z)
     generator.generate_terrain_py(config)
     world = generator.generate_world_py()
-    print(f"Created world: {WORLD_SIZE}x{WORLD_SIZE}x{WORLD_SIZE}")
+    print(f"Created world: {WORLD_SIZE}x30x{WORLD_SIZE}")
 
 # dynamics = vxs.AgentDynamics.default_drone()
 agent = vxs.Agent(0)
@@ -70,8 +72,8 @@ renderer = vxs.AgentVisionRenderer(world, [200, 150], noise)
 
 # Client
 
-client = vxs.RendererClient.default_localhost_py(1)
-# Specify the number of agent renderers we want to connect to.
+client = vxs.AsyncRendererClient.default_localhost_py(1)
+# Using AsyncRendererClient for non-blocking network I/O (sends data in background threads)
 print("Controls: WASD=move, Space=up, Shift=down, ESC=quit")
 
 client.send_world_py(world)
@@ -146,7 +148,7 @@ while listener.running:
         # used for inference.
         # Here we just send the new world over to the renderer.
         if view_delta >= FRAME_DELTA_MAX:
-            fw.send_pov_py(client, 0, 0, proj, camera_orientation)
+            fw.send_pov_async_py(client, 0, 0, proj, camera_orientation)
             upd_start = time.time()
             renderer.update_filter_world_py(agent.camera_view_py(camera_orientation), proj, fw, t0, world_update)
             last_view_time = t0

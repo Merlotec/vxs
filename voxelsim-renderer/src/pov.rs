@@ -1,6 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
 use bevy::platform::collections::HashMap;
+use bevy::render::RenderPlugin;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Vector3;
@@ -107,6 +108,15 @@ pub fn begin_render(
                         title: format!("Virtual POV View ({})", num),
                         ..Default::default()
                     }),
+                    ..Default::default()
+                })
+                .set(RenderPlugin {
+                    render_creation: bevy::render::settings::RenderCreation::Automatic(
+                        bevy::render::settings::WgpuSettings {
+                            backends: Some(bevy::render::settings::Backends::BROWSER_WEBGPU),
+                            ..Default::default()
+                        },
+                    ),
                     ..Default::default()
                 }),
             PanOrbitCameraPlugin,
