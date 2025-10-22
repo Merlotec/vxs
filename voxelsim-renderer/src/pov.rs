@@ -1,13 +1,18 @@
 use std::ops::{Deref, DerefMut};
 
 use bevy::platform::collections::HashMap;
+use bevy::render::RenderPlugin;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use crossbeam_channel::{Receiver, Sender};
 use nalgebra::Vector3;
 use voxelsim::trajectory::Trajectory;
 use voxelsim::viewport::{CameraOrientation, CameraProjection};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::network::NetworkSubscriber;
+
+#[cfg(target_arch = "wasm32")]
+use crate::network_wasm::NetworkSubscriber;
 use crate::render::{
     self, ActionCell, AgentComponent, AgentReceiver, CellAssets, CellComponent, FocusedAgent,
     OriginCell, PovReceiver, QuitReceiver, VirtualCellComponent, WorldReceiver,
@@ -36,6 +41,7 @@ struct PovStats {
     agent_id: usize,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run_pov_server(port_offset: u16) {
     let (mut pov_sub, pov_receiver) = NetworkSubscriber::<PovData>::new(
         std::env::var("VXS_POV_ADDR").unwrap_or("0.0.0.0".to_string()),
@@ -102,6 +108,15 @@ pub fn begin_render(
                         title: format!("Virtual POV View ({})", num),
                         ..Default::default()
                     }),
+                    ..Default::default()
+                })
+                .set(RenderPlugin {
+                    render_creation: bevy::render::settings::RenderCreation::Automatic(
+                        bevy::render::settings::WgpuSettings {
+                            backends: Some(bevy::render::settings::Backends::BROWSER_WEBGPU),
+                            ..Default::default()
+                        },
+                    ),
                     ..Default::default()
                 }),
             PanOrbitCameraPlugin,

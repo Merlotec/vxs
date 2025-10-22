@@ -1,95 +1,204 @@
-# VoxelSim (VXS)
+# VoxelSim (vxs)
 
-Modular voxel-based 3D simulation stack for robotics and autonomy. Rust first, with optional Python bindings; includes a real-time renderer, simulator, agent-vision compute, SLAM bridge, and UAV control integration.
+VoxelSim is a modular voxel-based simulation and rendering stack. The workspace contains Rust crates for world representation, planning, rendering, and dynamics, plus Python bindings (via PyO3) that expose a unified `voxelsim` module for scripting and experiments.
 
-## Highlights
-- Core `voxelsim` crate with terrain, agents, networking, and Python bindings (feature `python`).
-- Bevy-based desktop renderer (`voxelsim-renderer`) for real-time voxel worlds and agents.
-- Simulator (`voxelsim-simulator`) with physics, terrain generation, and binary network streaming.
-- Agent vision/compute pipeline (`voxelsim-compute`) for POV filtering and dense snapshots.
-- SLAM bridge (`voxelsim-slam`) for RealSense → voxel grid with optional ROS2/cuVSLAM adapters.
-- UAV integration: `voxelsim-daemon` (MAVLink, WIP) and `px4-mc` (PX4 multicopter controller bindings).
-- Python package (`voxelsim-py`) exposing the Rust crates as a single module (`import voxelsim`).
+## Repository Layout
 
-## Repository Structure
-- `voxelsim/`: Core types and API (Rust, optional PyO3 bindings).
-- `voxelsim-renderer/`: Bevy 3D renderer binary. See `voxelsim-renderer/README.md`.
-- `voxelsim-simulator/`: Simulation engine + optional Python bindings. See `voxelsim-simulator/README.md`.
-- `voxelsim-compute/`: Agent POV rendering/filtering with optional Python bindings.
-- `voxelsim-py/`: Python extension module stitching the crates into `voxelsim`.
-- `voxelsim-daemon/`: Daemon for hardware/IO (MAVLink). Early WIP.
-- `voxelsim-slam/`: RealSense capture, SLAM provider trait, voxel reintegration. See `voxelsim-slam/README.md`.
-- `px4-mc/`: Thin Rust bindings over PX4 multicopter controllers (CMake-built static lib).
-- `python/`: Experiments, training, and example scripts (heavy ML deps in `requirements.txt`).
-- `logs/`, `target/`: Runtime/build artifacts.
-
-## Prerequisites
-- Rust toolchain with edition 2024 support (latest stable or nightly).
-- Python 3.10+ and `maturin` if using Python bindings.
-- Renderer: GPU + graphics backend (Vulkan/Metal/DirectX depending on OS).
-- SLAM (optional): `librealsense2`; ROS2 for the ROS bridge; cuVSLAM libraries if enabling that feature.
-- PX4 (optional): CMake; set `PX4_SRC_DIR` if building against PX4 sources for `px4-mc`.
+- `voxelsim/`: Core library — voxel world (`VoxelGrid`), agents, planning, networking, and Python bindings behind `feature = "python"`.
+- `voxelsim-compute/`: Vision/compute pipeline used to synthesize agent POVs; includes `AgentVisionRenderer`, `FilterWorld`, and noise configuration. Python bindings behind `feature = "python"`.
+- `voxelsim-renderer/`: Bevy-based renderer that listens on TCP ports and visualizes worlds, agents, and POV feeds.
+- `voxelsim-simulator/`: Dynamics and terrain generation (quad dynamics, terrain generator). Optional `px4` submodule when built with `feature = "px4"`. Python bindings behind `feature = "python"`.
+- `voxelsim-daemon/`, `voxelsim-agent/`: Supporting services (not required for basic Python workflows).
+- `voxelsim-py/`: PyO3 shim crate that composes `voxelsim`, `voxelsim-compute`, and `voxelsim-simulator` into a single Python extension module named `voxelsim`.
+- `python/`: Example and experiment scripts. Note: some are written against older bindings; see “Outdated Scripts” below.
+- `px4-mc/`: PX4-related integration assets (only needed if using the PX4 dynamics feature).
 
 ## Quick Start
 
-### 1) Build and run the renderer
+1) Build the renderer and start it:
+- `cargo run -p voxelsim-renderer --release`
+- Listens on:
+  - World: `8080`
+  - Agents: `8081`
+  - POV streams (virtual world): from `8090`
+  - POV streams (agents-of-POV): from `9090`
+
+2) Install the Python bindings (`voxelsim`):
+- Recommended (maturin):
+  - `pip install maturin`
+  - `maturin develop -m voxelsim-py/Cargo.toml`
+- Alternative (no install):
+  - `cargo build -p voxelsim-py --release`
+  - Add the built extension dir to `PYTHONPATH`, e.g. `export PYTHONPATH=$PWD/voxelsim-py/target/release:$PYTHONPATH`
+
+3) Run an example:
+- `python python/povtest.py`
+
+## Python Bindings (`voxelsim`)
+
+The `voxelsim` module merges submodules from three Rust crates:
+- Core (`voxelsim`): world, agents, planning, networking
+- Compute (`voxelsim-compute`): POV rendering pipeline and filter world
+- Simulator (`voxelsim-simulator`): terrain and dynamics (+ optional `px4` module)
+
+Below is the current API surface most scripts should use. Methods with `_py` suffix are the Python-exposed wrappers.
+
+### World and Cells
+- `vxs.VoxelGrid.from_dict_py({(x,y,z): vxs.Cell.filled(), ...}) -> VoxelGrid`: Construct from a Python dict.
+- `vxs.VoxelGrid.to_dict_py() -> Dict[Tuple[int,int,int], vxs.Cell]`: Export sparse cells.
+- `vxs.VoxelGrid.as_numpy() -> (coords: np.ndarray[n,3], values: np.ndarray[n])`: Extract as arrays (1.0 filled, 0.5 sparse, 0.0 empty).
+- `vxs.VoxelGrid.collisions_py(pos: [f64;3], dims: [f64;3]) -> List[((i32,i32,i32), vxs.Cell)]`: AABB vs voxel intersections near `pos`.
+- `vxs.VoxelGrid.dense_snapshot_py(centre: [i32;3], half_dims: [i32;3]) -> DenseSnapshot`: Dense cuboid sample around a centre.
+- `vxs.Cell.filled()`, `vxs.Cell.sparse()`: Constructors.
+- `vxs.Cell.is_filled_py()`, `vxs.Cell.is_sparse_py()`, `vxs.Cell.bits_py()`.
+
+### Agents, Actions, Planning, and View
+- `vxs.Agent(id: int)`: Create an agent.
+- `agent.set_hold_py(coord: [i32;3], yaw: float)`: Place and hold at grid coord with yaw.
+- `agent.get_pos() -> [f64;3]`, `agent.get_coord_py() -> [i32;3]`.
+- `agent.camera_view_py(orientation: vxs.CameraOrientation) -> vxs.CameraView`.
+- `agent.perform_oneshot_py(intent: vxs.ActionIntent)`: Start a new action (overwrites any current one).
+- `agent.push_back_intent_py(intent: vxs.ActionIntent)`: Queue an intent behind the current action.
+- `agent.get_action_py() -> Optional[vxs.Action]`.
+
+- `vxs.ActionIntent(urgency: float, yaw: float, move_sequence: List[vxs.MoveDir], next: Optional[vxs.ActionIntent])`.
+- `intent.get_move_sequence() -> List[vxs.MoveDir]`, `intent.len() -> int`.
+- `vxs.MoveDir`: directions enum
+  - Named members: `vxs.MoveDir.Forward`, `Back`, `Left`, `Right`, `Up`, `Down`, `None`, `Undecided`
+  - Helpers: `vxs.MoveDir.from_code_py(code: int)`, and classmethods like `up()`, `down()`, etc.
+
+- Planning:
+  - `vxs.AStarActionPlanner(padding: int)`: Initialize with obstacle padding radius.
+- `planner.plan_action_py(world: VoxelGrid, origin: [i32;3], dst: [i32;3], urgency: float, yaw: float) -> vxs.ActionIntent`.
+
+- View and camera:
+  - `vxs.CameraProjection.new(aspect, fov_vertical, max_distance, near_distance)` or `vxs.CameraProjection.default_py()`.
+  - `vxs.CameraOrientation.vertical_tilt_py(angle_radians)` (and related constructors).
+
+### Compute Pipeline (POV Generation)
+- `vxs.FilterWorld()`: Shared, thread-safe virtual world for POV visualization and dense sampling.
+  - `fw.send_pov_py(client, stream_idx, agent_id, proj, orientation)`: Send current POV to the renderer.
+  - `fw.send_pov_async_py(async_client, ...)`: Async variant.
+  - `fw.is_updating_py(timestamp: float) -> bool`: True if an update for `timestamp` is in-progress.
+  - `fw.dense_snapshot_py(centre, half_dims) -> DenseSnapshot`, `fw.as_numpy() -> (coords, values)`.
+  - `fw.timestamp_py() -> Optional[float]`.
+- `vxs.NoiseParams.default_with_seed_py([x,y,z])` or `vxs.NoiseParams.none_py()`.
+- `vxs.AgentVisionRenderer(world: VoxelGrid, view_size: [u32;2], noise: NoiseParams)`.
+  - `renderer.update_filter_world_py(camera_view, proj, fw, timestamp, callback)`
+  - `renderer.update_filter_world_with_uncertainty_py(camera_view, proj, fw, unc_world, timestamp, callback)`
+  - `renderer.render_changeset_py(camera_view, proj, fw, timestamp, callback)`
+- `vxs.UncertaintyWorld.new_py(origin: [f64;3], node_size: f64)`, `vxs.UncertaintyWorld.default_py()`.
+
+### Networking (Renderer Client)
+- `vxs.RendererClient.default_localhost_py(pov_count: int) -> RendererClient`: Connects to world/agent sockets plus `pov_count` POV streams starting at default ports.
+- `client.send_world_py(world)`, `client.send_agents_py({id: agent, ...})`.
+- Async variant: `vxs.AsyncRendererClient.default_localhost_py(pov_count)`; call `send_world_py`, `send_agents_py` on it.
+
+### Simulator (Terrain & Dynamics)
+- Terrain:
+  - `vxs.TerrainGenerator()`, `vxs.TerrainConfig.default_py()`.
+  - `gen.generate_terrain_py(cfg)`, `gen.generate_world_py() -> VoxelGrid`.
+- Quad dynamics:
+  - `vxs.QuadParams.default_py()`
+  - `vxs.QuadDynamics(params)`
+  - `dyn.update_agent_dynamics_py(agent, env, chase_target, delta)`
+- Environment state:
+  - `vxs.EnvState.default_py()`
+- Chasing:
+  - `vxs.FixedLookaheadChaser.default_py()`
+  - `chaser.step_chase_py(agent, dt) -> vxs.ChaseTarget`
+
+Optional PX4 module (feature-gated):
+- Build with `maturin develop -m voxelsim-py/Cargo.toml --features px4` (or `cargo build -p voxelsim-py --release --features px4`).
+- Access as `vxs.px4.Px4Dynamics.default_py()` and `vxs.px4.Px4SettingsPy`.
+
+## Example (Minimal Loop)
+
+```python
+import voxelsim as vxs, time
+
+# World
+gen = vxs.TerrainGenerator()
+gen.generate_terrain_py(vxs.TerrainConfig.default_py())
+world = gen.generate_world_py()
+
+# Agent
+agent = vxs.Agent(0)
+agent.set_hold_py([50, 50, -20], 0.0)
+
+# POV setup
+fw = vxs.FilterWorld()
+proj = vxs.CameraProjection.default_py()
+cam = vxs.CameraOrientation.vertical_tilt_py(-0.5)
+noise = vxs.NoiseParams.default_with_seed_py([0.0, 0.0, 0.0])
+renderer = vxs.AgentVisionRenderer(world, [200, 150], noise)
+
+# Network client (1 POV stream)
+client = vxs.RendererClient.default_localhost_py(1)
+client.send_world_py(world)
+client.send_agents_py({0: agent})
+
+last_ts = time.time()
+while True:
+    now = time.time()
+    if not fw.is_updating_py(last_ts) and (now - last_ts) > 0.1:
+        fw.send_pov_py(client, 0, 0, proj, cam)
+        renderer.update_filter_world_py(agent.camera_view_py(cam), proj, fw, now, lambda *_: None)
+        last_ts = now
+    time.sleep(0.01)
 ```
-cd voxelsim-renderer
-cargo run --release
-```
-The renderer listens locally for simulation data (world/agents) on TCP ports 8080/8081 by default.
 
-The renderer can also be configured to render the world that the agent sees (called the filter world).
-This can be done by passing the `--virtual <channel_idx>` flag to `voxelsim-renderer`.
+## Outdated Scripts (and how to update)
 
-### 2) Send a world + agents from the simulator (Rust)
-```
-# New terminal
-echo "Running simulator"
-cd voxelsim-simulator
-cargo run --release
-```
-This will generate terrain and stream world/agent updates to the renderer.
+Some scripts in `python/` target older versions of the bindings. The current API is reflected in `python/povtest.py`. Known outdated patterns:
 
-### 2b) Or from Python
-First, build the Python extension that bundles the Rust crates:
-```
-cd voxelsim-py
-pip install maturin
-maturin develop
-```
-Then run an example script from `python/` (e.g., create a world and send to the renderer):
-```
-python python/povtest.py
-# or
-python python/sim_from_world.py
-```
+- Renderer client connection:
+  - Old: `client = vxs.RendererClient.default_localhost_py()` + `client.connect_py(1)`
+  - New: `client = vxs.RendererClient.default_localhost_py(pov_count)` (no separate `connect_py`)
 
-## Building Individual Crates
-This repository does not use a top-level Cargo workspace; build crates from their folders, e.g.:
-- `cd voxelsim && cargo build --release`
-- `cd voxelsim-compute && cargo build --release`
-- `cd voxelsim-slam && cargo build --release` (add features as needed)
+- POV renderer construction:
+  - Old: `renderer = vxs.AgentVisionRenderer(world, [w, h])`
+  - New: `renderer = vxs.AgentVisionRenderer(world, [w, h], vxs.NoiseParams...)`
 
-## Features and Options
-- `voxelsim`/`voxelsim-simulator`: `python` to enable PyO3 bindings.
-- `voxelsim-slam`: `ros2` to enable ROS2 pose bridge; `cuvslam-ffi` to dynamically load cuVSLAM.
-- `voxelsim-py`: `px4` to include PX4-related features from dependent crates.
+- Agent action APIs:
+  - Old: `agent.perform_py(intent)`; `action.get_intent()`
+  - New: `agent.perform_oneshot_py(intent)`; `action.get_intent_queue()` (list)
 
-## Development Notes
-- Rust edition 2024 is used in several crates; ensure your toolchain is up to date.
-- Some components are early-stage (e.g., `voxelsim-daemon`). Expect API changes.
-- Heavy ML dependencies listed in `requirements.txt` are only required for the experimental Python workflows in `python/`.
+- Dynamics types:
+  - Old: `voxelsim.PengQuadDynamics` (nonexistent)
+  - New: `vxs.QuadDynamics(vxs.QuadParams.default_py())` or `vxs.px4.Px4Dynamics.default_py()` when built with `--features px4`.
 
-## Documentation
-- Renderer usage and protocol: `voxelsim-renderer/README.md`
-- Simulator API and Python examples: `voxelsim-simulator/README.md`
-- SLAM bridge details and Jetson notes: `voxelsim-slam/README.md`
+- Client POV streaming:
+  - Use `FilterWorld.send_pov_py(client, stream_idx, agent_id, proj, orientation)` (not methods directly on the client).
 
-## License
-BSD 3-Clause. See `LICENSE`.
+Files with legacy usage to update or use as reference only:
+- `python/povtest_legacy.py`
+- `python/sim_from_world.py`
+- `python/test.py`
 
-## Acknowledgements
-- Bevy engine for rendering.
-- PX4 and ArduPilot communities for flight control stacks.
-- librealsense2 and ROS2 ecosystems for perception support.
+For up-to-date references, prefer:
+- `python/povtest.py`
+
+## Building the Workspace
+
+- Release build of all crates: `cargo build --release`
+- Individual crates: `cargo build -p voxelsim[...specific...] --release`
+- Python extension only: see “Install the Python bindings” above.
+
+## Ports and Protocol
+
+- All network messages are framed as: 4-byte little-endian length prefix + bincode payload.
+- Default ports:
+  - World: `8080`
+  - Agents: `8081`
+  - POV virtual world streams: start at `8090` (N streams)
+  - POV agent streams: start at `9090` (N streams)
+
+## Troubleshooting
+
+- ImportError: `ModuleNotFoundError: No module named 'voxelsim'`
+  - Ensure the extension is installed with `maturin develop -m voxelsim-py/Cargo.toml`, or that `PYTHONPATH` includes the built `voxelsim` extension directory.
+- Missing `vxs.px4` submodule
+  - Reinstall/build with `--features px4` if you need PX4 dynamics.
+- Renderer not receiving POV
+  - Verify `pov_count` matches the number of POV streams you intend to use and the renderer is running.

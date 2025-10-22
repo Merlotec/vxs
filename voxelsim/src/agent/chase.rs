@@ -53,6 +53,16 @@ impl TrajectoryChaser for FixedLookaheadChaser {
         // Get next chase.
         match &agent.state {
             AgentState::Action(action) => {
+                // Guard against degenerate/zero-length trajectories
+                if action.trajectory.length() <= std::f64::EPSILON {
+                    return ChaseTarget {
+                        pos: agent.pos,
+                        vel: Vector3::zeros(),
+                        acc: Vector3::zeros(),
+                        yaw: 0.0,
+                        progress: ActionProgress::Hold,
+                    };
+                }
                 let x_act = agent.pos;
 
                 let s_cur = action.trajectory.progress;

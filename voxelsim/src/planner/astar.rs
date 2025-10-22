@@ -197,7 +197,6 @@ impl super::ActionPlanner for AStarActionPlanner {
         dst: Coord,
         urgency: f64,
         yaw: f64,
-        next: Option<Box<ActionIntent>>,
     ) -> Result<ActionIntent, PlannerError> {
         if origin == dst {
             return Err(PlannerError::InvalidParams);

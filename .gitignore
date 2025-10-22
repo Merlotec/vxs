@@ -10,4 +10,4 @@ logs
 test.sh
 /logs
 CLAUDE.md
-/proxy/node_modules
+node_modules
