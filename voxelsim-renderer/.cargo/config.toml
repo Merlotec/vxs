@@ -1,0 +1,14 @@
+# Configuration for building to WebAssembly
+#
+# This only affects builds when you explicitly specify: --target wasm32-unknown-unknown
+# Regular builds (cargo run, cargo build) use your native target and ignore this.
+#
+# To build for WASM:
+#   cargo run --target wasm32-unknown-unknown
+#
+# To build natively (no change needed):
+#   cargo run
+
+[target.wasm32-unknown-unknown]
+runner = "wasm-server-runner"
+rustflags = ["--cfg=web_sys_unstable_apis", "--cfg=getrandom_backend=\"wasm_js\""]

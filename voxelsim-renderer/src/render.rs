@@ -159,12 +159,18 @@ pub fn setup(
     let cube_mesh = meshes.add(Cuboid::default());
     let drone_mesh = meshes.add(Torus::default());
 
-    // Try to load drone GLTF, fallback to None if it doesn't exist
+    // Try to load drone GLTF
+    // In WASM, we can't check if file exists, so always try to load
+    // The AssetServer will handle missing files gracefully
+    #[cfg(not(target_arch = "wasm32"))]
     let drone_scene = if std::path::Path::new("assets/drone.gltf").exists() {
         Some(asset_server.load("drone.gltf#Scene0"))
     } else {
         None
     };
+
+    #[cfg(target_arch = "wasm32")]
+    let drone_scene = None; // For demo, just use fallback mesh
 
     commands.insert_resource(CellAssets {
         cube_mesh: cube_mesh.clone(),

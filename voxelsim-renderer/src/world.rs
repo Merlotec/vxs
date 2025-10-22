@@ -9,6 +9,7 @@ use nalgebra::{Normed, UnitQuaternion, Vector3};
 use voxelsim::trajectory::Trajectory;
 use voxelsim::viewport::CameraOrientation;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::network::NetworkSubscriber;
 use crate::render::{
     self, ActionCell, AgentComponent, AgentReceiver, CellAssets, CellComponent, FocusedAgent,
@@ -20,6 +21,7 @@ use crate::convert::*;
 
 use bevy::app::AppExit;
 use bevy::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run_world_server() {
     let (mut world_sub, world_receiver) = NetworkSubscriber::<VoxelGrid>::new(
         std::env::var("VXS_WORLD_PORT").unwrap_or("0.0.0.0".to_string()),
@@ -327,4 +329,56 @@ fn draw_spline(gizmos: &mut Gizmos, spline: &Trajectory) {
         .map(|(_t, p)| client_to_bevy_f32(p.cast::<f32>()))
         .collect();
     gizmos.linestrip(pts.into_iter(), Color::Srgba(Srgba::BLUE));
+}
+
+/// WASM demo mode: Static voxel world with no networking
+///
+/// This creates the same crossbeam channels as the network version,
+/// but sends static demo data once instead of receiving from TCP.
+/// Later we'll replace this with WebSocket-based NetworkSubscriber.
+#[cfg(target_arch = "wasm32")]
+pub fn run_world_demo() {
+    use voxelsim::Coord;
+
+    // Create crossbeam channels (same interface as network version)
+    let (world_tx, world_receiver) = crossbeam_channel::unbounded::<VoxelGrid>();
+    let (agent_tx, agent_receiver) = crossbeam_channel::unbounded::<HashMap<usize, Agent>>();
+    let (gui_sender, _gui_receiver) = crossbeam_channel::unbounded::<GuiCommand>();
+    let (_quit_sender, quit_receiver) = crossbeam_channel::unbounded::<()>();
+
+    // Create a simple demo world
+    let mut demo_world = VoxelGrid::new();
+
+    // Add a floor (5x5 grid)
+    for x in -2..=2 {
+        for z in -2..=2 {
+            demo_world.set(Coord::from([x, 0, z]), Cell::GROUND | Cell::FILLED);
+        }
+    }
+
+    // Add some walls to make it interesting
+    for y in 1..=3 {
+        demo_world.set(Coord::from([-2, y, -2]), Cell::FILLED);
+        demo_world.set(Coord::from([2, y, -2]), Cell::FILLED);
+        demo_world.set(Coord::from([-2, y, 2]), Cell::FILLED);
+        demo_world.set(Coord::from([2, y, 2]), Cell::FILLED);
+    }
+
+    // Add a target block in the center
+    demo_world.set(Coord::from([0, 1, 0]), Cell::TARGET | Cell::FILLED);
+
+    // Create a demo agent floating above the floor
+    let mut demo_agents = HashMap::new();
+    let mut demo_agent = Agent::new(0);
+    demo_agent.pos = Vector3::new(0.0, 2.0, 0.0);
+    demo_agents.insert(0, demo_agent);
+
+    // Send the static data once through the channels
+    world_tx.send(demo_world).unwrap();
+    agent_tx.send(demo_agents).unwrap();
+
+    // Start Bevy with the same function as network version!
+    // The rendering code doesn't know (or care) if data came from network or static demo
+    println!("Starting Bevy with static demo world...");
+    begin_render(world_receiver, agent_receiver, gui_sender, quit_receiver);
 }

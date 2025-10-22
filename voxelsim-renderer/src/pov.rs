@@ -7,6 +7,7 @@ use nalgebra::Vector3;
 use voxelsim::trajectory::Trajectory;
 use voxelsim::viewport::{CameraOrientation, CameraProjection};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::network::NetworkSubscriber;
 use crate::render::{
     self, ActionCell, AgentComponent, AgentReceiver, CellAssets, CellComponent, FocusedAgent,
@@ -36,6 +37,7 @@ struct PovStats {
     agent_id: usize,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run_pov_server(port_offset: u16) {
     let (mut pov_sub, pov_receiver) = NetworkSubscriber::<PovData>::new(
         std::env::var("VXS_POV_ADDR").unwrap_or("0.0.0.0".to_string()),
