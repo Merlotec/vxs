@@ -32,6 +32,7 @@ def run_episode(
     pov_size: tuple[int, int],
     target: Optional[tuple[float, float, float]],
     use_px4: bool,
+    pov_min_dt_world: float = 0.05,
     on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
     on_summary: Optional[Callable[[Dict[str, Any]], None]] = None,
     stop_event: Optional[threading.Event] = None,
@@ -42,7 +43,11 @@ def run_episode(
     # World & sim setup
     gen = vxs.TerrainGenerator()
     cfg = vxs.TerrainConfig.default_py()
-    # If config allowed seed override, we could set it here via cfg.set_seed_py(...)
+    # Set world seed per episode to ensure reset and variability
+    try:
+        cfg.set_seed_py(int(seed) & 0xFFFFFFFF)
+    except Exception:
+        pass
     gen.generate_terrain_py(cfg)
     world = gen.generate_world_py()
 
@@ -88,6 +93,7 @@ def run_episode(
     steps = 0
     collisions_total = 0
     last_view_time = time.time()
+    last_pov_world_t = -1e9
     success = False
     path_len_accum = 0.0
     last_pos = tuple(agent.get_pos())
@@ -99,6 +105,7 @@ def run_episode(
             break
         now = time.time()
         t = now - t0
+        sim_t = steps * delta
 
         # Policy control
         try:
@@ -135,11 +142,14 @@ def run_episode(
             try:
                 # Gate submissions to avoid overlapping POV updates
                 if not fw.is_updating_py(last_view_time):
-                    fw.send_pov_py(client, 0, 0, proj, cam)
-                    renderer.update_filter_world_py(
-                        agent.camera_view_py(cam), proj, fw, now, lambda *_: None
-                    )
-                    last_view_time = now
+                    # Also gate by simulation time to achieve a minimum world-time cadence
+                    if (sim_t - last_pov_world_t) >= pov_min_dt_world:
+                        fw.send_pov_py(client, 0, 0, proj, cam)
+                        renderer.update_filter_world_py(
+                            agent.camera_view_py(cam), proj, fw, now, lambda *_: None
+                        )
+                        last_view_time = now
+                        last_pov_world_t = sim_t
                 # Periodically refresh the world snapshot to keep renderer in sync
                 if (now - last_world_send) >= WORLD_REFRESH_INTERVAL_S:
                     client.send_world_py(world)

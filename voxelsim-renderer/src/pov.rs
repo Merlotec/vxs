@@ -113,7 +113,7 @@ pub fn begin_render(
                 .set(RenderPlugin {
                     render_creation: bevy::render::settings::RenderCreation::Automatic(
                         bevy::render::settings::WgpuSettings {
-                            backends: Some(bevy::render::settings::Backends::BROWSER_WEBGPU),
+                            backends: Some(bevy::render::settings::Backends::all()),
                             ..Default::default()
                         },
                     ),

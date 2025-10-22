@@ -206,6 +206,7 @@ def _start_training_thread(
     use_px4: bool = True,
     max_steps: int = 500,
     delta: float = 0.01,
+    pov_min_dt_world: float = 0.05,
     provider: str = "anthropic",
     provider_url: Optional[str] = None,
     model: Optional[str] = None,
@@ -283,6 +284,7 @@ def _start_training_thread(
                     pov_size=(200, 150),
                     target=None,
                     use_px4=use_px4,
+                    pov_min_dt_world=pov_min_dt_world,
                     on_step=on_step,
                     on_summary=on_summary,
                     stop_event=stop_event,
@@ -354,6 +356,11 @@ def run_training() -> Any:
     provider = str(data.get("provider", "anthropic")).lower()
     provider_url = data.get("provider_url")
     model = data.get("model")
+    # Optional: POV cadence in world seconds (min interval between POV updates)
+    try:
+        pov_min_dt_world = float(data.get("pov_min_dt_world", 0.05))
+    except Exception:
+        pov_min_dt_world = 0.05
     success_threshold = float(data.get("success_threshold", 0.95))
     # Dynamics selection flag (support both keys for compatibility)
     use_px4 = bool(data.get("px4", data.get("use_px4", True)))
@@ -379,6 +386,7 @@ def run_training() -> Any:
         use_px4=use_px4,
         max_steps=max_steps,
         delta=delta,
+        pov_min_dt_world=pov_min_dt_world,
         provider=provider,
         provider_url=provider_url,
         model=model,
