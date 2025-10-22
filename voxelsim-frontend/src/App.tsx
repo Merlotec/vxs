@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LoadingScreen } from './components/LoadingScreen';
 import { StatusBar } from './components/StatusBar';
-import { Canvas } from './components/Canvas';
+import { Sidebar } from './components/Sidebar';
 import { StatusInfo } from './types/simulation';
 import { WebSocketService, getWebSocketUrl } from './services/websocket';
 import { initRenderer } from './services/renderer';
@@ -71,7 +71,7 @@ function App() {
     <>
       {loading && <LoadingScreen error={error ?? undefined} />}
       <StatusBar status={status} />
-      <Canvas />
+      <Sidebar />
     </>
   );
 }

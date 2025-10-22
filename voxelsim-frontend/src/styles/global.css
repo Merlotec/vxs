@@ -18,10 +18,18 @@ body {
 #root {
   width: 100%;
   height: 100%;
+  position: relative;
+  pointer-events: none; /* Allow clicks to pass through to canvas */
 }
 
+/* Bevy creates canvases automatically - style them to be in the background */
 canvas {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
   width: 100% !important;
   height: 100% !important;
   display: block;
+  z-index: 0 !important; /* Keep canvas in background */
+  pointer-events: auto; /* Canvas should receive interactions */
 }
