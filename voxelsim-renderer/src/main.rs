@@ -20,6 +20,10 @@ pub mod world;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod network;
 
+// Network module for WASM builds (uses WebSocket)
+#[cfg(target_arch = "wasm32")]
+pub mod network_wasm;
+
 fn main() {
     #[cfg(target_arch = "wasm32")]
     {
