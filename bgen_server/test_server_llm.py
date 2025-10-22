@@ -66,6 +66,7 @@ async def _ws_listen_frames(run_id: str, channel: str, timeout_s: float = 8.0) -
 def main() -> None:
     ap = argparse.ArgumentParser(description="LLM server integration test (OpenAI)")
     ap.add_argument("--render", action="store_true", help="Enable rendering during the run")
+    ap.add_argument("--iterations", type=int, default=4, help="Max LLM iterations (server may conclude early)")
     grp = ap.add_mutually_exclusive_group()
     grp.add_argument("--proxy", dest="proxy", action="store_true", help="Enable TCP→WS proxy (default if --render)")
     grp.add_argument("--no-proxy", dest="proxy", action="store_false", help="Disable proxy (use local voxelsim-renderer over TCP)")
@@ -118,7 +119,7 @@ def main() -> None:
         url = f"http://{SERVER_HOST}:{SERVER_PORT}/run"
         body = {
             "user_goal": "Generate a minimal valid policy using A*, which moves the agent to the block with coords (0, 0, 0).",
-            "iterations": 1,
+            "iterations": int(args.iterations),
             "episodes": 1,
             "render": bool(args.render),
             # Request world-time duration; server converts to steps via delta
@@ -161,7 +162,8 @@ def main() -> None:
             sim = timing.get("sim_time_s")
             wall = timing.get("wall_time_s")
             speed = timing.get("speedup_x")
-            print(f"Timing: sim={sim:.3f}s, wall={wall:.3f}s, speedup={speed:.1f}x" if (sim is not None and wall is not None and speed is not None) else f"Timing: {timing}")
+            concluded = done_msgs[-1].get("concluded_early")
+            print(f"Timing: sim={sim:.3f}s, wall={wall:.3f}s, speedup={speed:.1f}x, concluded_early={concluded}" if (sim is not None and wall is not None and speed is not None) else f"Timing: {timing}")
 
         if args.render and args.proxy:
             world_frames = results[1]

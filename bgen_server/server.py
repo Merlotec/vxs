@@ -209,6 +209,7 @@ def _start_training_thread(
     provider: str = "anthropic",
     provider_url: Optional[str] = None,
     model: Optional[str] = None,
+    success_threshold: float = 0.95,
 ) -> None:
     def on_step(step: Dict[str, Any]) -> None:
         hub.broadcast_sync(f"progress:{run_id}", {"type": "step", "step": step})
@@ -243,6 +244,7 @@ def _start_training_thread(
         stop_event: threading.Event = _runs[run_id]["stop"]
         total_sim_time_s = 0.0
         total_wall_time_s = 0.0
+        concluded_early = False
         for it in range(iterations):
             if stop_event.is_set():
                 break
@@ -299,6 +301,14 @@ def _start_training_thread(
             (iter_dir / "critique.txt").write_text(critique)
             hub.broadcast_sync(f"progress:{run_id}", {"type": "critique", "critique": critique, "aggregate": agg})
             prior_crit = iter_dir / "critique.txt"
+            # Early stop if success meets threshold
+            try:
+                sr = float(agg.get("success_rate", 0.0))
+                if sr >= success_threshold:
+                    concluded_early = True
+                    break
+            except Exception:
+                pass
 
         if proxy is not None:
             proxy.stop()
@@ -308,7 +318,7 @@ def _start_training_thread(
             "wall_time_s": total_wall_time_s,
             "speedup_x": (total_sim_time_s / total_wall_time_s) if total_wall_time_s > 0 else None,
         }
-        hub.broadcast_sync(f"progress:{run_id}", {"type": "done", "timing": timing})
+        hub.broadcast_sync(f"progress:{run_id}", {"type": "done", "timing": timing, "concluded_early": concluded_early})
         logger.info(f"Run {run_id} finished")
 
     threading.Thread(target=worker, daemon=True).start()
@@ -344,6 +354,7 @@ def run_training() -> Any:
     provider = str(data.get("provider", "anthropic")).lower()
     provider_url = data.get("provider_url")
     model = data.get("model")
+    success_threshold = float(data.get("success_threshold", 0.95))
     # Dynamics selection flag (support both keys for compatibility)
     use_px4 = bool(data.get("px4", data.get("use_px4", True)))
     # Allow request to override; otherwise fall back to server default
@@ -371,6 +382,7 @@ def run_training() -> Any:
         provider=provider,
         provider_url=provider_url,
         model=model,
+        success_threshold=success_threshold,
     )
     return jsonify({"run_id": run_id})
 

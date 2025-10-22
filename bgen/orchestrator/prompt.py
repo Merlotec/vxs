@@ -16,7 +16,8 @@ def build_system_prompt() -> str:
         "In act(), return either an ActionIntent or (ActionIntent, 'Replace'|'Push'). "
         "Use non-zero urgency (e.g., 0.6–1.0); never use 0.0. "
         "Important: A* planner signature is plan_action_py(world, origin, dst, urgency, yaw) (urgency before yaw). "
-        "Prefer helpers.plan_to(world, origin, dst, urgency=..., yaw=..., padding=...)."
+        "Prefer helpers.plan_to(world, origin, dst, urgency=..., yaw=..., padding=...). "
+        "You are in an iterative loop: read the critique and improve if needed; if behavior is already good, keep your solution simple and stable."
     )
 
 
