@@ -195,8 +195,9 @@ fn uniform_knots(num_ctrl: usize, degree: usize) -> Vec<f64> {
 
 pub fn generate_path_fit_spline(control_points: Vec<Vector3<f64>>) -> BSpline<Vector3<f64>, f64> {
     // build the list of control points: the start + each cell’s centroid
-    // pick degree = 3, but no higher than n-1, and at least 1
-    let degree = std::cmp::min(3, control_points.len().saturating_sub(1)).max(1);
+    // pick degree ≤ 3, but no higher than (n_ctrl - 1); allow degree 0 for a single point
+    let n_ctrl = control_points.len();
+    let degree = std::cmp::min(3, n_ctrl.saturating_sub(1));
 
     // uniform, clamped knot vector
     let knots = uniform_knots(control_points.len(), degree);
@@ -249,7 +250,7 @@ impl Trajectory {
         let waypoints = control_waypoints(origin.cast(), &path);
         let spline = generate_path_fit_spline(path);
 
-        let length = *waypoints.last().unwrap();
+        let length = *waypoints.last().unwrap_or(&0.0);
         Self {
             spline,
             urgencies: times
@@ -377,9 +378,17 @@ impl Trajectory {
 
     pub fn domain_t(&self, t: f64) -> Option<f64> {
         let (min, max) = self.spline.knot_domain();
-        let dom_t = min + (max - min) * (t / self.length());
-
-        if dom_t <= max { Some(dom_t) } else { None }
+        // Guard against zero-length trajectories
+        if self.length() <= std::f64::EPSILON {
+            return None;
+        }
+        let mut dom_t = min + (max - min) * (t / self.length());
+        // Many B-spline implementations expect t < max; clamp to an epsilon below max
+        if dom_t >= max {
+            let eps = 1e-9;
+            dom_t = (max - eps).max(min);
+        }
+        if dom_t < min { None } else { Some(dom_t) }
     }
 
     pub fn sample_urgencies(&self, t: f64) -> Option<f64> {
