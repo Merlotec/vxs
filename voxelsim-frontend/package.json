@@ -1,0 +1,29 @@
+{
+  "name": "voxelsim-frontend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "build:wasm": "cd ../voxelsim-renderer && wasm-pack build --target web && xcopy /E /I /Y pkg ..\\voxelsim-frontend\\wasm",
+    "clean": "rmdir /S /Q dist node_modules wasm\\*.js wasm\\*.wasm wasm\\*.d.ts 2>nul || true"
+  },
+  "keywords": ["voxelsim", "renderer", "wasm", "bevy"],
+  "author": "",
+  "license": "ISC",
+  "description": "VoxelSim web-based renderer frontend",
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.0.4",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "vite": "^7.1.11"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "typescript": "^5.9.3",
+    "vite-plugin-top-level-await": "^1.6.0",
+    "vite-plugin-wasm": "^3.5.0"
+  }
+}
