@@ -11,8 +11,8 @@ use {
     voxelsim::{Agent, VoxelGrid},
 };
 
-pub mod pov;
 pub mod convert;
+pub mod pov;
 pub mod render;
 pub mod world;
 
@@ -38,7 +38,7 @@ fn main() {
         println!("Starting VoxelSim Renderer...");
 
         // Collect all the command‐line arguments into a Vec<String>
-        let args: Vec<String> = env::args().collect();
+        let args: Vec<String> = std::env::args().collect();
 
         // Look for "--mode" in the args
         if let Some(pos) = args.iter().position(|arg| arg == "--virtual") {

@@ -7,9 +7,21 @@ edition = "2024"
 name = "voxelsim-renderer"
 path = "src/main.rs"
 
+
+# Native-only dependencies (desktop builds)
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1.0", features = ["full"] }
+# bevy = "0.16.1"
+
+# WASM-specific dependencies (web builds)
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+# bevy = { version = "0.16.1", features = ["webgpu"] }
+
 [dependencies]
-voxelsim = { path = "../voxelsim" }
 bevy = { version = "0.16.1", features = ["webgpu"] }
+voxelsim = { path = "../voxelsim" }
 bevy_panorbit_camera = "0.26.0"
 crossbeam-channel = "0.5.15"
 serde = { version = "1.0", features = ["derive"] }
@@ -29,14 +41,6 @@ web-sys = { version = "0.3.81", features = [
     "CloseEvent",
 ] }
 
-# Native-only dependencies (desktop builds)
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1.0", features = ["full"] }
-
-# WASM-specific dependencies (web builds)
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-console_error_panic_hook = "0.1"
-getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [profile.release]
 opt-level = 3       # Optimize for speed (not size)

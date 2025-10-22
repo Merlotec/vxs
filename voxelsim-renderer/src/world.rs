@@ -91,7 +91,10 @@ pub fn begin_render(
                 .set(RenderPlugin {
                     render_creation: bevy::render::settings::RenderCreation::Automatic(
                         bevy::render::settings::WgpuSettings {
-                            backends: Some(bevy::render::settings::Backends::BROWSER_WEBGPU),
+                            backends: Some(
+                                bevy::render::settings::Backends::BROWSER_WEBGPU
+                                    | bevy::render::settings::Backends::PRIMARY,
+                            ),
                             ..Default::default()
                         },
                     ),
@@ -354,11 +357,11 @@ pub fn run_world_demo() {
 
     // Create WebSocket subscribers (connects to proxy server)
     let (world_sub, world_receiver) = NetworkSubscriber::<VoxelGrid>::new(
-        "ws://localhost:9080".to_string() // Proxy translates TCP :8080 → WebSocket :9080
+        "ws://localhost:9080".to_string(), // Proxy translates TCP :8080 → WebSocket :9080
     );
 
     let (agent_sub, agent_receiver) = NetworkSubscriber::<HashMap<usize, Agent>>::new(
-        "ws://localhost:9081".to_string() // Proxy translates TCP :8081 → WebSocket :9081
+        "ws://localhost:9081".to_string(), // Proxy translates TCP :8081 → WebSocket :9081
     );
 
     // Start WebSocket connections
@@ -368,7 +371,9 @@ pub fn run_world_demo() {
     let (gui_sender, _gui_receiver) = crossbeam_channel::unbounded::<GuiCommand>();
     let (_quit_sender, quit_receiver) = crossbeam_channel::unbounded::<()>();
 
-    web_sys::console::log_1(&"WebSocket connections initiated. Waiting for Python simulation data...".into());
+    web_sys::console::log_1(
+        &"WebSocket connections initiated. Waiting for Python simulation data...".into(),
+    );
 
     // Start Bevy with the same function as native version!
     // The rendering code is identical - only the network layer changed
