@@ -48,7 +48,7 @@ def act(
         origin = agent.get_coord_py()
         try:
             # Example: queue a planned path without disrupting any current action
-            return helpers.plan_to(world, origin, target, yaw=0.0, urgency=0.8, padding=1), "Replace"
+            return helpers.plan_to(world, origin, target, urgency=0.8, yaw=0.0, padding=1), "Replace"
         except Exception:
             return helpers.intent(urgency=0.6, yaw=0.0, moves=[vxs.MoveDir.Forward]), "Replace"
     return None

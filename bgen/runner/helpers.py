@@ -17,10 +17,13 @@ class Helpers:
         world: vxs.VoxelGrid,
         origin: List[int],
         dst: List[int],
-        yaw: float,
         urgency: float,
+        yaw: float,
         padding: int = 0,
     ) -> vxs.ActionIntent:
-        planner = vxs.AStarActionPlanner(padding)
-        return planner.plan_action_py(world, origin, dst, yaw, urgency)
+        """Plan an action using A* (urgency, yaw order).
 
+        Note: planner expects (world, origin, dst, urgency, yaw).
+        """
+        planner = vxs.AStarActionPlanner(padding)
+        return planner.plan_action_py(world, origin, dst, urgency, yaw)

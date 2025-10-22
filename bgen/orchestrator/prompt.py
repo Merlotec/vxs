@@ -12,7 +12,11 @@ def build_system_prompt() -> str:
         "You are generating a Python policy module that controls a drone in VoxelSim. "
         "Output ONLY valid Python code implementing the required contract functions: "
         "init(config), act(t, agent, world, fw, env, helpers), collect(step_ctx), finalize(ep_ctx). "
-        "Do not include explanations or backticks. Prefer A* path planning to move."
+        "Do not include explanations or backticks. Prefer A* path planning to move. "
+        "In act(), return either an ActionIntent or (ActionIntent, 'Replace'|'Push'). "
+        "Use non-zero urgency (e.g., 0.6–1.0); never use 0.0. "
+        "Important: A* planner signature is plan_action_py(world, origin, dst, urgency, yaw) (urgency before yaw). "
+        "Prefer helpers.plan_to(world, origin, dst, urgency=..., yaw=..., padding=...)."
     )
 
 

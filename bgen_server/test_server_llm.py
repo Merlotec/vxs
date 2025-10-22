@@ -121,7 +121,8 @@ def main() -> None:
             "iterations": 1,
             "episodes": 1,
             "render": bool(args.render),
-            "max_steps": 1,
+            # Request world-time duration; server converts to steps via delta
+            "duration_seconds": 30,
             "provider": "openai",
             "provider_url": "https://llvpn.io/v1/service/15695372f78172f965ebf2879254099e1f02a80b3222ea52161dc31eb2cdf7db",
             "model": "gpt-4o-mini",
@@ -153,6 +154,14 @@ def main() -> None:
         errs = [m for m in msgs if m.get("type") == "error"]
         if errs:
             raise SystemExit(f"LLM run reported error: {errs}")
+        # Print timing if provided
+        done_msgs = [m for m in msgs if m.get("type") == "done"]
+        if done_msgs and isinstance(done_msgs[-1].get("timing"), dict):
+            timing = done_msgs[-1]["timing"]
+            sim = timing.get("sim_time_s")
+            wall = timing.get("wall_time_s")
+            speed = timing.get("speedup_x")
+            print(f"Timing: sim={sim:.3f}s, wall={wall:.3f}s, speedup={speed:.1f}x" if (sim is not None and wall is not None and speed is not None) else f"Timing: {timing}")
 
         if args.render and args.proxy:
             world_frames = results[1]

@@ -69,7 +69,7 @@ Below is the current API surface most scripts should use. Methods with `_py` suf
 
 - Planning:
   - `vxs.AStarActionPlanner(padding: int)`: Initialize with obstacle padding radius.
-  - `planner.plan_action_py(world: VoxelGrid, origin: [i32;3], dst: [i32;3], yaw: float, urgency: float) -> vxs.ActionIntent`.
+- `planner.plan_action_py(world: VoxelGrid, origin: [i32;3], dst: [i32;3], urgency: float, yaw: float) -> vxs.ActionIntent`.
 
 - View and camera:
   - `vxs.CameraProjection.new(aspect, fov_vertical, max_distance, near_distance)` or `vxs.CameraProjection.default_py()`.
@@ -202,4 +202,3 @@ For up-to-date references, prefer:
   - Reinstall/build with `--features px4` if you need PX4 dynamics.
 - Renderer not receiving POV
   - Verify `pov_count` matches the number of POV streams you intend to use and the renderer is running.
-

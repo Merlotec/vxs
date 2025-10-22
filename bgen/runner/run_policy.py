@@ -69,6 +69,8 @@ def run_episode(
     if enable_render:
         client = vxs.RendererClient.default_localhost_py(1)
         client.send_world_py(world)
+        last_world_send = time.time()
+        WORLD_REFRESH_INTERVAL_S = 1.0
         client.send_agents_py({0: agent})
 
     # Policy init
@@ -138,6 +140,10 @@ def run_episode(
                         agent.camera_view_py(cam), proj, fw, now, lambda *_: None
                     )
                     last_view_time = now
+                # Periodically refresh the world snapshot to keep renderer in sync
+                if (now - last_world_send) >= WORLD_REFRESH_INTERVAL_S:
+                    client.send_world_py(world)
+                    last_world_send = now
                 client.send_agents_py({0: agent})
             except Exception:
                 pass
@@ -203,6 +209,10 @@ def run_episode(
     steps_file.close()
 
     # Finalize
+    # Compute timing
+    wall_time_s = time.time() - t0
+    sim_time_s = float(steps) * float(delta)
+
     ep_ctx: Dict[str, Any] = {
         "success": success,
         "steps": steps,
@@ -212,6 +222,8 @@ def run_episode(
         "coverage": None,
         "time_to_goal": None,
         "reasons": None,
+        "sim_time_s": sim_time_s,
+        "wall_time_s": wall_time_s,
     }
     try:
         policy_summary = policy.finalize(ep_ctx)
@@ -230,6 +242,9 @@ def run_episode(
     )
     # Save summary
     ep_dict = ep.to_dict()
+    # Attach timing for downstream consumers (WS server)
+    ep_dict["sim_time_s"] = sim_time_s
+    ep_dict["wall_time_s"] = wall_time_s
     (outdir / f"summary.{seed}.json").write_text(json.dumps(ep_dict, indent=2))
     (outdir / f"summary.{seed}.txt").write_text(policy_summary.get("summary", ""))
     if on_summary:

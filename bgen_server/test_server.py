@@ -30,7 +30,7 @@ def act(t: float, agent: vxs.Agent, world: vxs.VoxelGrid, fw: vxs.FilterWorld, e
     if agent.get_action_py() is None:
         origin = agent.get_coord_py()
         try:
-            return helpers.plan_to(world, origin, [55,55,-20], yaw=0.0, urgency=0.8, padding=1)
+            return helpers.plan_to(world, origin, [55,55,-20], urgency=0.8, yaw=0.0, padding=1)
         except Exception:
             return helpers.intent(0.6, 0.0, [vxs.MoveDir.Forward])
     return None

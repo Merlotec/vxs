@@ -241,6 +241,8 @@ def _start_training_thread(
         # Iteration loop
         prior_crit: Optional[Path] = None
         stop_event: threading.Event = _runs[run_id]["stop"]
+        total_sim_time_s = 0.0
+        total_wall_time_s = 0.0
         for it in range(iterations):
             if stop_event.is_set():
                 break
@@ -269,7 +271,7 @@ def _start_training_thread(
                 if stop_event.is_set():
                     break
                 seed = ep
-                run_episode(
+                ep_result = run_episode(
                     policy_code=code,
                     outdir=iter_dir / f"ep_{seed}",
                     seed=seed,
@@ -283,6 +285,11 @@ def _start_training_thread(
                     on_summary=on_summary,
                     stop_event=stop_event,
                 )
+                try:
+                    total_sim_time_s += float(ep_result.get("sim_time_s", 0.0))
+                    total_wall_time_s += float(ep_result.get("wall_time_s", 0.0))
+                except Exception:
+                    pass
 
             # Evaluate
             if stop_event.is_set():
@@ -296,7 +303,12 @@ def _start_training_thread(
         if proxy is not None:
             proxy.stop()
         _runs[run_id]["status"] = "done"
-        hub.broadcast_sync(f"progress:{run_id}", {"type": "done"})
+        timing = {
+            "sim_time_s": total_sim_time_s,
+            "wall_time_s": total_wall_time_s,
+            "speedup_x": (total_sim_time_s / total_wall_time_s) if total_wall_time_s > 0 else None,
+        }
+        hub.broadcast_sync(f"progress:{run_id}", {"type": "done", "timing": timing})
         logger.info(f"Run {run_id} finished")
 
     threading.Thread(target=worker, daemon=True).start()
@@ -310,11 +322,25 @@ def run_training() -> Any:
     iterations = int(data.get("iterations", 1))
     episodes = int(data.get("episodes", 3))
     enable_render = bool(data.get("render", True))
-    max_steps = int(data.get("max_steps", 500))
+    # Simulation pacing
+    # World time per step is `delta`; if caller does not provide max_steps, compute from desired duration.
+    # `duration_seconds` means world seconds (steps * delta), not wall time.
+    max_steps = data.get("max_steps")
     try:
         delta = float(data.get("delta", 0.01))
     except Exception:
         delta = 0.01
+    # Derive steps from duration if needed
+    if max_steps is None:
+        try:
+            duration_world_s = float(data.get("duration_seconds", data.get("duration", 30.0)))
+        except Exception:
+            duration_world_s = 30.0
+        # Ceil to ensure at least the requested duration
+        import math as _math
+        max_steps = int(max(1, _math.ceil(duration_world_s / max(delta, 1e-6))))
+    else:
+        max_steps = int(max_steps)
     provider = str(data.get("provider", "anthropic")).lower()
     provider_url = data.get("provider_url")
     model = data.get("model")

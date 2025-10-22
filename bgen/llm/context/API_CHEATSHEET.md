@@ -18,8 +18,9 @@ Agents, Actions, Planning, View
 - `agent.perform_oneshot_py(vxs.ActionIntent(...))`; `agent.push_back_intent_py(...)`
 - `action = agent.get_action_py()`; `action.get_intent_queue() -> List[vxs.ActionIntent]`
 - `intent = vxs.ActionIntent(urgency, yaw, [vxs.MoveDir.Forward, ...], None)`
+  - Use non-zero `urgency` in [0.1, 1.0]; avoid 0.0
 - `planner = vxs.AStarActionPlanner(padding)`
-- `planner.plan_action_py(vg, [ox,oy,oz], [dx,dy,dz], yaw, urgency) -> vxs.ActionIntent`
+- `planner.plan_action_py(vg, [ox,oy,oz], [dx,dy,dz], urgency, yaw) -> vxs.ActionIntent`  (urgency before yaw)
 - `vxs.MoveDir` enum: `Forward/Back/Left/Right/Up/Down/None/Undecided`
 
 POV Compute
