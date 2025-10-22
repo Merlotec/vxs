@@ -7,7 +7,7 @@ from pathlib import Path
 # Set this to control the world size (e.g., 10, 30, 100)
 # Smaller values = faster performance for testing
 # NOTE: Very small worlds (< 20) may cause GPU buffer errors
-WORLD_SIZE = 200  # Change this value (20 = minimum, 30 = small, 100 = default)
+WORLD_SIZE = 100  # Change this value (20 = minimum, 30 = small, 100 = default)
 
 def _load_world_from_json(path: Path):
     data = json.loads(path.read_text())

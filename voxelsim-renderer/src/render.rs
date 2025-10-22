@@ -200,8 +200,8 @@ pub fn setup(
         ..Default::default()
     });
 
-    // Set clear color to black
-    commands.insert_resource(ClearColor(Color::BLACK));
+    // Set clear color to white
+    commands.insert_resource(ClearColor(Color::WHITE));
 
     // Spawn PanOrbitCamera
     commands.spawn((
