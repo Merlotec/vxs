@@ -83,7 +83,15 @@ export class WebSocketService {
 // Auto-detect WebSocket URL (localhost or production)
 export const getWebSocketUrl = (): string => {
   if (window.location.hostname === 'localhost') {
-    return 'ws://localhost:9080';
+    return 'ws://localhost:8089';
   }
   return `wss://${window.location.hostname.replace('voxelsim', 'voxelsim-backend')}/ws`;
+};
+
+// Get render WebSocket URL for a specific run and channel
+export const getRenderWebSocketUrl = (runId: string, channel: string): string => {
+  if (window.location.hostname === 'localhost') {
+    return `ws://localhost:8089/ws/render/${runId}/${channel}`;
+  }
+  return `wss://${window.location.hostname.replace('voxelsim', 'voxelsim-backend')}/ws/render/${runId}/${channel}`;
 };

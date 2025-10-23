@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Toaster } from 'sonner';
 import { LoadingScreen } from './components/LoadingScreen';
 import { StatusBar } from './components/StatusBar';
 import { Sidebar } from './components/Sidebar';
@@ -72,6 +73,7 @@ function App() {
       {loading && <LoadingScreen error={error ?? undefined} />}
       <StatusBar status={status} />
       <Sidebar />
+      <Toaster position="bottom-right" richColors />
     </>
   );
 }

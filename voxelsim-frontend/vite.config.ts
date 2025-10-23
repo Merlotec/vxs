@@ -10,6 +10,11 @@ export default defineConfig({
     wasm(),
     topLevelAwait()
   ],
+  resolve: {
+    alias: {
+      '@': '/src'
+    }
+  },
   server: {
     port: 3000,
     proxy: {
