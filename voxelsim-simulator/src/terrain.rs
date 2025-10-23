@@ -24,7 +24,7 @@ pub struct TerrainConfig {
 impl Default for TerrainConfig {
     fn default() -> Self {
         Self {
-            size: Vector3::new(200, 64, 200),
+            size: Vector3::new(100, 30, 100),
             height_scale: 100.0,
             flat_band: 0.1,
             max_terrain_height: 32,

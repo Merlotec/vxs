@@ -350,16 +350,20 @@ fn draw_spline(gizmos: &mut Gizmos, spline: &Trajectory) {
 /// The proxy server bridges TCP (Python) to WebSocket (browser).
 #[cfg(target_arch = "wasm32")]
 pub fn run_world_demo() {
+    // Use default URLs for demo mode (external node proxy)
+    run_world_with_urls("ws://localhost:9080".to_string(), "ws://localhost:9081".to_string());
+}
+
+/// Run the renderer with custom WebSocket URLs (for backend proxy mode)
+#[cfg(target_arch = "wasm32")]
+pub fn run_world_with_urls(world_url: String, agent_url: String) {
     web_sys::console::log_1(&"Starting VoxelSim Renderer (WASM WebSocket Mode)...".into());
+    web_sys::console::log_1(&format!("World URL: {}", world_url).into());
+    web_sys::console::log_1(&format!("Agent URL: {}", agent_url).into());
 
-    // Create WebSocket subscribers (connects to proxy server)
-    let (world_sub, world_receiver) = NetworkSubscriber::<VoxelGrid>::new(
-        "ws://localhost:9080".to_string(), // Proxy translates TCP :8080 → WebSocket :9080
-    );
-
-    let (agent_sub, agent_receiver) = NetworkSubscriber::<HashMap<usize, Agent>>::new(
-        "ws://localhost:9081".to_string(), // Proxy translates TCP :8081 → WebSocket :9081
-    );
+    // Create WebSocket subscribers with provided URLs
+    let (world_sub, world_receiver) = NetworkSubscriber::<VoxelGrid>::new(world_url);
+    let (agent_sub, agent_receiver) = NetworkSubscriber::<HashMap<usize, Agent>>::new(agent_url);
 
     // Start WebSocket connections
     world_sub.start();
@@ -369,10 +373,9 @@ pub fn run_world_demo() {
     let (_quit_sender, quit_receiver) = crossbeam_channel::unbounded::<()>();
 
     web_sys::console::log_1(
-        &"WebSocket connections initiated. Waiting for Python simulation data...".into(),
+        &"WebSocket connections initiated. Waiting for simulation data...".into(),
     );
 
     // Start Bevy with the same function as native version!
-    // The rendering code is identical - only the network layer changed
     begin_render(world_receiver, agent_receiver, gui_sender, quit_receiver);
 }

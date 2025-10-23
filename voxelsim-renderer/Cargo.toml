@@ -44,7 +44,7 @@ web-sys = { version = "0.3.81", features = [
 
 [profile.release]
 opt-level = 3      # Optimize for speed (not size)
-lto = "thin"         # Full link-time optimization
+lto = "fat"         # Full link-time optimization
 codegen-units = 1   # Better optimization
 strip = true        # Strip symbols
 
