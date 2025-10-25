@@ -113,3 +113,52 @@ class LLVPNOpenAIClient(LLMBackend):
         except Exception:
             content = data.get("content") or data.get("completion") or str(data)
         return _extract_code_block(content)
+
+
+class DirectOpenAIClient(LLMBackend):
+    """
+    Direct wrapper for OpenAI's official Python SDK.
+
+    Uses the official openai library to call OpenAI API directly without a proxy.
+    Expects OPENAI_API_KEY environment variable by default.
+    """
+
+    def __init__(self, *, api_key_env: str = "OPENAI_API_KEY") -> None:
+        self.api_key_env = api_key_env
+        self._client = None
+
+    def _get_client(self):
+        """Lazy initialization of OpenAI client."""
+        if self._client is None:
+            try:
+                from openai import OpenAI
+            except ImportError:
+                raise RuntimeError(
+                    "openai package is not installed. Install with: pip install openai"
+                )
+
+            api_key = os.environ.get(self.api_key_env)
+            if not api_key:
+                raise RuntimeError(f"Missing API key in env var {self.api_key_env}")
+
+            self._client = OpenAI(api_key=api_key)
+        return self._client
+
+    def generate(self, *, system: str, user: str, model: str, max_tokens: int = 2000, temperature: float = 0.2) -> str:
+        client = self._get_client()
+
+        response = client.chat.completions.create(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+
+        content = response.choices[0].message.content
+        if content is None:
+            raise RuntimeError("OpenAI API returned empty content")
+
+        return _extract_code_block(content)
