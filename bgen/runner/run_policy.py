@@ -290,7 +290,7 @@ def main() -> None:
     target = None
     if args.target:
         tx, ty, tz = map(int, args.target.split(","))
-        target = (float(tx), float(ty), float(tz))
+        target = (tx, ty, tz)
 
     for i in range(args.episodes):
         seed = args.seed_start + i

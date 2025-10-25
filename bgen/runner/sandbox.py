@@ -9,6 +9,7 @@ ALLOWED_IMPORTS = {"voxelsim", "math", "typing"}
 ALLOWED_BUILTINS = {
     "abs", "min", "max", "range", "len", "sum", "enumerate", "zip", "map", "filter",
     "all", "any", "isinstance", "print", "float", "int", "bool", "list", "dict", "set", "tuple",
+    "Exception", "TypeError", "ValueError", "KeyError",
     "__import__",  # needed for import statements executed in module scope
 }
 DISALLOWED_ATTRS = {"__import__", "eval", "exec", "compile", "open"}
