@@ -1,5 +1,91 @@
 ## VoxelSim Python API Cheatsheet (Current)
 
+## CRITICAL CONSTRAINTS - READ FIRST
+
+### Integer Coordinates Only
+ALL coordinate parameters MUST be integers (int), NOT floats:
+
+```python
+# CORRECT:
+target = [60, 60, -20]
+helpers.plan_to(world, origin, target, urgency=0.9, yaw=0.0, padding=1)
+
+# WRONG - Will crash with TypeError:
+target = [60.5, 60.3, -20.0]  # float coordinates!
+helpers.plan_to(world, origin, target, ...)  # ERROR!
+```
+
+If you calculate coordinates with math.cos/sin, convert to int:
+```python
+import math
+angle = math.radians(30)
+x = 60 + 5 * math.cos(angle)  # This is a float!
+y = 60 + 5 * math.sin(angle)  # This is a float!
+target = [int(x), int(y), -20]  # Must convert to int!
+```
+
+### A* Planner Generates STRAIGHT LINE Paths Only
+- `helpers.plan_to()` uses A* which creates direct straight-line paths
+- For circular or curved paths, use MULTIPLE waypoints visited sequentially
+- Example: 8 waypoints around a circle = approximate circular patrol
+
+### Allowed Exceptions in Sandbox
+The sandbox allows these exceptions in try/except blocks:
+- `Exception` (general)
+- `TypeError`
+- `ValueError`
+- `KeyError`
+
+### Distance-Based Checks for Position
+Never use exact equality for position checks:
+
+```python
+# WRONG - Will almost never match:
+if agent.get_coord_py() == target:
+
+# CORRECT - Check distance:
+import math
+origin = agent.get_coord_py()
+dist = math.sqrt((origin[0]-target[0])**2 + (origin[1]-target[1])**2 + (origin[2]-target[2])**2)
+if dist < 2:  # Within 2 voxels
+    # Reached target
+```
+
+### Stage/Phase Progression
+Never use time-based modulo conditions:
+
+```python
+# WRONG - Will never match (t is continuous float):
+if t % 360 == 0:
+
+# CORRECT - Use distance or counter:
+if waypoint_counter >= num_waypoints:
+if distance_to_target < 2:
+```
+
+### Urgency Parameter
+Urgency is a speed multiplier: `actual_speed = base_speed * urgency` where base_speed = 20 m/s.
+
+**Speed reference:**
+- `urgency=1.0` → 20 m/s
+- `urgency=0.9` → 18 m/s (recommended default)
+- `urgency=0.8` → 16 m/s
+- `urgency=0.5` → 10 m/s (slow, risk of timeout in long missions)
+- `urgency=0.1` → 2 m/s (extremely slow, will timeout)
+
+Urgency also affects lookahead distance and acceleration proportionally.
+
+**Typical usage:**
+```python
+# Most situations
+helpers.plan_to(world, origin, target, urgency=0.9, yaw=0.0, padding=1)
+
+# Obstacle-dense areas: increase padding, not reduce urgency
+helpers.plan_to(world, origin, target, urgency=0.9, yaw=0.0, padding=3)
+```
+
+Low urgency (<0.6) makes the drone very slow and often causes episode timeouts before reaching objectives.
+
 Import
 
 - `import voxelsim as vxs`
@@ -21,7 +107,7 @@ Agents, Actions, Planning, View
 - `agent.perform_oneshot_py(vxs.ActionIntent(...))`; `agent.push_back_intent_py(...)`
 - `action = agent.get_action_py()`; `action.get_intent_queue() -> List[vxs.ActionIntent]`
 - `intent = vxs.ActionIntent(urgency, yaw, [vxs.MoveDir.Forward, ...], None)`
-  - Use non-zero `urgency` in [0.1, 1.0]; avoid 0.0
+  - `urgency`: speed multiplier where `v_max = 20.0 * urgency` m/s (0.9 = 18m/s recommended, <0.6 = too slow)
 - `planner = vxs.AStarActionPlanner(padding)`
 - `planner.plan_action_py(vg, [ox,oy,oz], [dx,dy,dz], urgency, yaw) -> vxs.ActionIntent` (urgency before yaw)
 - `vxs.MoveDir` enum: `Forward/Back/Left/Right/Up/Down/Undecided`

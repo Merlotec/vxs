@@ -117,6 +117,25 @@ def aggregate(root: Path) -> Tuple[Dict[str, Any], str]:
             critique_lines.append(f"- {s}")
 
     critique = "\n".join(critique_lines)
+
+    # Add execution trace from failed episodes for LLM debugging
+    trace_files = list(root.glob("ep_*/trace.*.json"))
+    if trace_files:
+        trace_path = trace_files[0]
+        try:
+            trace_data = json.loads(trace_path.read_text())
+            # Sample trace to avoid token limit
+            if len(trace_data) > 150:
+                sampled = trace_data[:50] + trace_data[-100:]
+                critique += "\n\nEXECUTION TRACE (first 50 + last 100 steps):\n"
+                critique += json.dumps(sampled, indent=2)
+            else:
+                critique += "\n\nEXECUTION TRACE (full):\n"
+                critique += json.dumps(trace_data, indent=2)
+            critique += "\n\nAnalyze the trace above to identify why the agent failed and what bug caused it. Look for patterns like stuck positions, unchanging targets, or stage transition issues."
+        except Exception:
+            pass
+
     return agg, critique
 
 

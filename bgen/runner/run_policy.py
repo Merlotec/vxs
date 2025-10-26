@@ -43,6 +43,7 @@ def run_episode(
     # World & sim setup
     gen = vxs.TerrainGenerator()
     cfg = vxs.TerrainConfig.default_py()
+    cfg.set_world_size_py(200) 
     # Set world seed per episode to ensure reset and variability
     try:
         cfg.set_seed_py(int(seed) & 0xFFFFFFFF)
@@ -89,6 +90,8 @@ def run_episode(
     logs_path = outdir / f"steps.{seed}.jsonl"
     outdir.mkdir(parents=True, exist_ok=True)
     steps_file = logs_path.open("w", encoding="utf-8")
+
+    trace_log = []
 
     steps = 0
     collisions_total = 0
@@ -195,6 +198,13 @@ def run_episode(
         except Exception:
             policy_log = {}
 
+        # Collect trace for debugging
+        trace_log.append({
+            "step": steps,
+            "origin": list(coord),
+            "policy_log": policy_log,
+        })
+
         # Emit step log
         s = StepLog(
             t=t,
@@ -257,6 +267,11 @@ def run_episode(
     ep_dict["wall_time_s"] = wall_time_s
     (outdir / f"summary.{seed}.json").write_text(json.dumps(ep_dict, indent=2))
     (outdir / f"summary.{seed}.txt").write_text(policy_summary.get("summary", ""))
+
+    # Save trace for failed episodes (for LLM debugging)
+    if not success:
+        trace_path = outdir / f"trace.{seed}.json"
+        trace_path.write_text(json.dumps(trace_log, indent=2))
     if on_summary:
         try:
             on_summary(ep_dict)
@@ -272,7 +287,7 @@ def main() -> None:
     ap.add_argument("--outdir", type=str, default="runs/bgen", help="Output directory")
     ap.add_argument("--episodes", type=int, default=1)
     ap.add_argument("--seed-start", type=int, default=0)
-    ap.add_argument("--max-steps", type=int, default=500)
+    ap.add_argument("--max-steps", type=int, default=5000)
     ap.add_argument("--delta", type=float, default=0.01)
     ap.add_argument("--render", action="store_true", help="Enable renderer updates")
     ap.add_argument("--pov-size", type=str, default="200x150")
