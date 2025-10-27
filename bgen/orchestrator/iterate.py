@@ -56,7 +56,7 @@ def main() -> None:
             # Build prompt pack
             system = build_system_prompt()
             prior_crit = iter_dir.parent / f"iter_{it-1}" / "critique.txt" if it > 0 else None
-            user = build_user_prompt(user_goal=args.user_goal, repo_root=Path.cwd(), prior_critique_path=prior_crit)
+            user = build_user_prompt(user_goal=args.user_goal, repo_root=Path.cwd(), prior_critique_path=prior_crit, target=args.target)
             if args.provider == "openai":
                 client = LLVPNOpenAIClient(url=args.openai_url, api_key_env=args.api_key_env)
             elif args.provider == "openai-direct":

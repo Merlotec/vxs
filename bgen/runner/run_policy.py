@@ -195,8 +195,11 @@ def run_episode(
         policy_log: Dict[str, str]
         try:
             policy_log = policy.collect(step_ctx)
-        except Exception:
-            policy_log = {}
+        except Exception as e:
+            import traceback
+            print(f"WARNING: policy.collect() failed: {e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            policy_log = {"collect_error": str(e)}
 
         # Collect trace for debugging
         trace_log.append({
