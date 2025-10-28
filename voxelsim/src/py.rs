@@ -193,6 +193,9 @@ impl Cell {
     pub fn is_sparse_py(&self) -> bool {
         self.contains(Cell::SPARSE)
     }
+    pub fn is_interest_py(&self) -> bool {
+        self.contains(Cell::INTEREST)
+    }
     pub fn bits_py(&self) -> u32 {
         self.bits()
     }
