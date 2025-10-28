@@ -2,6 +2,7 @@ const FILLED: u32 = 16;
 const SPARSE: u32 = 32;
 const GROUND: u32 = 64;
 const TARGET: u32 = 128;
+const INTEREST: u32 = 256;
 
 // The camera data structure, matching the Rust struct.
 struct CameraUniform {

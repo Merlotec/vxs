@@ -183,6 +183,10 @@ impl Cell {
     pub fn sparse() -> Self {
         Self::SPARSE
     }
+    #[staticmethod]
+    pub fn interest() -> Self {
+        Self::INTEREST
+    }
     pub fn is_filled_py(&self) -> bool {
         self.contains(Cell::FILLED)
     }

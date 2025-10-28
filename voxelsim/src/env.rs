@@ -18,6 +18,7 @@ bitflags! {
         const SPARSE            = 0b0010_0000;
         const GROUND            = 0b0100_0000;
         const TARGET            = 0b1000_0000;
+        const INTEREST          = 0b0001_0000_0000;
     }
 
 }
