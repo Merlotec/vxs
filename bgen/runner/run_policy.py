@@ -32,6 +32,7 @@ def run_episode(
     pov_size: tuple[int, int],
     target: Optional[tuple[float, float, float]],
     use_px4: bool,
+    use_wind_farm: bool = False,
     pov_min_dt_world: float = 0.05,
     on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
     on_summary: Optional[Callable[[Dict[str, Any]], None]] = None,
@@ -41,19 +42,30 @@ def run_episode(
     policy = load_policy_module(policy_code)
 
     # World & sim setup
-    gen = vxs.TerrainGenerator()
-    cfg = vxs.TerrainConfig.default_py()
-    cfg.set_world_size_py(200) 
-    # Set world seed per episode to ensure reset and variability
-    try:
-        cfg.set_seed_py(int(seed) & 0xFFFFFFFF)
-    except Exception:
-        pass
-    gen.generate_terrain_py(cfg)
-    world = gen.generate_world_py()
+    if use_wind_farm:
+        # Use wind farm scenario
+        sys.path.insert(0, str(Path(__file__).parent.parent.parent / "python"))
+        from scenarios.wind_farm import create_wind_farm_map
+        world = create_wind_farm_map()
+    else:
+        # Generate random terrain
+        gen = vxs.TerrainGenerator()
+        cfg = vxs.TerrainConfig.default_py()
+        cfg.set_world_size_py(200)
+        # Set world seed per episode to ensure reset and variability
+        try:
+            cfg.set_seed_py(int(seed) & 0xFFFFFFFF)
+        except Exception:
+            pass
+        gen.generate_terrain_py(cfg)
+        world = gen.generate_world_py()
 
     agent = vxs.Agent(0)
-    agent.set_hold_py([50, 50, -20], 0.0)
+    # Start position: center of map at good height for wind farm
+    if use_wind_farm:
+        agent.set_hold_py([110, 110, -80], 0.0)  # Center of 220x220 map at search height
+    else:
+        agent.set_hold_py([50, 50, -20], 0.0)
 
     fw = vxs.FilterWorld()
     proj = vxs.CameraProjection.default_py()
@@ -115,6 +127,9 @@ def run_episode(
             result = policy.act(t, agent, world, fw, env, helpers)
         except Exception as e:
             # Fail closed: stop episode on policy error
+            print(f"[ERROR] Policy exception: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
             break
         # Support returning either an intent, or (intent, command) where command is "Replace" or "Push".
         intent = None
@@ -295,6 +310,7 @@ def main() -> None:
     ap.add_argument("--render", action="store_true", help="Enable renderer updates")
     ap.add_argument("--pov-size", type=str, default="200x150")
     ap.add_argument("--target", type=str, default=None, help="Target coord as x,y,z (grid coord with z negative above ground)")
+    ap.add_argument("--use-wind-farm", action="store_true", help="Use wind farm scenario instead of random terrain")
     grp = ap.add_mutually_exclusive_group()
     grp.add_argument("--px4", dest="px4", action="store_true", help="Use PX4 dynamics if available (default)")
     grp.add_argument("--no-px4", dest="px4", action="store_false", help="Disable PX4; use QuadDynamics")
@@ -322,6 +338,7 @@ def main() -> None:
             pov_size=pov_wh,  # type: ignore[arg-type]
             target=target,
             use_px4=args.px4,
+            use_wind_farm=args.use_wind_farm,
         )
 
 
