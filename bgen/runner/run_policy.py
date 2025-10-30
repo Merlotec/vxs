@@ -32,6 +32,7 @@ def run_episode(
     pov_size: tuple[int, int],
     target: Optional[tuple[float, float, float]],
     use_px4: bool,
+    use_wind_farm: bool = False,
     pov_min_dt_world: float = 0.05,
     on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
     on_summary: Optional[Callable[[Dict[str, Any]], None]] = None,
@@ -41,18 +42,30 @@ def run_episode(
     policy = load_policy_module(policy_code)
 
     # World & sim setup
-    gen = vxs.TerrainGenerator()
-    cfg = vxs.TerrainConfig.default_py()
-    # Set world seed per episode to ensure reset and variability
-    try:
-        cfg.set_seed_py(int(seed) & 0xFFFFFFFF)
-    except Exception:
-        pass
-    gen.generate_terrain_py(cfg)
-    world = gen.generate_world_py()
+    if use_wind_farm:
+        # Use wind farm scenario
+        sys.path.insert(0, str(Path(__file__).parent.parent.parent / "python"))
+        from scenarios.wind_farm import create_wind_farm_map
+        world = create_wind_farm_map()
+    else:
+        # Generate random terrain
+        gen = vxs.TerrainGenerator()
+        cfg = vxs.TerrainConfig.default_py()
+        cfg.set_world_size_py(200)
+        # Set world seed per episode to ensure reset and variability
+        try:
+            cfg.set_seed_py(int(seed) & 0xFFFFFFFF)
+        except Exception:
+            pass
+        gen.generate_terrain_py(cfg)
+        world = gen.generate_world_py()
 
     agent = vxs.Agent(0)
-    agent.set_hold_py([50, 50, -20], 0.0)
+    # Start position: center of map at good height for wind farm
+    if use_wind_farm:
+        agent.set_hold_py([110, 110, -80], 0.0)  # Center of 220x220 map at search height
+    else:
+        agent.set_hold_py([50, 50, -20], 0.0)
 
     fw = vxs.FilterWorld()
     proj = vxs.CameraProjection.default_py()
@@ -90,6 +103,8 @@ def run_episode(
     outdir.mkdir(parents=True, exist_ok=True)
     steps_file = logs_path.open("w", encoding="utf-8")
 
+    trace_log = []
+
     steps = 0
     collisions_total = 0
     last_view_time = time.time()
@@ -112,6 +127,9 @@ def run_episode(
             result = policy.act(t, agent, world, fw, env, helpers)
         except Exception as e:
             # Fail closed: stop episode on policy error
+            print(f"[ERROR] Policy exception: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
             break
         # Support returning either an intent, or (intent, command) where command is "Replace" or "Push".
         intent = None
@@ -192,8 +210,18 @@ def run_episode(
         policy_log: Dict[str, str]
         try:
             policy_log = policy.collect(step_ctx)
-        except Exception:
-            policy_log = {}
+        except Exception as e:
+            import traceback
+            print(f"WARNING: policy.collect() failed: {e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            policy_log = {"collect_error": str(e)}
+
+        # Collect trace for debugging
+        trace_log.append({
+            "step": steps,
+            "origin": list(coord),
+            "policy_log": policy_log,
+        })
 
         # Emit step log
         s = StepLog(
@@ -257,6 +285,11 @@ def run_episode(
     ep_dict["wall_time_s"] = wall_time_s
     (outdir / f"summary.{seed}.json").write_text(json.dumps(ep_dict, indent=2))
     (outdir / f"summary.{seed}.txt").write_text(policy_summary.get("summary", ""))
+
+    # Save trace for failed episodes (for LLM debugging)
+    if not success:
+        trace_path = outdir / f"trace.{seed}.json"
+        trace_path.write_text(json.dumps(trace_log, indent=2))
     if on_summary:
         try:
             on_summary(ep_dict)
@@ -272,11 +305,12 @@ def main() -> None:
     ap.add_argument("--outdir", type=str, default="runs/bgen", help="Output directory")
     ap.add_argument("--episodes", type=int, default=1)
     ap.add_argument("--seed-start", type=int, default=0)
-    ap.add_argument("--max-steps", type=int, default=500)
+    ap.add_argument("--max-steps", type=int, default=5000)
     ap.add_argument("--delta", type=float, default=0.01)
     ap.add_argument("--render", action="store_true", help="Enable renderer updates")
     ap.add_argument("--pov-size", type=str, default="200x150")
     ap.add_argument("--target", type=str, default=None, help="Target coord as x,y,z (grid coord with z negative above ground)")
+    ap.add_argument("--use-wind-farm", action="store_true", help="Use wind farm scenario instead of random terrain")
     grp = ap.add_mutually_exclusive_group()
     grp.add_argument("--px4", dest="px4", action="store_true", help="Use PX4 dynamics if available (default)")
     grp.add_argument("--no-px4", dest="px4", action="store_false", help="Disable PX4; use QuadDynamics")
@@ -304,6 +338,7 @@ def main() -> None:
             pov_size=pov_wh,  # type: ignore[arg-type]
             target=target,
             use_px4=args.px4,
+            use_wind_farm=args.use_wind_farm,
         )
 
 

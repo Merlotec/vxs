@@ -183,11 +183,18 @@ impl Cell {
     pub fn sparse() -> Self {
         Self::SPARSE
     }
+    #[staticmethod]
+    pub fn interest() -> Self {
+        Self::INTEREST
+    }
     pub fn is_filled_py(&self) -> bool {
         self.contains(Cell::FILLED)
     }
     pub fn is_sparse_py(&self) -> bool {
         self.contains(Cell::SPARSE)
+    }
+    pub fn is_interest_py(&self) -> bool {
+        self.contains(Cell::INTEREST)
     }
     pub fn bits_py(&self) -> u32 {
         self.bits()

@@ -32,6 +32,7 @@ def main() -> None:
     ap.add_argument("--episodes", type=int, default=3)
     ap.add_argument("--render", action="store_true")
     ap.add_argument("--target", type=str, default="60,60,-20", help="Target position as x,y,z")
+    ap.add_argument("--use-wind-farm", action="store_true", help="Use wind farm scenario instead of random terrain")
     # LLM options
     ap.add_argument("--use-llm", action="store_true", help="Generate the policy via LLM")
     ap.add_argument("--user-goal", type=str, default="Reach the target while minimizing collisions.")
@@ -56,7 +57,10 @@ def main() -> None:
             # Build prompt pack
             system = build_system_prompt()
             prior_crit = iter_dir.parent / f"iter_{it-1}" / "critique.txt" if it > 0 else None
-            user = build_user_prompt(user_goal=args.user_goal, repo_root=Path.cwd(), prior_critique_path=prior_crit)
+            user = build_user_prompt(user_goal=args.user_goal, repo_root=Path.cwd(), prior_critique_path=prior_crit, target=args.target)
+            # Save prompts for debugging
+            (iter_dir / "system_prompt.txt").write_text(system, encoding="utf-8")
+            (iter_dir / "user_prompt.txt").write_text(user, encoding="utf-8")
             if args.provider == "openai":
                 client = LLVPNOpenAIClient(url=args.openai_url, api_key_env=args.api_key_env)
             elif args.provider == "openai-direct":
@@ -87,7 +91,13 @@ def main() -> None:
         ]
         if args.render:
             cmd.append("--render")
-        subprocess.run(cmd, check=False)
+        if args.use_wind_farm:
+            cmd.append("--use-wind-farm")
+
+        # Capture stderr for error analysis
+        stderr_log = iter_dir / "stderr.log"
+        with stderr_log.open("w") as f:
+            subprocess.run(cmd, check=False, stderr=f)
 
         # Evaluate this iteration
         eval_cmd = [

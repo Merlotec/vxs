@@ -117,6 +117,84 @@ def aggregate(root: Path) -> Tuple[Dict[str, Any], str]:
             critique_lines.append(f"- {s}")
 
     critique = "\n".join(critique_lines)
+
+    # Analyze stderr for common errors
+    stderr_files = list(root.glob("stderr.log"))
+    if stderr_files and stderr_files[0].exists():
+        try:
+            stderr_text = stderr_files[0].read_text()
+            error_diagnostics = []
+
+            # Check for float coordinate error
+            if "list indices must be integers or slices, not float" in stderr_text:
+                error_diagnostics.append(
+                    "\n** DETECTED ERROR: Float coordinates used instead of integers **\n"
+                    "This is the MOST COMMON error in policy generation.\n"
+                    "ROOT CAUSE: math.cos() and math.sin() return floats, but coordinates must be integers.\n"
+                    "\nWRONG CODE PATTERN:\n"
+                    "  x = center_x + radius * math.cos(angle)  # Returns float!\n"
+                    "  waypoints.append([x, z, y])  # CRASH: x is float\n"
+                    "\nCORRECT CODE PATTERN:\n"
+                    "  x = int(center_x + radius * math.cos(angle))  # Wrap with int()\n"
+                    "  waypoints.append([x, z, y])  # OK: x is int\n"
+                    "\nFIX: Wrap EVERY math.cos/sin calculation with int() before using in coordinates."
+                )
+
+            # Check for globals error
+            if "name 'globals' is not defined" in stderr_text or "name 'globals' is not defined" in stderr_text:
+                error_diagnostics.append(
+                    "\n** DETECTED ERROR: 'globals' typo **\n"
+                    "ROOT CAUSE: Used 'globals' instead of 'global' keyword.\n"
+                    "\nWRONG CODE:\n"
+                    "  def collect(step_ctx):\n"
+                    "      current_waypoint = globals['current_waypoint']  # ERROR\n"
+                    "\nCORRECT CODE:\n"
+                    "  def collect(step_ctx):\n"
+                    "      global current_waypoint  # Declare as global\n"
+                    "      return {'waypoint': current_waypoint}\n"
+                )
+
+            # Check for immediate crashes (0 steps)
+            if mean_steps == 0.0 and success_rate == 0.0:
+                error_diagnostics.append(
+                    "\n** DETECTED: Policy crashes immediately (0 steps executed) **\n"
+                    "This usually means there's a Python error in init() or first call to act().\n"
+                    "Common causes:\n"
+                    "1. Float coordinates (see above)\n"
+                    "2. Uninitialized module-level variables\n"
+                    "3. Typos in function/variable names\n"
+                    "4. Missing imports (math, etc.)\n"
+                    "\nDEBUG: Check the generated policy code carefully for syntax errors."
+                )
+
+            if error_diagnostics:
+                critique += "\n\n" + "="*60
+                critique += "\nERROR ANALYSIS FROM STDERR:"
+                critique += "\n" + "="*60
+                for diag in error_diagnostics:
+                    critique += diag
+
+        except Exception:
+            pass
+
+    # Add execution trace from failed episodes for LLM debugging
+    trace_files = list(root.glob("ep_*/trace.*.json"))
+    if trace_files:
+        trace_path = trace_files[0]
+        try:
+            trace_data = json.loads(trace_path.read_text())
+            # Sample trace to avoid token limit
+            if len(trace_data) > 150:
+                sampled = trace_data[:50] + trace_data[-100:]
+                critique += "\n\nEXECUTION TRACE (first 50 + last 100 steps):\n"
+                critique += json.dumps(sampled, indent=2)
+            else:
+                critique += "\n\nEXECUTION TRACE (full):\n"
+                critique += json.dumps(trace_data, indent=2)
+            critique += "\n\nAnalyze the trace above to identify why the agent failed and what bug caused it. Look for patterns like stuck positions, unchanging targets, or stage transition issues."
+        except Exception:
+            pass
+
     return agg, critique
 
 

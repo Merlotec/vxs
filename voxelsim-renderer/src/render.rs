@@ -62,6 +62,7 @@ pub struct CellAssets {
     pub ground_mat: Handle<StandardMaterial>,
     pub solid_mat: Handle<StandardMaterial>,
     pub target_mat: Handle<StandardMaterial>,
+    pub interest_mat: Handle<StandardMaterial>,
     pub drone_mat: Handle<StandardMaterial>,
     pub action_mat: Handle<StandardMaterial>,
     pub action_origin_mat: Handle<StandardMaterial>,
@@ -70,6 +71,9 @@ pub struct CellAssets {
 
 impl CellAssets {
     pub fn material_for_cell(&self, cell: &Cell) -> Handle<StandardMaterial> {
+        if cell.contains(Cell::INTEREST) {
+            return self.interest_mat.clone();
+        }
         if cell.contains(Cell::TARGET) {
             return self.target_mat.clone();
         }
@@ -138,6 +142,11 @@ pub fn setup(
         alpha_mode: AlphaMode::Blend,
         ..default()
     });
+    let interest_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 0.0, 0.0, 0.9),
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
     let drone_mat = materials.add(StandardMaterial {
         base_color: Color::srgba(0.3, 0.1, 0.8, 0.3),
         alpha_mode: AlphaMode::Blend,
@@ -182,6 +191,7 @@ pub fn setup(
         solid_mat,
         drone_mat,
         target_mat,
+        interest_mat,
         action_mat,
         action_origin_mat,
         drone_scene,
