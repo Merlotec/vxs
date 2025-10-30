@@ -162,6 +162,11 @@ impl Action {
         Ok(action)
     }
 
+    pub fn appending_intent(mut self, intent: ActionIntent) -> Self {
+        self.intent_queue.push_back(intent);
+        self
+    }
+
     pub fn centroids<'a, I: IntoIterator<Item = &'a MoveDir>>(
         move_sequence: I,
         origin: Vector3<i32>,

@@ -275,17 +275,17 @@ impl Action {
     pub fn get_intent_queue(&self) -> Vec<ActionIntent> {
         self.intent_queue.clone().into()
     }
+
+    /// Clones the action under the hood.
+    pub fn appending_intent_py(&self, intent: ActionIntent) -> Self {
+        self.clone().appending_intent(intent)
+    }
 }
 
 #[pymethods]
 impl ActionIntent {
     #[new]
-    pub fn new_py(
-        urgency: f64,
-        yaw: f64,
-        move_sequence: MoveSequence,
-        next: Option<ActionIntent>,
-    ) -> Self {
+    pub fn new_py(urgency: f64, yaw: f64, move_sequence: MoveSequence) -> Self {
         Self::new(urgency, yaw, move_sequence)
     }
 

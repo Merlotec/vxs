@@ -1,7 +1,9 @@
-use voxelsim::{Action, Agent, viewport::VirtualGrid};
+use voxelsim::{Action, Agent, VoxelGrid};
 
 pub mod manual;
+pub mod python;
+pub use python::PythonBackend;
 
 pub trait ControlBackend {
-    fn update_action(&mut self, agent: &Agent, fw: &VirtualGrid) -> Option<Action>;
+    fn update_action(&mut self, agent: &Agent, fw: &VoxelGrid) -> Option<Action>;
 }

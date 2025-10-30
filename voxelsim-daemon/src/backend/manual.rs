@@ -12,11 +12,17 @@ pub struct ManualBackend<R: ActionReceiver> {
     receiver: R,
 }
 
+impl<R: ActionReceiver> ManualBackend<R> {
+    pub fn new(receiver: R) -> Self {
+        Self { receiver }
+    }
+}
+
 impl<R: ActionReceiver> ControlBackend for ManualBackend<R> {
     fn update_action(
         &mut self,
         agent: &voxelsim::Agent,
-        fw: &voxelsim::viewport::VirtualGrid,
+        fw: &voxelsim::VoxelGrid,
     ) -> Option<Action> {
         self.receiver.try_recv_signal()
     }

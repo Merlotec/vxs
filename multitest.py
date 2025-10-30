@@ -1,3 +1,4 @@
+
 from pynput import keyboard, mouse
 import voxelsim as vxs, time
 import math, json, sys
@@ -135,8 +136,6 @@ YAW_STEP = math.pi * 0.125  # radians per key press (about 17°)
 
 yaw_delta = 0.0
 
-last_update = 0.0
-
 while listener.running:
     t0 = time.time()
     view_delta = t0 - last_view_time
@@ -191,10 +190,10 @@ while listener.running:
     #     print("Collision!")
     # im = env.update_pov_py()
     
+    client.send_agents_py({0: agent})
     # env.send_pov(client, 0, 0)
     d = time.time() - t0
-    if d - last_update > 0.01:
-        client.send_agents_py({0: agent})
-        last_update = d
+    if d < delta:
+        time.sleep(delta - d)
 
 listener.join()

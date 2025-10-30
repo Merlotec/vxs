@@ -12,7 +12,7 @@ default = []
 px4 = ["voxelsim-simulator/px4"]
 
 [dependencies]
-voxelsim = {path = "../voxelsim", features = ["python"]}
+voxelsim = {path = "../voxelsim", features = ["python-ext"]}
 voxelsim-simulator = {path = "../voxelsim-simulator", features = ["python"]}
 voxelsim-compute = {path = "../voxelsim-compute", features = ["python"]}
 pyo3 = { version = "0.25.1", features = ["extension-module"] }

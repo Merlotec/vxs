@@ -10,7 +10,7 @@ class Helpers:
         return vxs.MoveDir
 
     def intent(self, urgency: float, yaw: float, moves: List[vxs.MoveDir]) -> vxs.ActionIntent:
-        return vxs.ActionIntent(urgency, yaw, moves, None)
+        return vxs.ActionIntent(urgency, yaw, moves)
 
     def plan_to(
         self,

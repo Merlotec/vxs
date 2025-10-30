@@ -174,7 +174,7 @@ while listener.running:
     if 'shift' in just_pressed: commands.append(vxs.MoveDir.Down)
     if not action or commands != commands_cl:
         if len(commands) > 0:
-            intent = vxs.ActionIntent(0.8, yaw_delta, commands, None)
+            intent = vxs.ActionIntent(0.8, yaw_delta, commands)
             agent.perform_oneshot_py(intent)
 
     # The point in space that the drone should be chasing.

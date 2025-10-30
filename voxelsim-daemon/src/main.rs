@@ -1,8 +1,9 @@
 pub mod backend;
 pub mod controller;
-pub mod process;
-pub mod slam;
+pub mod server;
 
 fn main() {
-    println!("Hello, world!");
+    if let Err(e) = server::run_server("127.0.0.1:7000") {
+        eprintln!("Server error: {}", e);
+    }
 }
