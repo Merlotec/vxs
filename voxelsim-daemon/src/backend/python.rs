@@ -1,5 +1,5 @@
-use std::convert::TryFrom;
 use std::ffi::CString;
+use std::{convert::TryFrom, time::Duration};
 
 use pyo3::{
     prelude::*,
@@ -7,7 +7,7 @@ use pyo3::{
 };
 use voxelsim::{Action, ActionIntent, Agent, MoveDir, VoxelGrid};
 
-use crate::backend::ControlBackend;
+use crate::backend::{ControlBackend, ControlStep};
 
 pub struct PythonBackend {
     module: Py<PyModule>,
@@ -42,17 +42,22 @@ impl PythonBackend {
 }
 
 impl ControlBackend for PythonBackend {
-    fn update_action(&mut self, agent: &Agent, _fw: &VoxelGrid) -> Option<Action> {
-        Python::with_gil(|py| {
+    fn update_action(&mut self, agent: &Agent, fw: &VoxelGrid) -> ControlStep {
+        let update = Python::with_gil(|py| {
             let func = self.update_action_fn.bind(py);
-            let ret = func.call0().ok()?; // Bound<'py, PyAny>
+            // TODO: the fw clone may be very inefficient.
+            let ret = func.call((agent.clone(), fw.clone()), None).ok()?;
 
-            // Expect a voxelsim_core.Action instance; extract and clone to native Rust Action
-            if let Ok(a) = ret.extract::<pyo3::PyRef<voxelsim::Action>>() {
-                return Some(a.clone());
+            if let Ok(a) = ret.extract::<Option<voxelsim::py::PyAgentStateUpdate>>() {
+                return a.clone();
             }
 
             None
-        })
+        });
+
+        ControlStep {
+            update: update.map(|x| x.into()),
+            min_sleep: Duration::from_millis(100),
+        }
     }
 }

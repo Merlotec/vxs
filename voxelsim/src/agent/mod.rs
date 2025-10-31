@@ -97,6 +97,17 @@ pub struct Action {
     pub origin: Vector3<i32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AgentStateUpdate {
+    Push(ActionIntent),
+    Replace(VecDeque<ActionIntent>),
+    Truncate(VecDeque<ActionIntent>),
+    Hold {
+        coord: Option<Coord>,
+        yaw: Option<f64>,
+    },
+}
+
 impl ActionIntent {
     pub fn new(urgency: f64, yaw: f64, move_sequence: MoveSequence) -> Self {
         assert!(urgency > 0.0);
@@ -162,8 +173,23 @@ impl Action {
         Ok(action)
     }
 
+    pub fn new(intent_queue: VecDeque<ActionIntent>, origin: Coord) -> Result<Self, ActionError> {
+        for intent in intent_queue.iter() {
+            if intent.move_sequence.is_empty() {
+                return Err(ActionError::NoCommands);
+            }
+        }
+        let cells = Action::chained_centroids(&intent_queue, origin)?;
+        let action = Action {
+            intent_queue,
+            origin,
+            trajectory: Trajectory::new(origin, &cells),
+        };
+        Ok(action)
+    }
+
     pub fn appending_intent(mut self, intent: ActionIntent) -> Self {
-        self.intent_queue.push_back(intent);
+        self.push_back_intent(intent);
         self
     }
 
@@ -253,7 +279,6 @@ impl Action {
         // We must update the trajectory...
         // We can do this by determining the change in length, and then subtracting that from the current progress.
         let progress = self.trajectory.progress;
-        let old_len = self.trajectory.length();
         let old_m = self
             .trajectory
             .move_for_progress(progress)
@@ -275,6 +300,33 @@ impl Action {
             .ok_or(ActionError::InvalidProgress)?;
 
         Ok(front)
+    }
+
+    /// Removes all intents in front of the currently active intent.
+    pub fn truncate_replace(
+        &mut self,
+        mut replace: VecDeque<ActionIntent>,
+    ) -> Result<(), ActionError> {
+        let progress = self.trajectory.progress;
+
+        let curr_intent_idx = self
+            .intent_for_progress(progress)
+            .ok_or(ActionError::InvalidProgress)?;
+
+        let t = self.intent_queue.len() - (curr_intent_idx + 1);
+        self.intent_queue.truncate(t);
+
+        self.intent_queue.append(&mut replace);
+
+        // We have added something so we need to update the trajectory.
+        self.trajectory = Trajectory::new(
+            self.origin,
+            &Self::chained_centroids(self.intent_queue.iter(), self.origin)?,
+        );
+
+        self.trajectory.progress = progress;
+
+        Ok(())
     }
 
     pub fn push_back_intent(&mut self, intent: ActionIntent) -> Result<(), ActionError> {
@@ -330,6 +382,17 @@ impl Agent {
         self.pos.map(|e| e.round() as i32)
     }
 
+    pub fn get_yaw(&self) -> f64 {
+        let forward = MoveDir::Forward.dir_vector().unwrap().cast();
+        let drone_forward = self.attitude * MoveDir::Forward.dir_vector().unwrap().cast();
+
+        let up = MoveDir::Up.dir_vector().unwrap().cast();
+        let proj = forward - (drone_forward.dot(&up)) * up;
+
+        let yaw = forward.angle(&proj);
+        yaw
+    }
+
     pub fn set_hold(&mut self, coord: Coord, yaw: f64) {
         self.pos = coord.cast();
         self.state = AgentState::Hold { coord, yaw };
@@ -337,6 +400,34 @@ impl Agent {
 
     pub fn set_velocity(&mut self, x: f64, y: f64, z: f64) {
         self.vel = Vector3::new(x, y, z);
+    }
+
+    pub fn update_state(&mut self, update: AgentStateUpdate) -> Result<(), ActionError> {
+        match update {
+            AgentStateUpdate::Push(intent) => {
+                if let AgentState::Action(a) = &mut self.state {
+                    a.push_back_intent(intent)?;
+                } else {
+                    self.state = AgentState::Action(Action::new_oneshot(intent, self.get_coord())?);
+                }
+            }
+            AgentStateUpdate::Replace(intent_queue) => {
+                self.state = AgentState::Action(Action::new(intent_queue, self.get_coord())?);
+            }
+            AgentStateUpdate::Truncate(intent_queue) => {
+                if let AgentState::Action(a) = &mut self.state {
+                    a.truncate_replace(intent_queue.into())?;
+                } else {
+                    self.state = AgentState::Action(Action::new(intent_queue, self.get_coord())?);
+                }
+            }
+            AgentStateUpdate::Hold { coord, yaw } => {
+                let coord = coord.unwrap_or(self.get_coord());
+                let yaw = yaw.unwrap_or(self.get_yaw());
+                self.state = AgentState::Hold { coord, yaw }
+            }
+        }
+        Ok(())
     }
 
     pub fn perform(&mut self, intent: ActionIntent) -> Result<(), ActionError> {

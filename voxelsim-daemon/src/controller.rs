@@ -112,6 +112,24 @@ impl ConnectionInterface {
         self.conn.send(&MavHeader::default(), &msg)
     }
 
+    pub fn send_kill(&self) -> Result<usize, MessageWriteError> {
+        // Flight termination: immediately stop motors. Use with extreme caution.
+        let msg = MavMessage::COMMAND_LONG(COMMAND_LONG_DATA {
+            target_system: self.target_system,
+            target_component: self.target_component,
+            command: MavCmd::MAV_CMD_DO_FLIGHTTERMINATION,
+            confirmation: 0,
+            param1: 1.0, // 1 = terminate
+            param2: 0.0,
+            param3: 0.0,
+            param4: 0.0,
+            param5: 0.0,
+            param6: 0.0,
+            param7: 0.0,
+        });
+        self.conn.send(&MavHeader::default(), &msg)
+    }
+
     pub fn send_waypoint(
         &self,
         pos: Vector3<f64>,

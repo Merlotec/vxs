@@ -24,12 +24,15 @@ pub struct State {
     pub size: Vector2<u32>,
     pub rasterizer_state: RasterizerState,
     pub filter_buffer: InstanceBuffer,
+    pub dynamic_buffer: InstanceBuffer,
     pub staging_pool: StagingBufferPool,
     // Reused scratch space for instance uploads to avoid per-frame allocations
-    instance_scratch: Vec<crate::rasterizer::CellInstance>,
+    filter_instance_scratch: Vec<crate::rasterizer::CellInstance>,
+    dynamic_instance_scratch: Vec<crate::rasterizer::CellInstance>,
 }
 
 impl State {
+    const DYNAMIC_INSTANCE_SIZE: usize = 1000;
     // Creating some of the wgpu types requires async code
     pub async fn create(world: &VoxelGrid, view_size: Vector2<u32>, noise: NoiseParams) -> Self {
         // The instance is a handle to our GPU
@@ -77,6 +80,8 @@ impl State {
 
         let filter_buffer =
             CellInstance::create_instance_buffer_uninit(&device, world.cells().len());
+        let dynamic_buffer =
+            CellInstance::create_instance_buffer_uninit(&device, Self::DYNAMIC_INSTANCE_SIZE);
 
         let staging_pool = StagingBufferPool::new(device.clone());
 
@@ -86,8 +91,10 @@ impl State {
             size: view_size,
             rasterizer_state,
             filter_buffer,
+            dynamic_buffer,
             staging_pool,
-            instance_scratch: Vec::with_capacity(world.cells().len()),
+            filter_instance_scratch: Vec::with_capacity(world.cells().len()),
+            dynamic_instance_scratch: Vec::with_capacity(Self::DYNAMIC_INSTANCE_SIZE),
         }
     }
 
@@ -95,6 +102,7 @@ impl State {
         &mut self,
         camera_matrix: &CameraMatrix,
         filter_world: &VoxelGrid,
+        dynamic_world: &VoxelGrid,
         timestamp: f64,
         cam_dir_world: nalgebra::Vector3<f64>,
     ) -> Result<WorldChangeset, wgpu::SurfaceError> {
@@ -135,14 +143,25 @@ impl State {
             None
         };
 
-        let buffer_len = filter_world.cells().len() as u32;
+        let filter_buffer_len = filter_world.cells().len() as u32;
 
         CellInstance::write_instance_buffer_with_scratch(
             &self.queue,
             &self.filter_buffer,
             filter_world,
-            &mut self.instance_scratch,
+            &mut self.filter_instance_scratch,
         );
+
+        let dynamic_buffer_len = dynamic_world.cells().len() as u32;
+
+        CellInstance::write_instance_buffer_with_scratch(
+            &self.queue,
+            &self.dynamic_buffer,
+            dynamic_world,
+            &mut self.dynamic_instance_scratch,
+        );
+        // Keep the dynamic buffer's logical len in sync with this frame's data
+        self.dynamic_buffer.len = dynamic_buffer_len;
         if profile_enabled {
             println!("💾 Regular filter buffer upload from VirtualGrid");
         }
@@ -171,7 +190,7 @@ impl State {
             &self.device,
             camera_matrix,
             &self.filter_buffer.buf,
-            buffer_len,
+            filter_buffer_len,
         );
 
         let culling_submissions = self.queue.submit(std::iter::once(cull_encoder.finish()));
@@ -211,8 +230,13 @@ impl State {
             });
 
         // Encode main rasterizer pass using culled instances with indirect draw
-        self.rasterizer_state
-            .encode_rasterizer(&mut encoder, camera_matrix, true, None);
+        self.rasterizer_state.encode_rasterizer(
+            &mut encoder,
+            &self.dynamic_buffer,
+            camera_matrix,
+            true,
+            None,
+        );
 
         let main_submit_start = if profile_enabled {
             Some(std::time::Instant::now())
@@ -256,7 +280,7 @@ impl State {
             &mut filter_encoder,
             camera_matrix,
             &self.filter_buffer.buf,
-            buffer_len,
+            filter_buffer_len,
             true,
             None,
         );

@@ -20,6 +20,7 @@ enum Command {
     EngageManual,
     Disengage,
     Land,
+    Kill,
     Quit,
 }
 
@@ -36,6 +37,7 @@ fn parse_command(line: &str) -> Option<Command> {
         ["ENGAGE_MANUAL"] => Some(Command::EngageManual),
         ["DISENGAGE"] => Some(Command::Disengage),
         ["LAND"] => Some(Command::Land),
+        ["KILL"] => Some(Command::Kill),
         ["QUIT"] => Some(Command::Quit),
         _ => None,
     }
@@ -91,7 +93,7 @@ pub fn run_server(addr: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-fn handle_client(
+pub fn handle_client(
     mut stream: TcpStream,
     conn: Arc<ConnectionInterface>,
     agent: Arc<Mutex<Agent>>,
@@ -100,7 +102,7 @@ fn handle_client(
     let peer = stream.peer_addr()?;
     stream.write_all(b"Hello from voxelsim-daemon.\n")?;
     stream.write_all(
-        b"Commands: TAKEOFF <alt>, ENGAGE <script>, ENGAGE_MANUAL, DISENGAGE, LAND, QUIT\n",
+        b"Commands: TAKEOFF <alt>, ENGAGE <script>, ENGAGE_MANUAL, DISENGAGE, LAND, KILL, QUIT\n",
     )?;
     stream.write_all(b"Manual input: ACTION <urgency> <yaw> <move_codes_csv>\n")?;
 
@@ -161,6 +163,11 @@ fn handle_client(
                                 engaged = false;
                                 land(&conn)?;
                                 writeln!(stream, "OK LANDING")?;
+                            }
+                            Command::Kill => {
+                                engaged = false;
+                                kill(&conn)?;
+                                writeln!(stream, "OK KILLED")?;
                             }
                             Command::Quit => {
                                 engaged = false;
@@ -273,6 +280,11 @@ fn land(conn: &ConnectionInterface) -> std::io::Result<()> {
         thread::sleep(Duration::from_millis(200));
     }
     let _ = conn.send_armed(false);
+    Ok(())
+}
+
+fn kill(conn: &ConnectionInterface) -> std::io::Result<()> {
+    let _ = conn.send_kill();
     Ok(())
 }
 

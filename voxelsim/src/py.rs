@@ -12,7 +12,7 @@ use numpy::ndarray::ShapeError;
 use crate::{
     Cell, Coord,
     agent::{
-        Action, ActionIntent, Agent, AgentState, MoveDir, MoveSequence,
+        Action, ActionIntent, Agent, AgentState, AgentStateUpdate, MoveDir, MoveSequence,
         viewport::{CameraProjection, CameraView},
     },
     chase::{ChaseTarget, FixedLookaheadChaser, TrajectoryChaser},
@@ -33,6 +33,7 @@ pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<MoveDir>()?;
     m.add_class::<Action>()?;
     m.add_class::<ActionIntent>()?;
+    m.add_class::<PyAgentStateUpdate>()?;
     m.add_class::<RendererClient>()?;
     m.add_class::<CameraProjection>()?;
     m.add_class::<FixedLookaheadChaser>()?;
@@ -228,6 +229,11 @@ impl Agent {
         }
     }
 
+    pub fn update_state_py(&mut self, update: PyAgentStateUpdate) -> PyResult<()> {
+        self.update_state(update.inner)
+            .map_err(|e| PyException::new_err(format!("Could not update agent state: {}", e)))
+    }
+
     pub fn camera_view_py(&self, orientation: &CameraOrientation) -> CameraView {
         self.camera_view(orientation)
     }
@@ -302,6 +308,52 @@ impl ActionIntent {
 
     pub fn len(&self) -> usize {
         self.move_sequence.len()
+    }
+}
+
+#[derive(Debug, Clone)]
+#[pyclass]
+pub struct PyAgentStateUpdate {
+    pub inner: AgentStateUpdate,
+}
+
+impl Into<AgentStateUpdate> for PyAgentStateUpdate {
+    fn into(self) -> AgentStateUpdate {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyAgentStateUpdate {
+    #[staticmethod]
+    pub fn push(intent: ActionIntent) -> Self {
+        Self {
+            inner: AgentStateUpdate::Push(intent),
+        }
+    }
+
+    #[staticmethod]
+    pub fn replace(intents: Vec<ActionIntent>) -> Self {
+        Self {
+            inner: AgentStateUpdate::Replace(intents.into()),
+        }
+    }
+
+    #[staticmethod]
+    pub fn truncate(intents: Vec<ActionIntent>) -> Self {
+        Self {
+            inner: AgentStateUpdate::Truncate(intents.into()),
+        }
+    }
+
+    #[staticmethod]
+    pub fn hold(coord: Option<[i32; 3]>, yaw: Option<f64>) -> Self {
+        Self {
+            inner: AgentStateUpdate::Hold {
+                coord: coord.map(|x| x.into()),
+                yaw,
+            },
+        }
     }
 }
 

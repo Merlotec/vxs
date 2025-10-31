@@ -1,6 +1,8 @@
+use std::time::Duration;
+
 use voxelsim::Action;
 
-use crate::backend::ControlBackend;
+use crate::backend::{ControlBackend, ControlStep};
 
 /// Abstracts over how the signal is received.
 /// May want to be able to receive signal from both web sockets and mavlink radio signals.
@@ -19,11 +21,10 @@ impl<R: ActionReceiver> ManualBackend<R> {
 }
 
 impl<R: ActionReceiver> ControlBackend for ManualBackend<R> {
-    fn update_action(
-        &mut self,
-        agent: &voxelsim::Agent,
-        fw: &voxelsim::VoxelGrid,
-    ) -> Option<Action> {
-        self.receiver.try_recv_signal()
+    fn update_action(&mut self, agent: &voxelsim::Agent, fw: &voxelsim::VoxelGrid) -> ControlStep {
+        ControlStep {
+            next_action: self.receiver.try_recv_signal(),
+            min_sleep: Duration::from_millis(10),
+        }
     }
 }

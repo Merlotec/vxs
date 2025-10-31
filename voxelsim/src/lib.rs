@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod env;
 pub mod network;
+pub mod phase;
 pub mod planner;
 
 // Re-export core types for Rust consumers
