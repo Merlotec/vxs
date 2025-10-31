@@ -1,13 +1,15 @@
+use std::collections::{VecDeque, vec_deque};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::backend::{self, ControlBackend, PythonBackend};
+use crate::backend::{self, ControlBackend, ControlStep, PythonBackend};
 use crate::controller::ConnectionInterface;
 
 use std::sync::mpsc;
+use voxelsim::AgentStateUpdate;
 use voxelsim::{
     Action, ActionIntent, Agent, MoveDir, VoxelGrid,
     agent::chase::{FixedLookaheadChaser, TrajectoryChaser},
@@ -45,18 +47,18 @@ fn parse_command(line: &str) -> Option<Command> {
 
 // Manual input receiver backed by a channel from the socket loop
 struct SocketActionReceiver {
-    rx: mpsc::Receiver<Action>,
+    rx: mpsc::Receiver<AgentStateUpdate>,
 }
 
 impl backend::manual::ActionReceiver for SocketActionReceiver {
-    fn try_recv_signal(&self) -> Option<Action> {
+    fn try_recv_signal(&self) -> Option<AgentStateUpdate> {
         self.rx.try_recv().ok()
     }
 }
 
 // Use trait objects for the active backend
 
-fn parse_manual_action(line: &str, agent: &Agent) -> Option<Action> {
+fn parse_manual_action(line: &str, agent: &Agent) -> Option<AgentStateUpdate> {
     // Format: ACTION <urgency> <yaw> <moves_csv>, where moves are MoveDir codes
     let mut it = line.trim().split_whitespace();
     if it.next()? != "ACTION" {
@@ -72,7 +74,7 @@ fn parse_manual_action(line: &str, agent: &Agent) -> Option<Action> {
         seq.push(md);
     }
     let intent = ActionIntent::new(urgency, yaw, seq);
-    Action::new_oneshot(intent, agent.get_coord()).ok()
+    Some(AgentStateUpdate::Replace(VecDeque::from([intent])))
 }
 
 pub fn run_server(addr: &str) -> std::io::Result<()> {
@@ -111,7 +113,7 @@ pub fn handle_client(
     let mut engaged = false;
     let mut script_cache: Option<String> = None;
     let mut backend_opt: Option<Box<dyn ControlBackend>> = None;
-    let mut tx_manual_opt: Option<mpsc::Sender<Action>> = None;
+    let mut tx_manual_opt: Option<mpsc::Sender<AgentStateUpdate>> = None;
     let mut chaser = FixedLookaheadChaser::default();
     let mut last_tick = Instant::now();
 
@@ -208,9 +210,13 @@ pub fn handle_client(
                 if let Some(backend) = backend_opt.as_mut() {
                     let ag_snapshot = agent.lock().unwrap().clone();
                     let wg_snapshot = world.lock().unwrap().clone();
-                    if let Some(action) = backend.update_action(&ag_snapshot, &wg_snapshot) {
+                    if let ControlStep {
+                        update: Some(update),
+                        min_sleep,
+                    } = backend.update_action(&ag_snapshot, &wg_snapshot)
+                    {
                         let mut ag = agent.lock().unwrap();
-                        ag.state = voxelsim::agent::AgentState::Action(action);
+                        ag.update_state(update);
                     }
                 }
 

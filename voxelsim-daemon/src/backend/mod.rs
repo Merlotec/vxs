@@ -7,9 +7,9 @@ pub mod python;
 pub use python::PythonBackend;
 
 pub struct ControlStep {
-    update: Option<AgentStateUpdate>,
+    pub update: Option<AgentStateUpdate>,
     /// The minimum time that will elapse before the next invocation of `update_action` occurs.
-    min_sleep: Duration,
+    pub min_sleep: Duration,
 }
 
 pub trait ControlBackend {

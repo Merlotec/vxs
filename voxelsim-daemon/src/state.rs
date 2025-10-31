@@ -1,5 +1,5 @@
 use voxelsim::{
-    Agent, VoxelGrid,
+    ActionError, Agent, VoxelGrid,
     chase::{FixedLookaheadChaser, TrajectoryChaser},
 };
 
@@ -28,11 +28,14 @@ impl ControlState {
         self.control_backend = backend;
     }
 
-    pub fn update(&mut self) {
+    pub fn update(&mut self) -> Result<(), ActionError> {
         if let Some(cb) = &mut self.control_backend {
-            let next_action = cb.update_action(&self.agent, &self.world);
-            self.agent.set_action(next_action);
+            let step = cb.update_action(&self.agent, &self.world);
+            if let Some(update) = step.update {
+                self.agent.update_state(update)?;
+            }
         }
+        Ok(())
     }
 }
 
