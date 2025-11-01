@@ -24,7 +24,7 @@ pub struct ChaseTarget {
 pub enum ActionProgress {
     /// Progress the current action to the specified progress.
     ProgressTo(f64, bool),
-    /// End the current action and start the new state.
+    /// End the current action and start the new state. Stores the next state that should be engaged.
     Complete(AgentState),
     /// Do not update progress (this can be used if there is no currently active action).
     #[default]

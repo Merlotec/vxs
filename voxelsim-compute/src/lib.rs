@@ -193,6 +193,7 @@ pub enum RenderCommand {
         view: Matrix4<f64>,
         proj: Matrix4<f64>,
         filter_world: Arc<Mutex<VoxelGrid>>,
+        dynamic_world: VoxelGrid,
         sender: SyncSender<WorldChangeset>,
         timestamp: f64,
     },
@@ -219,6 +220,7 @@ impl AgentVisionRenderer {
                     view,
                     proj,
                     filter_world,
+                    dynamic_world,
                     sender,
                     timestamp,
                 } => {
@@ -232,6 +234,7 @@ impl AgentVisionRenderer {
                         .run(
                             &camera_matrix,
                             filter_world.lock().unwrap().deref(),
+                            &dynamic_world,
                             timestamp,
                             cam_dir,
                         )
@@ -249,13 +252,20 @@ impl AgentVisionRenderer {
         view: Matrix4<f64>,
         proj: Matrix4<f64>,
         filter_world: FilterWorld,
+        dynamic_world: VoxelGrid,
         timestamp: f64,
         on_update: F,
     ) where
         F: FnOnce(&FilterWorld, f64) + Send + 'static,
     {
         filter_world.frames.lock().unwrap().push(timestamp);
-        let rx = self.render(view, proj, filter_world.world.clone(), timestamp);
+        let rx = self.render(
+            view,
+            proj,
+            filter_world.world.clone(),
+            dynamic_world,
+            timestamp,
+        );
         std::thread::spawn(move || {
             if let Ok(change) = rx.recv() {
                 change.update_filter_world(&filter_world);
@@ -269,6 +279,7 @@ impl AgentVisionRenderer {
         view: Matrix4<f64>,
         proj: Matrix4<f64>,
         filter_world: FilterWorld,
+        dynamic_world: VoxelGrid,
         uncertainty_world: UncertaintyWorld,
         timestamp: f64,
         on_update: F,
@@ -276,7 +287,13 @@ impl AgentVisionRenderer {
         F: FnOnce(&FilterWorld, f64) + Send + 'static,
     {
         filter_world.frames.lock().unwrap().push(timestamp);
-        let rx = self.render(view, proj, filter_world.world.clone(), timestamp);
+        let rx = self.render(
+            view,
+            proj,
+            filter_world.world.clone(),
+            dynamic_world,
+            timestamp,
+        );
         std::thread::spawn(move || {
             if let Ok(change) = rx.recv() {
                 change.update_filter_world_with_uncertainty(&filter_world, &uncertainty_world);
@@ -290,13 +307,20 @@ impl AgentVisionRenderer {
         view: Matrix4<f64>,
         proj: Matrix4<f64>,
         filter_world: FilterWorld,
+        dynamic_world: VoxelGrid,
         timestamp: f64,
         on_complete: F,
     ) where
         F: FnOnce(WorldChangeset) + Send + 'static,
     {
         filter_world.frames.lock().unwrap().push(timestamp);
-        let rx = self.render(view, proj, filter_world.world.clone(), timestamp);
+        let rx = self.render(
+            view,
+            proj,
+            filter_world.world.clone(),
+            dynamic_world,
+            timestamp,
+        );
         std::thread::spawn(move || {
             if let Ok(change) = rx.recv() {
                 on_complete(change);
@@ -309,9 +333,10 @@ impl AgentVisionRenderer {
         view: Matrix4<f64>,
         proj: Matrix4<f64>,
         filter_world: Arc<Mutex<VoxelGrid>>,
+        dynamic_world: VoxelGrid,
         timestamp: f64,
     ) {
-        let rx = self.render(view, proj, filter_world.clone(), timestamp);
+        let rx = self.render(view, proj, filter_world.clone(), dynamic_world, timestamp);
         std::thread::spawn(move || {
             if let Ok(change) = rx.recv() {
                 let mut vgrid = filter_world.lock().unwrap();
@@ -325,6 +350,7 @@ impl AgentVisionRenderer {
         view: Matrix4<f64>,
         proj: Matrix4<f64>,
         filter_world: Arc<Mutex<VoxelGrid>>,
+        dynamic_world: VoxelGrid,
         timestamp: f64,
     ) -> Receiver<WorldChangeset> {
         let (tx, rx) = mpsc::sync_channel(1000);
@@ -333,6 +359,7 @@ impl AgentVisionRenderer {
                 view,
                 proj,
                 filter_world,
+                dynamic_world,
                 sender: tx,
                 timestamp,
             })

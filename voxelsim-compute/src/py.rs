@@ -115,6 +115,7 @@ impl AgentVisionRenderer {
         camera: CameraView,
         proj: CameraProjection,
         filter_world: Py<FilterWorld>,
+        dynamic_world: VoxelGrid,
         timestamp: f64,
         callback: PyObject,
     ) {
@@ -124,6 +125,7 @@ impl AgentVisionRenderer {
                 camera.view_matrix(),
                 proj.projection_matrix(),
                 fw_clone,
+                dynamic_world,
                 timestamp,
                 move |fw, ts| {
                     Python::with_gil(|py| {
@@ -140,6 +142,7 @@ impl AgentVisionRenderer {
         camera: CameraView,
         proj: CameraProjection,
         filter_world: Py<FilterWorld>,
+        dynamic_world: VoxelGrid,
         uncertainty_world: UncertaintyWorld,
         timestamp: f64,
         callback: PyObject,
@@ -150,6 +153,7 @@ impl AgentVisionRenderer {
                 camera.view_matrix(),
                 proj.projection_matrix(),
                 fw_clone,
+                dynamic_world,
                 uncertainty_world,
                 timestamp,
                 move |fw, ts| {
@@ -166,6 +170,7 @@ impl AgentVisionRenderer {
         camera: CameraView,
         proj: CameraProjection,
         filter_world: Py<FilterWorld>,
+        dynamic_world: VoxelGrid,
         timestamp: f64,
         callback: PyObject,
     ) {
@@ -175,6 +180,7 @@ impl AgentVisionRenderer {
                 camera.view_matrix(),
                 proj.projection_matrix(),
                 fw_clone,
+                dynamic_world,
                 timestamp,
                 move |changeset| {
                     Python::with_gil(|py| {

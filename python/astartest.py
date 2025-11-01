@@ -128,7 +128,7 @@ def world_update(world, timestamp):
     dtime = time.time() - upd_start
     # print(f"upd_time: {dtime}")
 
-astar_intent = planner.plan_action_py(world, agent.get_coord_py(), POS, 0.5, 0.1)
+astar_intent = planner.plan_action_py(world, agent.get_coord_py(), POS, 0.9, 0.1)
 
 agent.perform_oneshot_py(astar_intent)
 

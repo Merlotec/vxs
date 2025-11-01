@@ -533,6 +533,7 @@ impl RasterizerState {
     pub fn encode_rasterizer(
         &self,
         encoder: &mut wgpu::CommandEncoder,
+        dynamic_world: &InstanceBuffer,
         camera_uniform: &CameraMatrix, // Pass camera data directly
         use_culled_instances: bool,
         _visible_count_unused: Option<u32>,
@@ -586,10 +587,21 @@ impl RasterizerState {
 
         render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
         render_pass.set_index_buffer(self.cube_buffer.index.slice(..), wgpu::IndexFormat::Uint16);
+        // Draw the static/main instances first
         if use_culled_instances {
             render_pass.draw_indexed_indirect(&self.main_indirect_args, 0);
         } else {
             render_pass.draw_indexed(0..Vertex::CUBE_INDICES.len() as u32, 0, 0..instance_count);
+        }
+
+        // Then draw the dynamic instances as a second batch
+        if dynamic_world.len > 0 {
+            render_pass.set_vertex_buffer(1, dynamic_world.buf.slice(..));
+            render_pass.draw_indexed(
+                0..Vertex::CUBE_INDICES.len() as u32,
+                0,
+                0..dynamic_world.len,
+            );
         }
     }
 
