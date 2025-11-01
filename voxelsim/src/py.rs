@@ -47,13 +47,13 @@ pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 pub type PyCoord = [i32; 3];
 
-#[pyclass]
-pub struct AStarPlanner {
-    padding: i32,
-}
-
 #[pymethods]
 impl VoxelGrid {
+    #[new]
+    pub fn new_py() -> Self {
+        Self::new()
+    }
+
     #[staticmethod]
     pub fn from_dict_py(dict: HashMap<PyCoord, Cell>) -> Self {
         let cells: DashMap<Coord, Cell> = DashMap::with_capacity(dict.len());

@@ -57,6 +57,8 @@ cz = max(5, nz // 3)
 agent.set_hold_py([cx, cy, -cz], 0.0)
 
 fw = vxs.FilterWorld()
+# The dynamic world (with moving components in it)
+dw = vxs.VoxelGrid()
 dynamics = vxs.px4.Px4Dynamics.default_py()
 
 chaser = vxs.FixedLookaheadChaser.default_py()
@@ -150,7 +152,7 @@ while listener.running:
         if view_delta >= FRAME_DELTA_MAX:
             fw.send_pov_async_py(client, 0, 0, proj, camera_orientation)
             upd_start = time.time()
-            renderer.update_filter_world_py(agent.camera_view_py(camera_orientation), proj, fw, t0, world_update)
+            renderer.update_filter_world_py(agent.camera_view_py(camera_orientation), proj, fw, dw, t0, world_update)
             last_view_time = t0
 
     action = agent.get_action_py()
