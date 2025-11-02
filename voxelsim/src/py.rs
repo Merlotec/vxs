@@ -16,7 +16,7 @@ use crate::{
         viewport::{CameraProjection, CameraView},
     },
     chase::{ChaseTarget, FixedLookaheadChaser, TrajectoryChaser},
-    env::{DenseSnapshot, VoxelGrid},
+    env::{DenseSnapshot, VoxelGrid, VoxelSet},
     network::{AsyncRendererClient, RendererClient},
     planner::ActionPlanner,
     planner::astar::AStarActionPlanner,
@@ -295,8 +295,10 @@ impl Action {
     }
 
     /// Clones the action under the hood.
-    pub fn appending_intent_py(&self, intent: ActionIntent) -> Self {
-        self.clone().appending_intent(intent)
+    pub fn appending_intent_py(&self, intent: ActionIntent) -> PyResult<Self> {
+        self.clone()
+            .appending_intent(intent)
+            .map_err(|e| PyException::new_err(format!("Could not append intent to action: {}", e)))
     }
 }
 

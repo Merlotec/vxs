@@ -1,8 +1,4 @@
-use std::{
-    collections::{VecDeque, vec_deque},
-    error::Error,
-    fmt::Display,
-};
+use std::{collections::VecDeque, error::Error, fmt::Display};
 
 use dashmap::DashSet;
 use nalgebra::{Unit, UnitQuaternion, Vector3};
@@ -188,9 +184,9 @@ impl Action {
         Ok(action)
     }
 
-    pub fn appending_intent(mut self, intent: ActionIntent) -> Self {
-        self.push_back_intent(intent);
-        self
+    pub fn appending_intent(mut self, intent: ActionIntent) -> Result<Self, ActionError> {
+        self.push_back_intent(intent)?;
+        Ok(self)
     }
 
     pub fn centroids<'a, I: IntoIterator<Item = &'a MoveDir>>(

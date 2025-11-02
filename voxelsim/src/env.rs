@@ -220,7 +220,7 @@ impl VoxelSet {
         &mut self.cells
     }
 
-    pub fn set(&mut self, coord: Coord, cell: Cell) {
+    pub fn set(&mut self, coord: Coord) {
         self.cells.insert(coord);
     }
 

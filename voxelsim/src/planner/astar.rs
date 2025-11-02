@@ -8,12 +8,6 @@ use crate::{Coord, VoxelGrid, env::Cell};
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 struct Node(Coord);
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-struct Cost {
-    g: i32, // cost from start
-    f: i32, // g + heuristic
-}
-
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct QueueEntry {
     // Primary key: estimated total steps (g_steps + h_steps)

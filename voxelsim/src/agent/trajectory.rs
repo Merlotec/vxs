@@ -361,7 +361,7 @@ impl Trajectory {
             .waypoints
             .iter()
             .enumerate()
-            .find(|(i, p)| *p > &progress)?;
+            .find(|(_i, p)| *p > &progress)?;
 
         assert!(i1 > 0);
         let i0 = i1 - 1;

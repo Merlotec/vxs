@@ -1,6 +1,6 @@
 pub mod astar;
 
-use crate::{ActionIntent, Coord, MoveDir, VoxelGrid};
+use crate::{ActionIntent, Coord, VoxelGrid};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum PlannerError {
