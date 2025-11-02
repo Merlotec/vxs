@@ -1,16 +1,11 @@
-use std::collections::{HashMap, HashSet};
-
-use nalgebra::{DMatrix, DVector, Vector3};
+use dashmap::DashMap;
+use nalgebra::Vector3;
 use nalgebra::{Matrix3, SymmetricEigen};
+use rayon::iter::IntoParallelRefIterator;
+use rayon::prelude::*;
 use tinyvec::{ArrayVec, array_vec};
 
-use crate::Coord;
-
-// Dense grid with phase vectors.
-pub struct DynamicFrame {
-    time: f64,
-    cells: HashSet<Coord>,
-}
+use crate::{Coord, VoxelSet};
 
 #[derive(Default)]
 pub struct PrincipalComponent {
@@ -20,20 +15,18 @@ pub struct PrincipalComponent {
 }
 
 pub struct PhaseFlow {
-    sources: HashMap<Coord, ArrayVec<[PrincipalComponent; 3]>>,
+    sources: DashMap<Coord, ArrayVec<[PrincipalComponent; 3]>>,
 }
 
 pub struct PhaseGrid {
-    cells: HashSet<Coord, f64>,
+    pub cells: DashMap<Coord, f64>,
 }
 
 impl PhaseFlow {
-    pub fn from_frames(mut frames: Vec<DynamicFrame>) -> Self {
-        let present = frames.pop().unwrap();
+    pub fn from_frames(mut frames: Vec<(VoxelSet, f64)>) -> Self {
+        let (present, t_end) = frames.pop().unwrap();
 
-        let mut sources: HashMap<Coord, ArrayVec<[PrincipalComponent; 3]>> = HashMap::new();
-
-        let t_end = present.time;
+        let sources: DashMap<Coord, ArrayVec<[PrincipalComponent; 3]>> = DashMap::new();
 
         let threshold = 3.0;
         let lambda_threshold = 2.0;
@@ -41,11 +34,11 @@ impl PhaseFlow {
         let (points, base_weights): (Vec<Vector3<f64>>, Vec<f64>) = frames
             .iter()
             .filter_map(|f| {
-                let v = threshold - (t_end - f.time);
+                let v = threshold - (t_end - f.1);
                 if v > 0.0 {
                     let w = v / threshold;
                     Some(
-                        f.cells
+                        f.0.cells()
                             .iter()
                             .map(|x| (x.cast::<f64>(), w))
                             .collect::<Vec<(Vector3<f64>, f64)>>(),
@@ -57,7 +50,7 @@ impl PhaseFlow {
             .flatten()
             .unzip();
 
-        for src in present.cells.iter() {
+        present.cells().par_iter().for_each(|src| {
             let s: Vector3<f64> = src.cast();
             let weights: Vec<f64> = base_weights
                 .iter()
@@ -74,7 +67,7 @@ impl PhaseFlow {
                             u: m.column(i).into_owned(),
                             expl_var,
                         };
-                        if let Some(pcs) = sources.get_mut(src) {
+                        if let Some(mut pcs) = sources.get_mut(&src) {
                             pcs.push(pc);
                         } else {
                             sources.insert(*src, array_vec!([PrincipalComponent; 3] => pc));
@@ -82,16 +75,93 @@ impl PhaseFlow {
                     }
                 }
             }
-        }
+        });
 
         Self { sources }
     }
 
-    // pub fn build_grid(&self, t: f64) -> PhaseGrid {
-    //     for (coord, pcs) in self.sources.iter() {
+    pub fn build_grid(&self, t: f64) -> PhaseGrid {
+        // Accumulate contributions from each source along its principal components
+        // into a scalar field over voxel coordinates.
+        let cells: DashMap<Coord, f64> = DashMap::new();
 
-    //     }
-    // }
+        if t <= 0.0 {
+            return PhaseGrid { cells };
+        }
+
+        // Tuning constants for cone marching
+        let step: f64 = 0.5; // march step along the ray (in voxel units)
+        let base_radius: f64 = 0.5; // initial radius near the source
+        let radius_slope: f64 = 0.45; // how fast the cone opens with distance
+
+        self.sources.par_iter().for_each(|arg| {
+            let (coord, pcs) = (arg.key(), arg.value());
+            let src = coord.cast::<f64>();
+
+            for pc in pcs.iter() {
+                if pc.l <= 0.0 {
+                    continue;
+                }
+
+                // Length scales linearly with t and sqrt(l)
+                let length = t * pc.l.sqrt();
+                if length <= 0.0 {
+                    continue;
+                }
+
+                let u = pc.u;
+                let norm = u.norm();
+                if norm == 0.0 {
+                    continue;
+                }
+                let dir = u / norm; // unit direction
+
+                // Strength scales with explained variance; clamp to [0,1]
+                let base_strength = pc.expl_var.clamp(0.0, 1.0);
+
+                // March forward along the ray, widening the cone
+                let mut s = 0.0;
+                while s <= length {
+                    let center = src + dir * s;
+                    let radius = base_radius + radius_slope * s;
+
+                    // Compute bounds for integer voxels to consider around this slice
+                    let min = (center - Vector3::new(radius, radius, radius))
+                        .map(|v| v.floor() as i32 - 1);
+                    let max = (center + Vector3::new(radius, radius, radius))
+                        .map(|v| v.ceil() as i32 + 1);
+
+                    for x in min.x..=max.x {
+                        for y in min.y..=max.y {
+                            for z in min.z..=max.z {
+                                let c = Vector3::new(x, y, z);
+                                let p = c.cast::<f64>();
+                                // Radial distance from the cone axis at this slice
+                                let dist = (p - center).norm();
+                                if dist <= radius {
+                                    // Radial falloff inside the cone (1 at axis → 0 at boundary)
+                                    let radial = 1.0 - (dist / (radius + 1e-9));
+                                    // Slightly sharpen towards axis
+                                    let radial = radial.clamp(0.0, 1.0).powf(2.0);
+
+                                    // Contribution at this voxel slice
+                                    let delta = base_strength * radial;
+
+                                    // Speed-of-light style accumulation: approach but never reach 1.0
+                                    let mut entry = cells.entry(c).or_insert(0.0);
+                                    *entry = *entry + (1.0 - *entry) * delta;
+                                }
+                            }
+                        }
+                    }
+
+                    s += step;
+                }
+            }
+        });
+
+        PhaseGrid { cells }
+    }
 }
 
 /// Weighted PCA in 3D *around a given centroid*.

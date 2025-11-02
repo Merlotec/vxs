@@ -1,10 +1,9 @@
-use std::ops::Deref;
-
 use bitflags::bitflags;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use nalgebra::Vector3;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use tinyvec::ArrayVec;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +86,14 @@ pub struct VoxelGrid {
     cells: DashMap<Coord, Cell>,
 }
 
+/// Sparse voxel grid that does not store any cell.
+/// Can be used to just reference a set of cells.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::prelude::pyclass)]
+pub struct VoxelSet {
+    cells: DashSet<Coord>,
+}
+
 impl VoxelGrid {
     pub fn new() -> Self {
         Self {
@@ -167,6 +174,58 @@ impl VoxelGrid {
             centre,
             half_dims,
         }
+    }
+
+    /// Generates a difference map between self and other (i.e. what was added in self that was not in other).
+    pub fn difference_set_from(&self, other: &Self) -> VoxelSet {
+        let diff_map: DashSet<Coord> = DashSet::new();
+
+        self.cells().par_iter().for_each(|c| {
+            if !other.cells().contains_key(c.key()) {
+                diff_map.insert(*c.key());
+            }
+        });
+
+        VoxelSet { cells: diff_map }
+    }
+}
+
+impl VoxelSet {
+    pub fn new() -> Self {
+        Self {
+            cells: DashSet::new(),
+        }
+    }
+
+    pub fn from_cells(cells: DashSet<Coord>) -> Self {
+        Self { cells }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            cells: DashSet::with_capacity(capacity),
+        }
+    }
+
+    pub fn cull(&mut self, centre: Vector3<i32>, bounds: Vector3<i32>) {
+        self.cells
+            .retain(|k| within_bounds(Vector3::from(*k) - centre, bounds));
+    }
+
+    pub fn cells(&self) -> &DashSet<Coord> {
+        &self.cells
+    }
+
+    pub fn cells_mut(&mut self) -> &mut DashSet<Coord> {
+        &mut self.cells
+    }
+
+    pub fn set(&mut self, coord: Coord, cell: Cell) {
+        self.cells.insert(coord);
+    }
+
+    pub fn remove(&mut self, coord: &Coord) -> Option<Coord> {
+        self.cells.remove(coord)
     }
 }
 

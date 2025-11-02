@@ -27,6 +27,7 @@ use crate::{
 #[pymodule]
 pub fn voxelsim_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<VoxelGrid>()?;
+    m.add_class::<VoxelSet>()?;
     m.add_class::<UncertaintyWorld>()?;
     m.add_class::<Cell>()?;
     m.add_class::<Agent>()?;
@@ -143,6 +144,10 @@ impl VoxelGrid {
 
     pub fn add_target_cell(&mut self, coord: [i32; 3]) {
         self.cells().insert(coord.into(), Cell::TARGET);
+    }
+
+    pub fn difference_set_from_py(&self, other: &Self) -> VoxelSet {
+        self.difference_set_from(other)
     }
 }
 
